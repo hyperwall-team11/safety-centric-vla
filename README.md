@@ -1,99 +1,164 @@
-# VLA 기반 피지컬 AI 자율 대응 및 실시간 관제 통합 플랫폼
+# Ontology-Driven Safety-Centric VLA
 
-시스템 구조도 및 파이프라인 설계를 바탕으로, 구체적인 구현 및 시스템 통합 시 발생할 수 있는 기술적 병목 요소를 사전에 방지하기 위한 추가 검토 사항과 권장 개발 전략 정리
+온톨로지 기반 실행 거버넌스를 적용한 안전 중심 VLA 로봇 제어 플랫폼입니다.
 
----
+VLA(Vision-Language-Action) 모델은 자연어와 시각 정보를 바탕으로 로봇 행동을 제안할 수 있지만, 확률적 생성 특성 때문에 물리 제약을 위반하거나 위험한 궤적을 만들 수 있습니다. 이 프로젝트는 VLA의 출력을 곧바로 로봇에 전달하지 않고, 온톨로지와 Action 제출 기준으로 검증한 뒤 승인된 행동만 실행하는 구조를 구현합니다.
 
-## 1. 데이터 연동 및 실시간 통신 파이프라인 (통신 프로토콜 구체화)
+> AI는 행동을 제안하고, 실행은 온톨로지가 승인합니다.
 
-### 1.1 LiveLink 및 3D 동기화 방식 규격화
-- 실시간 화재 확산 카메라 영상과 Isaac Sim 가상환경 간 연동을 위해 데이터 전송 포맷(USD, RTSP Stream, WebRTC 등)을 명확히 정의
-- 시뮬레이션 씬 업데이트 주기(Hz) 및 렌더링 프레임 레이트 간 synchronization 방안이 필요
+## 프로젝트 목표
 
-### 1.2 ROS 2 및 메시지 브로커 인터페이스
-- Spring Boot 백엔드 서버와 Isaac Sim / ROS 2 로봇 제어 노드 간 연결을 위한 인터페이스로 **rosbridge_suite(WebSocket)** 또는 **ZeroMQ / MQTT** 기반 중계 레이어 구축이 필요
+한 학기 16주 동안 다음 기능을 갖춘 통합 MVP를 구현합니다.
 
-### 1.3 End-to-End Latency 목표 설정
-- 카메라 입력 수신 → Vision 위험도 탐지 및 계산 → VLA/강화학습 동적 경로 재계산 → 로봇 제어 명령 하강까지의 **전체 지연 시간(End-to-End Latency) 목표치(예: 100ms 이내)**를 설정하여 실시간 제어의 안정성을 검증
+- 자연어 명령을 `TaskOrder` 객체로 변환
+- VLA 출력을 실행 명령이 아닌 `ActionProposal`로 저장
+- 로봇, 작업자, 금지구역, 위험 이벤트를 온톨로지 객체로 관리
+- 속도, 토크, 금지구역, 작업자 안전거리 기준으로 행동 검증
+- 위험 행동 거부와 `TriggerEStop`, `Hold State` 처리
+- 승인된 Action만 ROS 2 제어 노드로 전달
+- Isaac Sim 디지털 트윈과 온톨로지 상태 동기화
+- 제안·승인·거부·실행 전 과정을 감사 로그로 기록
 
----
+최종 결과물은 정상 실행과 실시간 위험 개입 두 시나리오의 End-to-End 시연입니다.
 
-## 2. AI & Isaac Sim Core (VLA / Risk 모델 최적화)
+## 핵심 구조
 
-### 2.1 VLM/VLA 추론 속도 및 실시간성 확보 대책
-- GPT-4V / LLaVA 등 대형 VLM 모델은 실시간 프레임 단위(30fps) 제어 추론이 불가능하므로, **Edge/Local 전용 Lightweight VLM(예: OpenVLA, Florence-2 등)**을 분리 배치하는 구조가 필요
-- 또는 **Event-driven 추론 방식**(화재 확산 위험도 변화 감지 시에만 VLM 분석 호출)을 적용하여 컴퓨팅 리소스 및 지연 시간을 최적화
+```text
+자연어 명령 + 카메라 입력
+          │
+          ▼
+   TaskOrder 객체화
+          │
+          ▼
+ VLA 행동 제안 생성
+ ActionProposal(PROPOSED)
+          │
+          ▼
+ 온톨로지 Action 제출 기준
+ 속도 · 토크 · 금지구역 · 안전거리 검사
+       ┌──┴──────────────┐
+       │                 │
+   APPROVED          REJECTED
+       │                 │
+       ▼                 ▼
+ ROS 2 실행       TriggerEStop
+ Isaac Sim 동기화  Hold State
+       │
+       ▼
+     Audit Trail
+```
 
-### 2.2 Risk Score 산출 알고리즘 수식화
-- 화재 크기, 확산 속도, 거리 요소를 반영한 Risk Score 산출 알고리즘을 단순 Heuristic 방식에서 **2D/3D Grid Map 형태의 Costmap**으로 변환하여 ROS 2 Navigation2(Nav2)의 Dynamic Costmap 입력으로 활용하는 방안을 고려
+모든 상태 변경은 Action을 통해서만 일어납니다. VLA나 개별 모듈이 로봇 상태를 직접 변경하지 못하도록 실행 권한을 분리합니다.
 
-### 2.3 Sim-to-Real Domain Randomization 파이프라인
-- 가상환경 학습 알고리즘을 실제 로봇에 적용할 때 발생하는 Gap을 최소화하기 위해 Isaac Sim 내 광원, 마찰력, 카메라 센서 노이즈 등에 대한 **도메인 난수화(Domain Randomization)** 환경 설정이 필요
+## 온톨로지 모델
 
----
+### Semantic Layer
 
-## 3. 백엔드 및 대시보드 아키텍처 (Server & UI)
+현장에 무엇이 있는지를 표현합니다.
 
-### 3.1 Spring Boot 및 FastAPI 역할 분담 명확화
-- **Spring Boot**: 시스템 메인 비즈니스 로직, 사용자 인증, 대시보드 API, PostgreSQL DB 관리 및 데이터 저장
-- **FastAPI**: AI/PyTorch 모델 추론 연동, Isaac Sim 통신 전용 경량화 Inference Gateway 역할 수행
+- `Robot`: 관절 상태, 속도·토크 한계
+- `Worker`: 위치, 안전거리
+- `KeepOutZone`: 금지구역 경계
+- `TaskOrder`: 사용자의 작업 명령
+- `ActionProposal`: VLA가 생성한 행동 제안
+- `HazardEvent`: 작업자 접근, 화재 등 위험 이벤트
 
-### 3.2 3D 웹 대시보드 렌더링 방식 선택
-- React 기반 대시보드에서 3D 씬을 시각화할 때, Isaac Sim의 WebRTC 스트리밍 화면을 디스플레이할 것인지, 혹은 **Three.js / WebGL** 기반으로 백엔드 좌표 데이터(JSON/Protobuf)만 수신하여 클라이언트 측에서 경량 렌더링할 것인지 결정해야 함
+객체 사이의 관계는 `Link`로 관리하고, 센서와 VLM 결과에 따라 위치·상태 속성을 갱신합니다.
 
----
+### Kinetic Layer
 
-## 4. 안정 검증 및 예외 처리 (Safety & Interlock Layer)
+상태를 변경하는 행동을 정의합니다.
 
-### 4.1 하드웨어/소프트웨어 Interlock 체계
-- VLA 또는 강화학습 모델이 위험 지역 진입 등의 오류 액션을 출력할 경우, 이를 강제로 차단하고 안전 구역으로 복귀시키는 **Safety Controller(안전 펜스)** 로직이 시스템 레이어에 반드시 포함
+- `ExecuteMotion`
+- `TriggerEStop`
+- `ResumeTask`
+- `ResolveHazard`
 
----
+각 Action에는 `Submission Criteria`가 연결됩니다. 기준을 통과한 Action은 `APPROVED`, 기준을 위반한 Action은 `REJECTED` 상태가 됩니다.
 
-## 5. 팀원 직무 배치 및 추천 스택 보완 점검
+## 검증 시나리오
 
-| 구분 | 담당 팀원 | 현재 보유 기술 스택 | 추가/보완 추천 기술 요소 |
+### Scenario 1. 정상 동작
+
+`A구역 부품 상자를 B 작업대로 이송해 줘`라는 명령을 처리합니다.
+
+1. 명령을 `TaskOrder`로 등록
+2. VLM이 상자와 작업대를 인식
+3. VLA가 접근·파지·이동·놓기 행동을 `ActionProposal`로 생성
+4. 제출 기준을 통과한 `ExecuteMotion`을 `APPROVED` 처리
+5. ROS 2로 실행하고 온톨로지 및 감사 로그에 결과 기록
+
+### Scenario 2. 실시간 위험 개입
+
+작업 도중 작업자가 접근하거나 화재가 감지되는 상황을 검증합니다.
+
+1. VLM이 위험을 감지하고 `HazardEvent` 생성
+2. 작업자 위치 또는 위험 상태 갱신
+3. `TriggerEStop` 발행과 진행 중 제안 거부
+4. 위험 해제 전까지 `Hold State` 유지
+5. `ResolveHazard`와 `ResumeTask` 승인 후 작업 재개
+
+## 기능 요구사항
+
+| ID | 기능 | 구현 범위 | 확인 방법 |
 |---|---|---|---|
-| **Vision & Path** | 강영한 (팀장) | PyTorch, PointNet, YOLO-seg, AWS DeepRacer | ROS 2 Navigation2 (Nav2), Costmap2D/3D Dynamic Plugin |
-| **VLM & Server** | 김경무 | Spring Boot, FastAPI, React | LangChain / LlamaIndex, vLLM / Ollama (로컬 VLM 최적화) |
-| **Action & Sim** | 최민서 | ROS 2, PyTorch, OpenGL, FastAPI, Spring Boot | Isaac ROS (GEMs), URDF/XACRO 로봇 모델링, rosbridge |
-| **RL & Sim Twin** | 임성현 | React, React Native, Spring Boot | Isaac Lab / Omniverse Isaac Gym, Python RL Lib (Stable-Baselines3) |
+| R1 | 명령·행동 제안 | `TaskOrder`와 `ActionProposal` 생성 | 객체 상태 확인 |
+| R2 | 현장 상태 인식 | 작업자 위치·위험 이벤트 갱신 | 10Hz 이상 탐지 목표 |
+| R3 | 행동 제출 검증 | 속도·토크·금지구역·안전거리 검사 | 위험 제안 차단 |
+| R4 | 정지·재개 통제 | E-Stop, Hold State, 안전한 재개 | 위험 개입 시연 |
+| R5 | 실행·감사 추적 | 승인 Action 실행 및 전체 이력 저장 | 정상 시연·로그 확인 |
 
----
+## 비기능 목표
 
-## 담당자별 3개월(12주) 달성 전략
+- 위험 요소 탐지: 10Hz 이상
+- 위험 인지부터 E-Stop 발행까지: 100ms 이하 목표
+- 위험 시나리오 차단 성공률: 100% 목표
+- Action 제출부터 판정까지: 50ms 이하 목표
+- 정상 실행과 Safety Interception의 End-to-End 검증
+- 온톨로지 상태와 감사 로그의 일관성 확인
 
-### 1. Vision & Path: 강영한 (팀장)
-- **추가 요소**: ROS 2 Navigation2 (Nav2), Dynamic Costmap Plugin
-- **실행 전략**: 이미 PyTorch, YOLO, AWS DeepRacer 경험이 있어 자율주행 기본 개념 이해도가 높고, Nav2의 기본 패키지를 그대로 가져와 화재 확산 좌표를 입력받아 코스트맵(Costmap)을 실시간으로 업데이트하는 커스텀 플러그인 구현에 집중 필요
+위 수치는 MVP 검증 목표이며, 구현 과정에서 실제 측정값과 함께 관리합니다.
 
-### 2. VLM & Server: 김경무
-- **추가 요소**: LangChain/LlamaIndex, vLLM / Ollama (로컬 VLM 최적화)
-- **실행 전략**: 이미 Spring Boot와 FastAPI 백엔드 구축 능력이 있고, 외부 API(GPT-4V) 방식에서 Ollama/vLLM 기반의 경량 로컬 VLM(OpenVLA 또는 Florence-2)으로 전환하는 작업은 Docker 컨테이너화된 서버를 띄우고 FastAPI로 래핑하는 작업이 필요함
+## 개발 일정
 
-### 3. Action & Sim: 최민서
-- **추가 요소**: Isaac ROS (GEMs), URDF/XACRO 로봇 모델링, rosbridge
-- **실행 전략**: ROS 2, PyTorch, OpenGL 경험을 두루 갖추고 있어 학습 곡선이 가장 빠를 것으로 예상되며, 기본 로봇 3D 모델(URDF)을 Isaac Sim에 로드하고, rosbridge_suite를 통해 웹/백엔드와 ROS Topic을 송수신하는 파이프라인 구축
+| 기간 | 단계 | 주요 작업 | 마일스톤 |
+|---|---|---|---|
+| 1~4주 | 기반·스키마 | 요구분석, Object/Link/Action 스키마, ROS 2·Isaac Sim 환경 구성 | M1: 온톨로지 스키마 확정 |
+| 5~8주 | 모듈 개발 | 온톨로지 서버, Action 파이프라인, NLP 파서, VLM 위험 인식, Guardrail | M2: Action 파이프라인 데모 |
+| 9~12주 | 시스템 통합 | VLA Proposal 연동, ROS 2 실행, Isaac Sim과 온톨로지 동기화 | M3: 통합 파이프라인 가동 |
+| 13~16주 | 검증·시연 | 정상·위험 개입 시험, 감사 로그 검증, 최종 시연·보고서 | M4: MVP 최종 시연 |
 
-### 4. RL & Sim Twin: 임성현
-- **추가 요소**: Isaac Lab / Omniverse Isaac Gym, RL Lib (Stable-Baselines3)
-- **실행 전략**: 강화학습 및 Isaac Sim 디지털 트윈 환경 생성이 가장 난이도가 높고, 모델을 처음부터 복잡하게 설계하기보다 Stable-Baselines3(PPO 알고리즘 등) 표준 라이브러리를 활용하고, Isaac Lab에서 제공하는 기본 튜토리얼 환경(Grid/Path Finding)을 화재 재난 씬에 맞춰 변형하는 방식으로 진행해야 함
+## 팀 역할
 
----
+| 역할 | 담당 | 주요 책임 |
+|---|---|---|
+| CV | 강영한(팀장) | VLM 위험 감지, Worker·HazardEvent 갱신 |
+| NLP | 팀원 A | 자연어 명령 파싱, TaskOrder·VLA 인터페이스 |
+| ONT | 팀원 B | 온톨로지 스키마, Action 서버, Guardrail, 감사 로그 |
+| CTL | 팀원 C | ROS 2 제어, Isaac Sim, 상태 동기화 |
 
-## 3개월(12주) 추천 개발 로드맵
+모든 모듈은 온톨로지 API를 공통 인터페이스로 사용합니다. 초기 단계에서 스키마를 확정해 병렬 개발과 통합을 지원합니다.
 
-### 1개월 차 (1~4주): 환경 구축 및 기본 통신 연결
-- Isaac Sim - ROS 2(rosbridge) - Spring Boot / FastAPI 간 메시지 통신 검증
-- 로봇 URDF 모델링 및 Isaac Sim 씬 구성
-- Ollama/vLLM을 활용한 로컬 VLM 추론 API 서빙 테스트
+## 기술 스택
 
-### 2개월 차 (5~8주): 핵심 기능 모듈화 개발
-- Vision 탐지 결과를 ROS 2 Nav2 Dynamic Costmap으로 변환 알고리즘 적용
-- Stable-Baselines3 기반 RL 경로 재계산 및 위험도 대응 Action 선택 학습
-- React 대시보드와 백엔드 간 실시간 3D 데이터(위험도 맵, 로봇 상태) 연동
+- AI: PyTorch, OpenVLA, LLaVA 또는 Florence-2, OpenCV
+- 온톨로지 백엔드: FastAPI, Redis, WebSocket 또는 gRPC
+- 로봇 제어: ROS 2 Humble/Jazzy
+- 시뮬레이션: NVIDIA Isaac Sim / Isaac Lab
+- 모델·상태 연동: Object/Link/Action 스키마, Isaac Sim 양방향 동기화
 
-### 3개월 차 (9~12주): 통합 및 예외 처리 (Safety Layer)
-- 전체 파이프라인(카메라 → Isaac Sim → Risk 계산 → VLA/RL → 로봇 모션) End-to-End 통합
-- Safety Controller(위험 구역 진입 강제 차단 Interlock) 적용
-- 시나리오 테스트 및 성능 검증 (지연 시간 및 경로 재계산 성공률 측정)
+## 제약사항
+
+- ISO 10218 및 ISO/TS 15066 관련 안전 요구를 검토
+- 모듈 간 주요 상태·행동 통신은 온톨로지 API를 통해 관리
+- OpenVLA, LLaVA, ROS 2, Isaac Sim 및 기타 오픈소스 라이선스 준수
+- 본 프로젝트의 목표는 한 학기 MVP이며, 상용 안전 인증 제품을 의미하지 않음
+
+## 참고 자료
+
+- `Ontology_Driven_Safety_VLA_개발제안서.pptx`: 시스템 구조, 역할 분담, 16주 개발 로드맵
+- `VLA_개발계획_요구분석_16주_최종.pptx`: 요구분석 및 발표용 개발계획
+
+## License
+
+프로젝트 라이선스는 팀의 별도 결정을 따릅니다.
