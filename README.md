@@ -1,5 +1,12 @@
 # Ontology-Driven Safety-Centric VLA
 
+## CV 프로토타입
+
+`mujoco-demo/`에는 MuJoCo 가상 CCTV 장면과 Florence-2 작업자 탐지 예제가 있습니다. 현재 확인한 범위는 합성 이미지 두 장에서 `person`을 찾는 단계입니다. `Observation` 변환, 구역 침입 판정, `HazardEvent` 생성 및 로봇 정지는 아직 구현하지 않았습니다.
+
+- [실행 안내](mujoco-demo/README.md)
+- [2026-10-09 진행 기록](docs/멘토링_진행공유_2026-10-09.md)
+
 온톨로지 기반 실행 거버넌스를 적용한 안전 중심 VLA 로봇 제어 플랫폼입니다.
 
 VLA(Vision-Language-Action) 모델은 자연어와 시각 정보를 바탕으로 로봇 행동을 제안할 수 있지만, 확률적 생성 특성 때문에 물리 제약을 위반하거나 위험한 궤적을 만들 수 있습니다. 이 프로젝트는 VLA의 출력을 곧바로 로봇에 전달하지 않고, 온톨로지와 Action 제출 기준으로 검증한 뒤 승인된 행동만 실행하는 구조를 구현합니다.
