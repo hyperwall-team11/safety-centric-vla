@@ -1,0 +1,21 @@
+name: Main Source Branch Check
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, edited]
+
+jobs:
+  check-source-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Allow only develop -> main
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          if [ "$HEAD_REF" != "develop" ] || [ "$HEAD_REPO" != "${{ github.repository }}" ]; then
+            echo "::error::main 브랜치에는 develop 브랜치에서만 PR을 올릴 수 있습니다. (현재: $HEAD_REPO:$HEAD_REF)"
+            exit 1
+          fi
+          echo "OK: $HEAD_REF -> main"
