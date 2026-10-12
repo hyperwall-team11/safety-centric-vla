@@ -28,7 +28,7 @@ feat/*, fix/*, docs/*, chore/*   ← 개인 작업 브랜치
 | `cv` | VLM 위험 감지, `Worker`·`HazardEvent` 갱신 |
 | `nlp` | 자연어 파싱, `TaskOrder`, VLA 인터페이스 |
 | `ont` | 온톨로지 스키마, Action 서버, Guardrail, 감사 로그 |
-| `ctl` | ROS 2 제어, Isaac Sim, 상태 동기화 |
+| `ctl` | ROS 2 제어, MuJoCo, 상태 동기화 |
 | `backend` | FastAPI 서버 공통 코드 |
 | `sim` | MuJoCo 데모 등 시뮬레이션 실험 |
 
