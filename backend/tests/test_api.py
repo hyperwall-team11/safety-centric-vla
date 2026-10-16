@@ -44,7 +44,10 @@ class ApiTest(unittest.TestCase):
                 "task_id": task_id,
                 "robot_id": "robot-01",
                 "action_type": "MOVE_TO",
-                "parameters": {"destination": "A구역"},
+                "parameters": {
+                    "target_pose": {"type": "ZONE", "zone_id": "A구역"},
+                    "speed_limit": speed,
+                },
                 "trajectory": None,
                 "frame_id": "map",
                 "speed_limit": speed,
