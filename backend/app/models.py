@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 
 NonBlankString = Annotated[
@@ -227,19 +227,83 @@ class ProposalStatus(str, Enum):
     HELD = "HELD"
 
 
+class ManipulationType(str, Enum):
+    PICK = "PICK"
+    PLACE = "PLACE"
+
+
+class ActionPriority(str, Enum):
+    NORMAL = "NORMAL"
+    SAFETY = "SAFETY"
+
+
+class MoveToParameters(OntologyModel):
+    target_pose: TaskDestination
+    speed_limit: float = Field(gt=0)
+    priority: ActionPriority | None = None
+
+
+class ManipulateParameters(OntologyModel):
+    manipulation: ManipulationType
+    object_id: NonBlankString
+    target_pose: TaskDestination
+    priority: ActionPriority | None = None
+
+
+class StopParameters(OntologyModel):
+    priority: ActionPriority | None = None
+
+
+class ResumeParameters(OntologyModel):
+    task_id: NonBlankString
+    priority: ActionPriority | None = None
+
+
 class ActionProposal(OntologyModel):
     proposal_id: str = Field(default_factory=lambda: new_id("proposal"))
-    task_id: str
-    robot_id: str
+    task_id: NonBlankString
+    robot_id: NonBlankString
     action_type: ActionType
     parameters: dict[str, Any]
     trajectory: list[dict[str, Any]] | None
-    frame_id: str
+    frame_id: NonBlankString
     speed_limit: float = Field(gt=0)
-    model_name: str
-    model_version: str
+    model_name: NonBlankString
+    model_version: NonBlankString
     status: ProposalStatus = ProposalStatus.PROPOSED
     proposed_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def validate_action_parameters(self) -> ActionProposal:
+        action_type = ActionType(self.action_type)
+        parameter_models = {
+            ActionType.MOVE_TO: MoveToParameters,
+            ActionType.MANIPULATE: ManipulateParameters,
+            ActionType.STOP: StopParameters,
+            ActionType.RESUME: ResumeParameters,
+        }
+        validated = parameter_models[action_type].model_validate(self.parameters)
+        if (
+            validated.priority == ActionPriority.SAFETY
+            and action_type not in {ActionType.STOP, ActionType.RESUME}
+        ):
+            raise ValueError(
+                "SAFETY priority는 시스템이 발행하는 STOP 또는 RESUME에만 사용할 수 있습니다."
+            )
+        if (
+            action_type == ActionType.MOVE_TO
+            and validated.speed_limit != self.speed_limit
+        ):
+            raise ValueError(
+                "MOVE_TO parameters.speed_limit는 ActionProposal.speed_limit와 같아야 합니다."
+            )
+        self.parameters = validated.model_dump(mode="json", exclude_none=True)
+        return self
+
+
+class ProposalGenerationRequest(OntologyModel):
+    speed_limit: float | None = Field(default=None, gt=0)
+    manipulation: ManipulationType | None = None
 
 
 class RuleType(str, Enum):
