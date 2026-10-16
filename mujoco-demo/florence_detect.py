@@ -1,5 +1,6 @@
 """Run Florence-2 object detection on PNGs. Run inside a GPU allocation."""
 import argparse
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -47,7 +48,9 @@ def main():
         raw = processor.batch_decode(generated, skip_special_tokens=False)[0]
         parsed = processor.post_process_generation(raw, task=task, image_size=image.size)
         result = {
-            "image": str(path), "model": model_id, "task": task,
+            "image": str(path),
+            "image_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "model": model_id, "task": task,
             "detections": parsed, "raw_output": raw,
             "generation_ms": generation_ms,
             "peak_torch_allocated_mib": torch.cuda.max_memory_allocated() / 1024**2,
