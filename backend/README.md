@@ -20,6 +20,8 @@ python3 -m uvicorn app.main:app --reload
 
 Swagger UI: <http://127.0.0.1:8000/docs>
 
+현재 코드 기준 요청·응답, 상태 전이, 오류와 기준 문서 대비 차이는 [Backend API 명세 v0.2](../docs/backend-api-spec-v0.2.md)를 참고합니다.
+
 ## 테스트
 
 ```bash
