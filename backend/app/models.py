@@ -2,10 +2,20 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+
+
+NonBlankString = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1),
+]
+NaturalLanguageInstruction = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=1000),
+]
 
 
 def utc_now() -> datetime:
@@ -17,7 +27,11 @@ def new_id(prefix: str) -> str:
 
 
 class OntologyModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", use_enum_values=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        use_enum_values=True,
+        allow_inf_nan=False,
+    )
 
 
 class Vector3(OntologyModel):
@@ -161,20 +175,39 @@ class TaskStatus(str, Enum):
     FAILED = "FAILED"
 
 
+class CoordinateDestination(OntologyModel):
+    type: Literal["COORDINATE"] = "COORDINATE"
+    frame_id: NonBlankString
+    position: Vector3
+
+
+class ZoneDestination(OntologyModel):
+    type: Literal["ZONE"] = "ZONE"
+    zone_id: NonBlankString
+
+
+TaskDestination = Annotated[
+    CoordinateDestination | ZoneDestination,
+    Field(discriminator="type"),
+]
+
+
 class TaskOrder(OntologyModel):
     task_id: str = Field(default_factory=lambda: new_id("task"))
-    instruction: str = Field(min_length=1)
-    target_robot_id: str
-    target_object_id: str | None
-    destination: dict[str, Any]
+    instruction: NonBlankString
+    target_robot_id: NonBlankString
+    target_object_id: NonBlankString | None
+    destination: TaskDestination
     status: TaskStatus = TaskStatus.CREATED
     created_at: datetime = Field(default_factory=utc_now)
 
 
 class NaturalLanguageTaskRequest(OntologyModel):
-    instruction: str = Field(min_length=1, examples=["robot-01 로봇을 A구역으로 이동해"])
-    target_robot_id: str | None = None
-    frame_id: str = "map"
+    instruction: NaturalLanguageInstruction = Field(
+        examples=["robot-01 로봇을 A구역으로 이동해"],
+    )
+    target_robot_id: NonBlankString | None = None
+    frame_id: NonBlankString = "map"
 
 
 class ActionType(str, Enum):
