@@ -19,7 +19,7 @@ CUDA 지원 PyTorch, `transformers==4.49.0`, `timm`, `Pillow`가 있는 GPU 환�
 
 ```bash
 python florence_detect.py \
-  outputs/cctv_1_outside.png outputs/cctv_1_inside.png \
+  examples/cctv_1_outside.png examples/cctv_1_inside.png \
   --model microsoft/Florence-2-base \
   --output vlm_results
 ```
@@ -40,4 +40,6 @@ python florence_detect.py \
   --benchmark-seconds 60
 ```
 
-보고할 값은 `throughput_hz`, `p95_latency_ms`, `completed_iterations`, `gpu`입니다. `below_7hz_fallback_threshold`는 경량 탐지기 전환 검토 신호이며 자동 전환 기능은 아닙니다. 각 반복의 지연도 `latencies_ms`에 남습니다. 측정에는 전처리·GPU 전송·생성·후처리가 포함되지만 **카메라 캡처, 네트워크 전송, 모델 로드, 결과 파일 저장은 포함되지 않습니다.** 정지 이미지 순차 재생이므로 다중 카메라 처리율이나 위험 감지부터 E-Stop까지의 지연을 증명하지 않습니다. 실제 수치는 GPU에서 명령을 실행한 뒤 기록해야 합니다.
+보고할 값은 `throughput_hz`, `p95_latency_ms`, `completed_iterations`, `gpu`입니다. `below_7hz_fallback_threshold`는 경량 탐지기 전환 검토 신호이며 자동 전환 기능은 아닙니다. 각 반복의 지연도 `latencies_ms`에 남습니다. 측정에는 전처리·GPU 전송·생성·후처리가 포함되지만 **카메라 캡처, 네트워크 전송, 모델 로드, 결과 파일 저장은 포함되지 않습니다.** 정지 이미지 순차 재생이므로 다중 카메라 처리율이나 위험 감지부터 E-Stop까지의 지연을 증명하지 않습니다.
+
+2026-10-16 DIS01에서 수행한 첫 실측 결과는 [`benchmarks/2026-10-16-dis01.md`](benchmarks/2026-10-16-dis01.md)에 기록했습니다. 같은 조건에서 재측정하려면 위 명령의 이미지 경로를 `~/cctv_1_outside.png ~/cctv_1_inside.png`로, 출력 경로를 `~/vlm_results_cv03`으로 바꾸어 실행합니다.
