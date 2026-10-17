@@ -1,0 +1,30 @@
+@prefix s: <https://example.org/robot-safety#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+s: a owl:Ontology .
+s:Robot a owl:Class .
+s:Sensor a owl:Class .
+s:Zone a owl:Class .
+s:Worker a owl:Class .
+s:TaskOrder a owl:Class .
+s:ActionProposal a owl:Class .
+s:HazardEvent a owl:Class .
+s:SafetyRule a owl:Class .
+s:ExecutionLog a owl:Class .
+s:ASSIGNED_TO a owl:ObjectProperty ; rdfs:domain s:TaskOrder ; rdfs:range s:Robot .
+s:GENERATES a owl:ObjectProperty ; rdfs:domain s:TaskOrder ; rdfs:range s:ActionProposal .
+s:TARGETS a owl:ObjectProperty ; rdfs:domain s:ActionProposal ; rdfs:range s:Robot .
+s:COVERS a owl:ObjectProperty ; rdfs:domain s:Sensor ; rdfs:range s:Zone .
+s:OCCURRED_IN a owl:ObjectProperty ; rdfs:domain s:HazardEvent ; rdfs:range s:Zone .
+s:RELATED_TO a owl:ObjectProperty ; rdfs:domain s:HazardEvent ; rdfs:range s:Robot .
+# Local extension: evaluated footprint/path zones, not a change to v1 required fields.
+s:AFFECTS a owl:ObjectProperty ; rdfs:domain s:ActionProposal ; rdfs:range s:Zone .
+s:BLOCKED_BY a owl:ObjectProperty ; rdfs:domain s:ActionProposal ; rdfs:range s:HazardEvent .
+s:EVALUATED_BY a owl:ObjectProperty ; rdfs:domain s:ActionProposal ; rdfs:range s:SafetyRule .
+s:RECORDED_AS a owl:ObjectProperty ; rdfs:domain s:ActionProposal ; rdfs:range s:ExecutionLog .
+s:identifier a owl:DatatypeProperty .
+s:status a owl:DatatypeProperty .
+s:severity a owl:DatatypeProperty .
+
+# v0.2 backend compatibility: no related_robot_ids means global hazard.
+s:globalScope a owl:DatatypeProperty .
