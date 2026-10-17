@@ -25,8 +25,13 @@ sim = { cmd = "python mujoco/simulation.py" }
 sim-view = { cmd = "mjpython mujoco/simulation.py --view" }
 # STEP 5: ROS 2 /cmd_vel ↔ MuJoCo ↔ /odom
 bridge = { cmd = "bash -c 'source ros2_ws/install/setup.bash && ros2 run mujoco_bridge bridge'", depends-on = ["build"] }
-bridge-view = { cmd = "bash -c 'source ros2_ws/install/setup.bash && mjpython ros2_ws/install/mujoco_bridge/lib/mujoco_bridge/bridge --ros-args -p viewer:=true'", depends-on = ["build"] }
+# 뷰어 창과 카메라 3대 렌더가 같은 OpenGL 자원을 다퉈 둘 다 켜면 카메라가 약 5Hz로 떨어지므로 뷰어 모드는 카메라를 끈다
+bridge-view = { cmd = "bash -c 'source ros2_ws/install/setup.bash && mjpython ros2_ws/install/mujoco_bridge/lib/mujoco_bridge/bridge --ros-args -p viewer:=true -p cameras:=false'", depends-on = ["build"] }
 cmd-vel-demo = { cmd = "bash scripts/cmd_vel_demo.sh", depends-on = ["build"] }
+# CT-01 성능 측정 (기본 60초, 카메라 15Hz, 640x480): pixi run measure -- 60 15 640 480
+measure = { cmd = "bash scripts/measure_rates.sh", depends-on = ["build"] }
+# CT-02 카메라 3대 스냅샷 (작업자가 금지구역 안에 있는 시점) → outputs/snapshots/
+snapshot = { cmd = "python mujoco/scenario.py --snapshot outputs/snapshots" }
 # Mock 어댑터·안전 경로
 mock-adapter = { cmd = "bash -c 'source ros2_ws/install/setup.bash && ros2 run robot_adapter mock_adapter'", depends-on = ["build"] }
 roundtrip = { cmd = "bash scripts/roundtrip.sh", depends-on = ["build"] }
