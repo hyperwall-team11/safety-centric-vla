@@ -70,6 +70,12 @@ def list_robots() -> list[Robot]:
     return list(store.robots.values())
 
 
+@app.get("/task-orders", response_model=list[TaskOrder])
+def list_tasks() -> list[TaskOrder]:
+    with store.lock:
+        return list(store.tasks.values())
+
+
 @app.post(
     "/task-orders/from-natural-language",
     response_model=TaskOrder,

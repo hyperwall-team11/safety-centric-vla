@@ -76,6 +76,7 @@ curl -X POST http://127.0.0.1:8000/task-orders/{task_id}/action-proposals \
 
 - `POST /robots`
 - `GET /robots`
+- `GET /task-orders`
 - `POST /task-orders/from-natural-language`
 - `GET /task-orders/{task_id}`
 - `POST /task-orders/{task_id}/action-proposals`

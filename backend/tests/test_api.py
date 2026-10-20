@@ -65,6 +65,19 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(task["destination"]["position"]["y"], -2.0)
         self.assertEqual(task["status"], "CREATED")
 
+    def test_lists_task_orders_in_creation_order(self) -> None:
+        self.assertEqual(self.client.get("/task-orders").json(), [])
+        first = self.create_task("robot-01 로봇을 A구역으로 이동해")
+        second = self.create_task("robot-01 로봇을 B구역으로 이동해")
+
+        response = self.client.get("/task-orders")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            [task["task_id"] for task in response.json()],
+            [first["task_id"], second["task_id"]],
+        )
+
     def test_zone_and_object_are_extracted_without_neighboring_words(self) -> None:
         task = self.create_task("robot-01 로봇으로 상자 3을 B 작업대로 옮겨")
         self.assertEqual(task["destination"], {"type": "ZONE", "zone_id": "B작업대"})
