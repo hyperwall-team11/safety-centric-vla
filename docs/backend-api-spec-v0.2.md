@@ -115,6 +115,13 @@
 
 `GET /task-orders`는 현재 저장된 TaskOrder를 생성 순서대로 배열에 담아 반환하며, 저장된 작업이 없으면 빈 배열을 반환한다.
 
+| Query parameter | 타입 | 필수 | 동작 |
+|---|---|---:|---|
+| `status` | TaskStatus enum | X | `CREATED`, `PLANNING`, `RUNNING`, `HELD`, `COMPLETED`, `FAILED` 중 일치하는 작업만 반환 |
+| `target_robot_id` | string | X | 대상 로봇 ID가 정확히 일치하는 작업만 반환 |
+
+두 query parameter를 함께 보내면 두 조건을 모두 만족하는 작업만 반환한다. 알 수 없는 `status` 값은 `422`이다.
+
 목적지 예:
 
 ```json

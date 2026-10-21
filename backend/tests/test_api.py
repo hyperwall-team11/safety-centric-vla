@@ -78,6 +78,56 @@ class ApiTest(unittest.TestCase):
             [first["task_id"], second["task_id"]],
         )
 
+    def test_filters_task_orders_by_status_and_robot(self) -> None:
+        first = self.create_task("robot-01 로봇을 A구역으로 이동해")
+        self.assertEqual(
+            self.client.post(
+                "/robots",
+                json={**ROBOT, "robot_id": "robot-02"},
+            ).status_code,
+            201,
+        )
+        second_response = self.client.post(
+            "/task-orders/from-natural-language",
+            json={"instruction": "robot-02 로봇을 B구역으로 이동해"},
+        )
+        self.assertEqual(second_response.status_code, 201, second_response.text)
+        second = second_response.json()
+        self.assertEqual(
+            self.client.post(
+                f"/task-orders/{first['task_id']}/action-proposals",
+                json={},
+            ).status_code,
+            201,
+        )
+
+        planning = self.client.get("/task-orders", params={"status": "PLANNING"})
+        robot_02 = self.client.get(
+            "/task-orders",
+            params={"target_robot_id": "robot-02"},
+        )
+        combined = self.client.get(
+            "/task-orders",
+            params={"status": "CREATED", "target_robot_id": "robot-02"},
+        )
+
+        self.assertEqual(
+            [task["task_id"] for task in planning.json()],
+            [first["task_id"]],
+        )
+        self.assertEqual(
+            [task["task_id"] for task in robot_02.json()],
+            [second["task_id"]],
+        )
+        self.assertEqual(
+            [task["task_id"] for task in combined.json()],
+            [second["task_id"]],
+        )
+
+    def test_rejects_unknown_task_status_filter(self) -> None:
+        response = self.client.get("/task-orders", params={"status": "UNKNOWN"})
+        self.assertEqual(response.status_code, 422, response.text)
+
     def test_zone_and_object_are_extracted_without_neighboring_words(self) -> None:
         task = self.create_task("robot-01 로봇으로 상자 3을 B 작업대로 옮겨")
         self.assertEqual(task["destination"], {"type": "ZONE", "zone_id": "B작업대"})

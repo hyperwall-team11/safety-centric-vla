@@ -53,6 +53,8 @@ python3 -m unittest discover -s tests -v
 
 현재 자동 변환 범위는 로봇 이동과 물체 운반입니다. `STOP`, `RESUME`은 Action enum에는 존재하지만 목적지가 필수인 TaskOrder v1.1 계약상 아직 자동 변환하지 않고 `422`를 반환합니다.
 
+`GET /task-orders`는 생성된 작업을 생성 순서대로 조회합니다. `status`와 `target_robot_id` query parameter를 각각 또는 함께 지정해 필터링할 수 있습니다.
+
 ## ActionProposal 생성
 
 TaskOrder를 생성한 뒤 아래 API를 호출합니다.

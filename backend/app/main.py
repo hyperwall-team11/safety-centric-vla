@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import FastAPI, Header, HTTPException, Response, status
+from fastapi import FastAPI, Header, HTTPException, Query, Response, status
 
 from .action_planner import ActionPlanningError, RuleBasedActionPlanner
 from .models import (
@@ -71,9 +71,21 @@ def list_robots() -> list[Robot]:
 
 
 @app.get("/task-orders", response_model=list[TaskOrder])
-def list_tasks() -> list[TaskOrder]:
+def list_tasks(
+    task_status: Annotated[TaskStatus | None, Query(alias="status")] = None,
+    target_robot_id: Annotated[str | None, Query(min_length=1)] = None,
+) -> list[TaskOrder]:
     with store.lock:
-        return list(store.tasks.values())
+        tasks = list(store.tasks.values())
+        if task_status is not None:
+            tasks = [task for task in tasks if task.status == task_status]
+        if target_robot_id is not None:
+            tasks = [
+                task
+                for task in tasks
+                if task.target_robot_id == target_robot_id
+            ]
+        return tasks
 
 
 @app.post(
