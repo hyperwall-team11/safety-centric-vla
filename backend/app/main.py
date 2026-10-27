@@ -41,6 +41,16 @@ PLANNABLE_TASK_STATUSES = {
     TaskStatus.CREATED,
     TaskStatus.PLANNING,
 }
+TASK_ORDER_RESPONSE_HEADERS = {
+    "Location": {
+        "description": "생성되거나 재전송된 TaskOrder의 조회 경로",
+        "schema": {"type": "string"},
+    },
+    "Idempotency-Replayed": {
+        "description": "멱등성 키 요청의 기존 TaskOrder 재전송 여부",
+        "schema": {"type": "string", "enum": ["true", "false"]},
+    },
+}
 
 
 def normalize_idempotency_key(idempotency_key: str | None) -> str | None:
@@ -87,6 +97,12 @@ def list_robots() -> list[Robot]:
         status.HTTP_200_OK: {
             "description": "동일한 Idempotency-Key 요청의 기존 TaskOrder 재전송",
             "model": TaskOrder,
+            "headers": TASK_ORDER_RESPONSE_HEADERS,
+        },
+        status.HTTP_201_CREATED: {
+            "description": "새 TaskOrder 생성",
+            "model": TaskOrder,
+            "headers": TASK_ORDER_RESPONSE_HEADERS,
         },
         status.HTTP_409_CONFLICT: {
             "description": "동일한 멱등성 키의 요청 본문 충돌",
@@ -116,6 +132,8 @@ def create_task_from_natural_language(
                 existing = store.tasks.get(task_id)
                 if existing is not None:
                     response.status_code = status.HTTP_200_OK
+                    response.headers["Location"] = f"/task-orders/{existing.task_id}"
+                    response.headers["Idempotency-Replayed"] = "true"
                     return existing
 
         try:
@@ -128,6 +146,8 @@ def create_task_from_natural_language(
                 task.task_id,
                 request_fingerprint,
             )
+            response.headers["Idempotency-Replayed"] = "false"
+        response.headers["Location"] = f"/task-orders/{task.task_id}"
     return task
 
 
