@@ -28,6 +28,30 @@ python florence_detect.py \
 
 현재 탐지 출력은 픽셀 좌표의 `person` 바운딩 박스입니다. 월드 좌표, 신뢰도, `Observation` 및 `HazardEvent` 인터페이스로의 변환은 후속 작업입니다.
 
+## 민서님 MuJoCo 카메라 토픽 연결
+
+`ros_camera_detect.py`는 CTL 브리지의 `/cctv_1/image_raw`를 구독해 최신 RGB 프레임을 Florence-2 `<OD>`에 입력합니다. 결과는 프레임 시각·카메라 ID·작업자 바운딩 박스가 담긴 JSONL로 저장합니다. 모델 추론이 카메라보다 느리면 오래된 프레임을 쌓지 않고 최신 프레임으로 넘어갑니다.
+
+CTL 작업 브랜치 `feat/ctl-scene-bridge`에서 ROS 2 브리지를 실행합니다. 카메라 영상이 필요할 때는 뷰어가 아닌 `pixi run bridge`를 사용합니다.
+
+```bash
+cd control
+pixi run bridge
+```
+
+같은 ROS 2 네트워크의 다른 터미널에서, **ROS 2 Humble의 `rclpy`·`sensor_msgs`와 CUDA PyTorch·Transformers가 같은 Python 환경에 있는 상태**로 실행합니다. CTL의 pixi 환경과 기존 GPU용 `florence2` 가상환경은 별개이므로 설치·연결을 확인해야 합니다. GPU 서버에서 실행한다면 ROS 2 네트워크 설정과 토픽 접근도 필요합니다.
+
+```bash
+cd mujoco-demo
+python ros_camera_detect.py \
+  --topic /cctv_1/image_raw \
+  --model /path/to/florence-2-base \
+  --output vlm_results/ros_camera.jsonl \
+  --max-frames 30
+```
+
+다른 영상 토픽은 `/cctv_2/image_raw`, `/robot/head_camera/image_raw`입니다. 각 카메라의 `.../camera_info`와 TF, 정답 비교용 `/sim/worker_pose`·`/sim/worker_in_keep_out`도 CTL 브리지가 발행합니다. 이 노드는 우선 한 카메라의 탐지 기록만 만듭니다. Florence-2 `<OD>`가 신뢰도 점수를 내지 않으면 `pending_confidence=true`로 표시하며, 안전 판정용 `Observation`·`HazardEvent`를 발행하지 않습니다. ROS 2 카메라 입력부터 모델 출력까지의 실제 동작·처리율은 아직 측정하지 않았습니다.
+
 ## 연속 추론 속도 측정 (CV-03)
 
 GPU 할당을 받은 터미널에서 아래처럼 실행하면 모델 로드와 워밍업 3회를 제외하고 두 정지 이미지를 순서대로 **60초 이상 반복 추론**합니다. 출력은 `vlm_results/benchmark.json`에 저장됩니다.
