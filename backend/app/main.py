@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from hashlib import sha256
 from typing import Annotated
 
 from fastapi import FastAPI, Header, HTTPException, Response, status
+from pydantic import BaseModel
 
 from .action_planner import ActionPlanningError, RuleBasedActionPlanner
 from .models import (
@@ -62,6 +64,11 @@ def normalize_idempotency_key(idempotency_key: str | None) -> str | None:
     return normalized_key
 
 
+def make_request_fingerprint(request: BaseModel) -> str:
+    canonical_request = request.model_dump_json(exclude_none=False)
+    return sha256(canonical_request.encode("utf-8")).hexdigest()
+
+
 def seed_rules() -> None:
     if not store.rules:
         store.rules.update({rule.rule_id: rule for rule in default_rules()})
@@ -118,7 +125,7 @@ def create_task_from_natural_language(
     ] = None,
 ) -> TaskOrder:
     normalized_key = normalize_idempotency_key(idempotency_key)
-    request_fingerprint = request.model_dump_json(exclude_none=False)
+    request_fingerprint = make_request_fingerprint(request)
     with store.lock:
         if normalized_key is not None:
             replay = store.task_idempotency.get(normalized_key)
@@ -183,7 +190,7 @@ def generate_action_proposal(
     ] = None,
 ) -> ActionProposal:
     normalized_key = normalize_idempotency_key(idempotency_key)
-    request_fingerprint = request.model_dump_json(exclude_none=False)
+    request_fingerprint = make_request_fingerprint(request)
     with store.lock:
         task = store.tasks.get(task_id)
         if task is None:

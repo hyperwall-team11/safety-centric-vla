@@ -39,7 +39,14 @@ class TaskOrderIdempotencyTest(unittest.TestCase):
 
     def test_replay_returns_existing_task_without_duplicate(self) -> None:
         first = self.create_task("robot-01 로봇을 A구역으로 이동해", " task-request-1 ")
-        replay = self.create_task("robot-01 로봇을 A구역으로 이동해", "task-request-1")
+        replay = self.client.post(
+            "/task-orders/from-natural-language",
+            json={
+                "instruction": "robot-01 로봇을 A구역으로 이동해",
+                "frame_id": "map",
+            },
+            headers={"Idempotency-Key": "task-request-1"},
+        )
 
         self.assertEqual(first.status_code, 201, first.text)
         self.assertEqual(replay.status_code, 200, replay.text)
@@ -51,6 +58,17 @@ class TaskOrderIdempotencyTest(unittest.TestCase):
             f"/task-orders/{first.json()['task_id']}",
         )
         self.assertEqual(len(store.tasks), 1)
+
+    def test_stores_canonical_hash_instead_of_raw_instruction(self) -> None:
+        instruction = "robot-01 로봇을 A구역으로 이동해"
+        response = self.create_task(instruction, "task-request-1")
+
+        self.assertEqual(response.status_code, 201, response.text)
+        task_id, fingerprint = store.task_idempotency["task-request-1"]
+        self.assertEqual(task_id, response.json()["task_id"])
+        self.assertEqual(len(fingerprint), 64)
+        self.assertTrue(all(character in "0123456789abcdef" for character in fingerprint))
+        self.assertNotIn(instruction, fingerprint)
 
     def test_openapi_documents_idempotency_response_headers(self) -> None:
         responses = app.openapi()["paths"]["/task-orders/from-natural-language"]["post"][

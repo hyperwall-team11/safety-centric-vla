@@ -143,6 +143,8 @@
 
 파싱에 실패한 요청은 멱등성 키를 점유하지 않으므로, 같은 키로 수정된 요청을 다시 보낼 수 있다. 같은 키의 동시 요청은 저장소 lock 안에서 직렬화되어 TaskOrder를 정확히 한 번만 생성한다. 서로 다른 키는 본문이 같아도 별도 작업을 생성한다.
 
+요청 비교에는 Pydantic 모델의 기본값을 포함한 정규 JSON의 SHA-256 fingerprint를 사용한다. 따라서 `frame_id` 같은 기본값을 생략하거나 같은 값으로 명시한 요청은 동일하게 처리되며, 멱등성 mapping에는 자연어 요청 원문을 별도로 복제하지 않는다. 같은 fingerprint 방식은 ActionProposal 생성 재시도에도 적용한다.
+
 ### 3.3 TaskOrder 기반 ActionProposal 생성
 
 `POST /task-orders/{task_id}/action-proposals`
