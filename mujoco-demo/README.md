@@ -48,23 +48,30 @@ python observation_export.py \
 
 `ros_camera_detect.py`는 CTL 브리지의 `/cctv_1/image_raw`를 구독해 최신 RGB 프레임을 Florence-2 `<OD>`에 입력합니다. 결과는 프레임 시각·카메라 ID·작업자 바운딩 박스가 담긴 JSONL로 저장합니다. 모델 추론이 카메라보다 느리면 오래된 프레임을 쌓지 않고 최신 프레임으로 넘어갑니다.
 
-CTL 작업 브랜치 `feat/ctl-scene-bridge`에서 ROS 2 브리지를 실행합니다. 카메라 영상이 필요할 때는 뷰어가 아닌 `pixi run bridge`를 사용합니다.
+CTL 작업 브랜치 `feat/ctl-scene-bridge`의 체크아웃에서 ROS 2 브리지를 실행합니다. **현재 CV 브랜치에는 `control/` 폴더가 없으므로 CTL과 CV를 서로 다른 체크아웃에서 실행합니다.** 카메라 영상이 필요할 때는 뷰어가 아닌 `pixi run bridge`를 사용합니다.
 
 ```bash
 cd control
 pixi run bridge
 ```
 
-같은 ROS 2 네트워크의 다른 터미널에서, **ROS 2 Humble의 `rclpy`·`sensor_msgs`와 CUDA PyTorch·Transformers가 같은 Python 환경에 있는 상태**로 실행합니다. CTL의 pixi 환경과 기존 GPU용 `florence2` 가상환경은 별개이므로 설치·연결을 확인해야 합니다. GPU 서버에서 실행한다면 ROS 2 네트워크 설정과 토픽 접근도 필요합니다.
+같은 ROS 2 네트워크의 다른 터미널에서, **ROS 2 Humble의 `rclpy`·`sensor_msgs`와 CUDA PyTorch·Transformers가 같은 Python 환경에 있는 상태**로 실행합니다. CTL의 RoboStack 환경은 Python 3.12이고 기존 Florence 서버 기록은 Python 3.13이므로, 두 환경을 그대로 함께 source하면 호환된다고 가정할 수 없습니다. GPU 서버에서 사용할 공통 Python·ROS 환경과 토픽 접근을 먼저 확인합니다.
 
 ```bash
 cd mujoco-demo
+python check_camera_env.py
 python ros_camera_detect.py \
   --topic /cctv_1/image_raw \
   --model /path/to/florence-2-base \
   --output vlm_results/ros_camera.jsonl \
   --max-frames 30
 ```
+
+환경 점검은 모듈 import와 CUDA만 확인합니다. 별도로 `ros2 topic info /cctv_1/image_raw -v`와 `ros2 topic hz /cctv_1/image_raw`로 메시지 타입·발행자·주기를 확인하세요. Mac 브리지는 `ROS_LOCALHOST_ONLY=1`이므로 학교 GPU 서버로의 전송은 [#16](https://github.com/hyperwall-team11/safety-centric-vla/issues/16)에서 실행 위치·연결 방식을 확정해야 합니다.
+
+수신과 추론은 별도 callback group 및 두 executor 스레드에서 실행합니다. 최신 프레임 하나만 보관하며 수신 후 로컬 대기가 500ms를 넘으면 버립니다. 15초 동안 입력이 없으면 요약을 쓰고 종료 코드 2로 끝납니다. 이 기준은 `--max-frame-age-ms`, `--idle-timeout-seconds`로 바꿀 수 있습니다.
+
+30프레임 확인 후 `--max-frames 30` 대신 `--duration-seconds 60`으로 실행하면 첫 수신부터 최소 60초 구간을 확인할 수 있습니다. 결과 JSONL과 함께 `ros_camera.summary.json` 같은 요약 파일에 처리 건수, 로컬 처리율, 처리 지연 p95, 대기 지연 p95, 교체·폐기 건수가 기록됩니다. `received_callbacks`는 Python 콜백에 도착한 건수여서 DDS에서 이미 버린 프레임까지 세지는 못합니다. 원래 ROS 시각은 `stamp`에, 수신 UTC는 `received_at_utc`에 별도 기록합니다. 두 시계가 같다고 가정하지 않으며 로컬 대기 시간은 네트워크·촬영부터의 전체 지연이 아닙니다.
 
 다른 영상 토픽은 `/cctv_2/image_raw`, `/robot/head_camera/image_raw`입니다. 각 카메라의 `.../camera_info`와 TF, 정답 비교용 `/sim/worker_pose`·`/sim/worker_in_keep_out`도 CTL 브리지가 발행합니다. 이 노드는 우선 한 카메라의 탐지 기록만 만듭니다. Florence-2 `<OD>`가 신뢰도 점수를 내지 않으면 `pending_confidence=true`로 표시하며, 안전 판정용 `Observation`·`HazardEvent`를 발행하지 않습니다. ROS 2 카메라 입력부터 모델 출력까지의 실제 동작·처리율은 아직 측정하지 않았습니다.
 
