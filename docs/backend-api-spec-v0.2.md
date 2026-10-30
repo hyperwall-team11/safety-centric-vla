@@ -30,13 +30,14 @@
 
 ## 2. 구현 엔드포인트
 
-현재 구현은 12개 path, 14개 HTTP operation으로 구성된다.
+현재 구현은 13개 path, 15개 HTTP operation으로 구성된다.
 
 | Method | Path | 성공 | 용도 |
 |---|---|---:|---|
 | `GET` | `/health` | `200` | 서버 상태 확인 |
 | `POST` | `/robots` | `201` | Robot 등록 |
 | `GET` | `/robots` | `200` | Robot 전체 조회 |
+| `GET` | `/task-orders` | `200` | TaskOrder 전체 조회 |
 | `POST` | `/task-orders/from-natural-language` | `201` | 자연어를 TaskOrder로 변환·저장 |
 | `GET` | `/task-orders/{task_id}` | `200` | TaskOrder 단건 조회 |
 | `POST` | `/task-orders/{task_id}/action-proposals` | `201`, `200` | TaskOrder에서 ActionProposal 생성 |
@@ -111,6 +112,18 @@
 | `destination` | union | `ZONE` 또는 `COORDINATE` |
 | `status` | enum | 생성 시 `CREATED` |
 | `created_at` | datetime | 서버 생성 |
+
+`GET /task-orders`는 현재 저장된 TaskOrder를 생성 순서대로 배열에 담아 반환하며, 저장된 작업이 없으면 빈 배열을 반환한다.
+
+| Query parameter | 타입 | 필수 | 동작 |
+|---|---|---:|---|
+| `status` | TaskStatus enum | X | `CREATED`, `PLANNING`, `RUNNING`, `HELD`, `COMPLETED`, `FAILED` 중 일치하는 작업만 반환 |
+| `target_robot_id` | string | X | 대상 로봇 ID가 정확히 일치하는 작업만 반환 |
+| `order` | enum | X | 생성 순서 `asc` 또는 역순 `desc`, 기본 `asc` |
+| `offset` | integer | X | 건너뛸 작업 수. 0 이상, 기본 `0` |
+| `limit` | integer | X | 반환할 최대 작업 수. 1~100, 기본 `50` |
+
+필터를 함께 보내면 모든 조건을 만족하는 작업을 정렬한 뒤 페이지네이션을 적용한다. 응답의 `X-Total-Count` 헤더는 필터 적용 후 페이지네이션 전 전체 건수를 나타낸다. 알 수 없는 `status`·`order`, 음수 `offset`, 범위를 벗어난 `limit`은 `422`이다.
 
 목적지 예:
 
@@ -287,4 +300,4 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q app tests
 ```
 
-OpenAPI 경로 수는 12개, operation 수는 14개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.
+OpenAPI 경로 수는 13개, operation 수는 15개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.

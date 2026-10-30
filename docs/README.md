@@ -16,7 +16,7 @@
 
 | 문서 | 버전 | 내용 |
 |---|---|---|
-| [backend-api-spec-v0.2.md](backend-api-spec-v0.2.md) | v0.2 (As-Built) | 현재 FastAPI 12개 path·14개 operation의 요청·응답·상태 전이·오류와 목표 인터페이스 대비 미구현 범위 |
+| [backend-api-spec-v0.2.md](backend-api-spec-v0.2.md) | v0.2 (As-Built) | 현재 FastAPI 13개 path·15개 operation의 요청·응답·상태 전이·오류와 목표 인터페이스 대비 미구현 범위 |
 
 기준 문서의 `/api/v1/...` 표는 목표 인터페이스이며, 현재 호출 가능한 경로는 구현 명세와 FastAPI `/openapi.json`을 기준으로 합니다.
 

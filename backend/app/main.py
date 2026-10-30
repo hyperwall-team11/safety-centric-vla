@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import FastAPI, Header, HTTPException, Response, status
+from fastapi import FastAPI, Header, HTTPException, Query, Response, status
 
 from .action_planner import ActionPlanningError, RuleBasedActionPlanner
 from .models import (
@@ -41,6 +41,12 @@ PLANNABLE_TASK_STATUSES = {
     TaskStatus.CREATED,
     TaskStatus.PLANNING,
 }
+TASK_LIST_RESPONSE_HEADERS = {
+    "X-Total-Count": {
+        "description": "필터 적용 후 페이지네이션 전 전체 TaskOrder 수",
+        "schema": {"type": "integer", "minimum": 0},
+    },
+}
 
 
 def seed_rules() -> None:
@@ -68,6 +74,40 @@ def create_robot(robot: Robot) -> Robot:
 @app.get("/robots", response_model=list[Robot])
 def list_robots() -> list[Robot]:
     return list(store.robots.values())
+
+
+@app.get(
+    "/task-orders",
+    response_model=list[TaskOrder],
+    responses={
+        status.HTTP_200_OK: {
+            "description": "필터 및 페이지네이션된 TaskOrder 목록",
+            "headers": TASK_LIST_RESPONSE_HEADERS,
+        },
+    },
+)
+def list_tasks(
+    response: Response,
+    task_status: Annotated[TaskStatus | None, Query(alias="status")] = None,
+    target_robot_id: Annotated[str | None, Query(min_length=1)] = None,
+    order: Annotated[Literal["asc", "desc"], Query()] = "asc",
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> list[TaskOrder]:
+    with store.lock:
+        tasks = list(store.tasks.values())
+        if task_status is not None:
+            tasks = [task for task in tasks if task.status == task_status]
+        if target_robot_id is not None:
+            tasks = [
+                task
+                for task in tasks
+                if task.target_robot_id == target_robot_id
+            ]
+        response.headers["X-Total-Count"] = str(len(tasks))
+        if order == "desc":
+            tasks.reverse()
+        return tasks[offset : offset + limit]
 
 
 @app.post(
