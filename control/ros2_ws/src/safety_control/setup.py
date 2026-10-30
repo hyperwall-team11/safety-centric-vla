@@ -19,6 +19,7 @@ setup(
         "console_scripts": [
             "test_harness = safety_control.test_harness:main",
             "stop_test = safety_control.stop_test:main",
+            "scenario_a_test = safety_control.scenario_a_test:main",
         ],
     },
 )

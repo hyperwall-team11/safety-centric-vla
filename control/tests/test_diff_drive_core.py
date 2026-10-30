@@ -138,3 +138,69 @@ def test_state_reports_yaw(setup):
     state = core.state(T0)
     assert state["control_adapter"] == "mujoco_diff_drive"
     assert state["pose"]["orientation"][2] == pytest.approx(math.sin(math.pi / 4))
+
+
+# ---- MANIPULATE ----
+def manipulate(kind="PICK", pid="m1", **extra):
+    params = {"manipulation": kind, "object_id": "box-01", **extra}
+    return proposal("MANIPULATE", pid=pid, **params)
+
+
+def test_manipulate_forwards_to_arm_and_reports_result(setup):
+    core, _ = setup
+    events = core.handle_action(manipulate(approach_yaw=1.57), T0)
+    assert [e["kind"] for e in events] == ["ACK", "STATUS"] and core.status == "MOVING"
+    assert core.arm_outbox == [{"command_id": "m1", "manipulation": "PICK", "object_id": "box-01",
+                                "target_pose": None, "approach_yaw": 1.57}]
+    assert core.tick(T0 + DT, DT) == [] and core.command == (0.0, 0.0)  # 베이스는 브리지가 움직임
+    done = core.handle_arm_result({"command_id": "m1", "success": True, "reason_code": None,
+                                   "message": "집기 완료"}, T0 + 10)
+    assert done[-1]["success"] and core.status == "IDLE" and core.mode is None
+
+
+def test_manipulate_failure_reason_is_passed_through(setup):
+    core, _ = setup
+    core.handle_action(manipulate(), T0)
+    done = core.handle_arm_result({"command_id": "m1", "success": False, "reason_code": "HW_ERROR",
+                                   "message": "물체를 들지 못함"}, T0 + 5)
+    assert done[-1]["reason_code"] == "HW_ERROR" and not done[-1]["success"]
+
+
+def test_estop_during_manipulate_sends_cancel(setup):
+    core, _ = setup
+    core.handle_action(manipulate(), T0)
+    core.arm_outbox.clear()
+    events = core.handle_estop({"active": True, "triggered_by": "OPERATOR", "issued_at": utc_iso(T0)}, T0 + 1)
+    assert core.status == "ESTOP" and events[0]["reason_code"] == "ESTOP"
+    assert core.arm_outbox == [{"command_id": "m1", "manipulation": "CANCEL"}]
+    # 브리지가 돌려보내는 CANCELLED 결과는 이미 보고했으므로 무시
+    assert core.handle_arm_result({"command_id": "m1", "success": False, "reason_code": "CANCELLED"}, T0 + 1.1) == []
+
+
+def test_heartbeat_loss_during_manipulate_cancels(setup):
+    core, robot = setup
+    core.handle_action(manipulate(), T0)
+    core.arm_outbox.clear()
+    run(core, robot, T0, 1.5, heartbeat=False)
+    assert core.status == "HOLD" and core.arm_outbox[-1]["manipulation"] == "CANCEL"
+
+
+def test_unknown_manipulation_is_unsupported(setup):
+    core, _ = setup
+    events = core.handle_action(manipulate(kind="POUR"), T0)
+    assert events[-1]["reason_code"] == "UNSUPPORTED" and core.status == "IDLE" and core.arm_outbox == []
+
+
+def test_place_requires_target_position(setup):
+    core, _ = setup
+    events = core.handle_action(manipulate(kind="PLACE"), T0)
+    assert events[-1]["reason_code"] == "INVALID"
+    events = core.handle_action(manipulate(kind="PLACE", pid="m2", target_pose={"position": [1.2, -0.82, 0.64]}), T0)
+    assert core.status == "MOVING" and core.arm_outbox[-1]["target_pose"]["position"] == [1.2, -0.82, 0.64]
+
+
+def test_result_of_other_command_is_ignored(setup):
+    core, _ = setup
+    core.handle_action(manipulate(), T0)
+    assert core.handle_arm_result({"command_id": "other", "success": True}, T0 + 1) == []
+    assert core.status == "MOVING"
