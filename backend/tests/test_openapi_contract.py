@@ -35,7 +35,7 @@ class OpenApiContractTest(unittest.TestCase):
         list_operation = schema["paths"]["/task-orders"]["get"]
         self.assertEqual(
             {parameter["name"] for parameter in list_operation["parameters"]},
-            {"status", "target_robot_id", "offset", "limit"},
+            {"status", "target_robot_id", "order", "offset", "limit"},
         )
         self.assertIn(
             "X-Total-Count",

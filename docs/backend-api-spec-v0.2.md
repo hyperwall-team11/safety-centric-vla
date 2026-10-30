@@ -119,10 +119,11 @@
 |---|---|---:|---|
 | `status` | TaskStatus enum | X | `CREATED`, `PLANNING`, `RUNNING`, `HELD`, `COMPLETED`, `FAILED` 중 일치하는 작업만 반환 |
 | `target_robot_id` | string | X | 대상 로봇 ID가 정확히 일치하는 작업만 반환 |
+| `order` | enum | X | 생성 순서 `asc` 또는 역순 `desc`, 기본 `asc` |
 | `offset` | integer | X | 건너뛸 작업 수. 0 이상, 기본 `0` |
 | `limit` | integer | X | 반환할 최대 작업 수. 1~100, 기본 `50` |
 
-필터를 함께 보내면 모든 조건을 만족하는 작업에 페이지네이션을 적용한다. 응답의 `X-Total-Count` 헤더는 필터 적용 후 페이지네이션 전 전체 건수를 나타낸다. 알 수 없는 `status`, 음수 `offset`, 범위를 벗어난 `limit`은 `422`이다.
+필터를 함께 보내면 모든 조건을 만족하는 작업을 정렬한 뒤 페이지네이션을 적용한다. 응답의 `X-Total-Count` 헤더는 필터 적용 후 페이지네이션 전 전체 건수를 나타낸다. 알 수 없는 `status`·`order`, 음수 `offset`, 범위를 벗어난 `limit`은 `422`이다.
 
 목적지 예:
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import FastAPI, Header, HTTPException, Query, Response, status
 
@@ -90,6 +90,7 @@ def list_tasks(
     response: Response,
     task_status: Annotated[TaskStatus | None, Query(alias="status")] = None,
     target_robot_id: Annotated[str | None, Query(min_length=1)] = None,
+    order: Annotated[Literal["asc", "desc"], Query()] = "asc",
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> list[TaskOrder]:
@@ -104,6 +105,8 @@ def list_tasks(
                 if task.target_robot_id == target_robot_id
             ]
         response.headers["X-Total-Count"] = str(len(tasks))
+        if order == "desc":
+            tasks.reverse()
         return tasks[offset : offset + limit]
 
 

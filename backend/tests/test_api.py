@@ -159,6 +159,28 @@ class ApiTest(unittest.TestCase):
                 response = self.client.get("/task-orders", params=params)
                 self.assertEqual(response.status_code, 422, response.text)
 
+    def test_orders_task_orders_before_pagination(self) -> None:
+        tasks = [
+            self.create_task(f"robot-01 로봇을 {zone}구역으로 이동해")
+            for zone in ("A", "B", "C")
+        ]
+
+        descending = self.client.get(
+            "/task-orders",
+            params={"order": "desc", "limit": 2},
+        )
+
+        self.assertEqual(descending.status_code, 200, descending.text)
+        self.assertEqual(
+            [task["task_id"] for task in descending.json()],
+            [tasks[2]["task_id"], tasks[1]["task_id"]],
+        )
+        self.assertEqual(descending.headers["X-Total-Count"], "3")
+
+    def test_rejects_unknown_task_order_sort_value(self) -> None:
+        response = self.client.get("/task-orders", params={"order": "newest"})
+        self.assertEqual(response.status_code, 422, response.text)
+
     def test_zone_and_object_are_extracted_without_neighboring_words(self) -> None:
         task = self.create_task("robot-01 로봇으로 상자 3을 B 작업대로 옮겨")
         self.assertEqual(task["destination"], {"type": "ZONE", "zone_id": "B작업대"})
