@@ -17,12 +17,18 @@ from .models import (
     Robot,
     SafetyRule,
     TaskOrder,
+    TaskOrderPreview,
+    TaskOrderPreviewBatchItem,
+    TaskOrderPreviewBatchRequest,
+    TaskOrderPreviewBatchResponse,
+    TaskParseErrorDetail,
+    TaskParseErrorResponse,
     TaskStatus,
     utc_now,
 )
 from .safety import default_rules, evaluate_proposal
 from .store import store
-from .task_parser import TaskParseError, parse_task_order
+from .task_parser import TaskParseError, parse_task_order, parse_task_order_preview
 
 
 app = FastAPI(
@@ -68,6 +74,72 @@ def create_robot(robot: Robot) -> Robot:
 @app.get("/robots", response_model=list[Robot])
 def list_robots() -> list[Robot]:
     return list(store.robots.values())
+
+
+@app.post(
+    "/task-orders/preview",
+    response_model=TaskOrderPreview,
+    responses={
+        status.HTTP_422_UNPROCESSABLE_CONTENT: {
+            "description": "요청 검증 또는 자연어 작업 해석 실패",
+            "model": TaskParseErrorResponse,
+        },
+    },
+)
+def preview_task_from_natural_language(
+    request: NaturalLanguageTaskRequest,
+) -> TaskOrderPreview:
+    with store.lock:
+        known_robot_ids = list(store.robots)
+    try:
+        return parse_task_order_preview(request, known_robot_ids)
+    except TaskParseError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": exc.code.value, "message": str(exc)},
+        ) from exc
+
+
+@app.post(
+    "/task-orders/preview/batch",
+    response_model=TaskOrderPreviewBatchResponse,
+)
+def preview_tasks_from_natural_language(
+    request: TaskOrderPreviewBatchRequest,
+) -> TaskOrderPreviewBatchResponse:
+    with store.lock:
+        known_robot_ids = list(store.robots)
+
+    results: list[TaskOrderPreviewBatchItem] = []
+    for index, item in enumerate(request.items):
+        try:
+            preview = parse_task_order_preview(item, known_robot_ids)
+            results.append(
+                TaskOrderPreviewBatchItem(
+                    index=index,
+                    valid=True,
+                    preview=preview,
+                )
+            )
+        except TaskParseError as exc:
+            results.append(
+                TaskOrderPreviewBatchItem(
+                    index=index,
+                    valid=False,
+                    error=TaskParseErrorDetail(
+                        code=exc.code.value,
+                        message=str(exc),
+                    ),
+                )
+            )
+
+    valid_count = sum(result.valid for result in results)
+    return TaskOrderPreviewBatchResponse(
+        total=len(results),
+        valid_count=valid_count,
+        invalid_count=len(results) - valid_count,
+        results=results,
+    )
 
 
 @app.post(
