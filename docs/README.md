@@ -26,6 +26,7 @@
 |---|---|
 | [멘토링_진행공유_2026-10-09.md](멘토링_진행공유_2026-10-09.md) | MuJoCo 가상 CCTV 이미지로 Florence-2 작업자 탐지 확인 |
 | [cv-review-2026-10-30.md](cv-review-2026-10-30.md) | Observation 변환 CPU 검증과 실제 영상 연동의 미완료 범위 |
+| [cv-integration-checklist.md](cv-integration-checklist.md) | CV PR 순서, 실제 영상 실행 절차, 파트별 통합 과제 |
 
 ## 변경 절차
 
