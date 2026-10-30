@@ -43,3 +43,12 @@ python observation_export.py \
 변환기는 `person`을 `WORKER`로 매핑하고 상자의 아래쪽 중앙 픽셀에서 바닥 평면(`z=0`)으로 광선을 투영해 `world` 좌표를 추정합니다. 발이 가려졌거나 상자가 부정확하면 위치 오차가 생길 수 있습니다. 출력의 `observation_details`에는 상자 `[x, y, w, h]`와 계산 방식을 보관합니다. `ground_truth_*`는 위치 계산에 사용하지 않습니다.
 
 현재 Florence-2 `<OD>` 출력에는 신뢰도 점수가 없습니다. 따라서 실제 출력은 `pending_confidence`에 보류되고, 필수 `confidence`가 없는 값을 완전한 `Observation`이나 안전 판단 입력으로 사용하지 않습니다. 향후 **검증된 탐지기**가 `<OD>` 결과에 상자별 `scores` 배열을 제공하면 `observations`에 스키마 v1.1의 필수 필드를 갖춘 레코드가 나옵니다. 임의의 점수나 고정값을 넣지 마세요. 현재 백엔드 `Observation` 모델은 v1.1의 선택 필드(`bbox`, `position_source`, `ingested_at`)를 받지 않고 등록 API도 없으므로, 서버 연결은 ONT 담당과 인터페이스를 정한 뒤 진행합니다.
+
+## CPU 검증
+
+```bash
+# 저장소 루트에서 실행. 모델과 GPU를 내려받지 않습니다.
+python3 -m unittest discover -s mujoco-demo/tests -v
+```
+
+검증 범위는 알려진 카메라 위치·회전에서의 바닥 투영, 이미지 해시 불일치 거부, 시간대 검사, 신뢰도 없는 탐지 보류 및 잘못된 신뢰도 거부입니다. 테스트의 점수는 출력 계약을 확인하는 인공 값이며 실제 탐지 신뢰도나 재현율의 근거가 아닙니다. MuJoCo 캡처와 CPU 검증 기록은 [2026-10-30 검토](../docs/cv-review-2026-10-30.md)를 참고하세요.
