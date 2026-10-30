@@ -1,6 +1,7 @@
 """바퀴 두 개 모바일 로봇(차동 구동) MuJoCo 시뮬레이션.
 
-    python simulation.py                  # TIAGo 전진·회전·정지 시험 (화면 없음)
+    python simulation.py                  # 시나리오 장면의 TIAGo 전진·회전·정지 시험 (화면 없음)
+    python simulation.py --robot tiago    # TIAGo만 있는 장면
     python simulation.py --robot simple   # 단순 시험용 바퀴 로봇
     mjpython simulation.py --view         # 뷰어로 보기 (macOS는 mjpython 필요)
 
@@ -33,6 +34,9 @@ class RobotSpec:
 
 
 ROBOTS = {
+    # 시나리오 장면: TIAGo + 금지구역 + A·B 작업대와 상자 + CCTV 2대 + 머리 카메라 + 작업자 (scenario.py 참고)
+    "scenario": RobotSpec(MODELS / "scenario_scene.xml", "reference", "wheel_left_joint_vel", "wheel_right_joint_vel",
+                          "wheel_left_link", "wheel_right_link", wheel_radius=0.0985, keyframe="home"),
     # PAL TIAGo: 바퀴 + 7축 팔 + 그리퍼 (MuJoCo Menagerie). 바퀴 반지름은 원본 URDF 값.
     "tiago": RobotSpec(MODELS / "tiago_scene.xml", "reference", "wheel_left_joint_vel", "wheel_right_joint_vel",
                        "wheel_left_link", "wheel_right_link", wheel_radius=0.0985, keyframe="home"),
@@ -40,7 +44,7 @@ ROBOTS = {
     "simple": RobotSpec(MODELS / "diff_drive.xml", "base_joint", "left_wheel_motor", "right_wheel_motor",
                         "left_wheel", "right_wheel", wheel_radius=0.05),
 }
-DEFAULT_ROBOT = "tiago"
+DEFAULT_ROBOT = "scenario"
 
 
 class DiffDriveSim:

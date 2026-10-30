@@ -19,6 +19,7 @@ setup(
         "console_scripts": [
             "bridge = mujoco_bridge.bridge_node:main",
             "odom_echo = mujoco_bridge.odom_echo:main",
+            "rate_monitor = mujoco_bridge.rate_monitor:main",
         ],
     },
 )
