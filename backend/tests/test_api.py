@@ -123,10 +123,41 @@ class ApiTest(unittest.TestCase):
             [task["task_id"] for task in combined.json()],
             [second["task_id"]],
         )
+        self.assertEqual(combined.headers["X-Total-Count"], "1")
 
     def test_rejects_unknown_task_status_filter(self) -> None:
         response = self.client.get("/task-orders", params={"status": "UNKNOWN"})
         self.assertEqual(response.status_code, 422, response.text)
+
+    def test_paginates_task_orders_and_reports_filtered_total(self) -> None:
+        tasks = [
+            self.create_task(f"robot-01 로봇을 {zone}구역으로 이동해")
+            for zone in ("A", "B", "C")
+        ]
+
+        page = self.client.get(
+            "/task-orders",
+            params={"offset": 1, "limit": 1},
+        )
+        beyond_last_page = self.client.get(
+            "/task-orders",
+            params={"offset": 10, "limit": 1},
+        )
+
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertEqual(page.headers["X-Total-Count"], "3")
+        self.assertEqual(
+            [task["task_id"] for task in page.json()],
+            [tasks[1]["task_id"]],
+        )
+        self.assertEqual(beyond_last_page.json(), [])
+        self.assertEqual(beyond_last_page.headers["X-Total-Count"], "3")
+
+    def test_rejects_invalid_task_order_pagination(self) -> None:
+        for params in ({"offset": -1}, {"limit": 0}, {"limit": 101}):
+            with self.subTest(params=params):
+                response = self.client.get("/task-orders", params=params)
+                self.assertEqual(response.status_code, 422, response.text)
 
     def test_zone_and_object_are_extracted_without_neighboring_words(self) -> None:
         task = self.create_task("robot-01 로봇으로 상자 3을 B 작업대로 옮겨")

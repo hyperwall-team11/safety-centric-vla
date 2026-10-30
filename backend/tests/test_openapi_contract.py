@@ -32,6 +32,15 @@ class OpenApiContractTest(unittest.TestCase):
         self.assertEqual(schema["info"]["version"], "0.2.0")
         self.assertEqual(len(schema["paths"]), 13)
         self.assertEqual(actual_operations, expected_operations)
+        list_operation = schema["paths"]["/task-orders"]["get"]
+        self.assertEqual(
+            {parameter["name"] for parameter in list_operation["parameters"]},
+            {"status", "target_robot_id", "offset", "limit"},
+        )
+        self.assertIn(
+            "X-Total-Count",
+            list_operation["responses"]["200"]["headers"],
+        )
 
 
 if __name__ == "__main__":
