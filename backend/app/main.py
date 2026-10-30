@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from hashlib import sha256
 from typing import Annotated
 
 from fastapi import FastAPI, Header, HTTPException, Response, status
+from pydantic import BaseModel
 
 from .action_planner import ActionPlanningError, RuleBasedActionPlanner
 from .models import (
@@ -41,6 +43,30 @@ PLANNABLE_TASK_STATUSES = {
     TaskStatus.CREATED,
     TaskStatus.PLANNING,
 }
+TASK_ORDER_RESPONSE_HEADERS = {
+    "Location": {
+        "description": "생성되거나 재전송된 TaskOrder의 조회 경로",
+        "schema": {"type": "string"},
+    },
+    "Idempotency-Replayed": {
+        "description": "멱등성 키 요청의 기존 TaskOrder 재전송 여부",
+        "schema": {"type": "string", "enum": ["true", "false"]},
+    },
+}
+
+
+def normalize_idempotency_key(idempotency_key: str | None) -> str | None:
+    normalized_key = idempotency_key.strip() if idempotency_key is not None else None
+    if idempotency_key is not None and not normalized_key:
+        raise HTTPException(status_code=422, detail="Idempotency-Key는 비어 있을 수 없습니다.")
+    if normalized_key is not None and len(normalized_key) > 128:
+        raise HTTPException(status_code=422, detail="Idempotency-Key는 128자 이하여야 합니다.")
+    return normalized_key
+
+
+def make_request_fingerprint(request: BaseModel) -> str:
+    canonical_request = request.model_dump_json(exclude_none=False)
+    return sha256(canonical_request.encode("utf-8")).hexdigest()
 
 
 def seed_rules() -> None:
@@ -74,14 +100,61 @@ def list_robots() -> list[Robot]:
     "/task-orders/from-natural-language",
     response_model=TaskOrder,
     status_code=status.HTTP_201_CREATED,
+    responses={
+        status.HTTP_200_OK: {
+            "description": "동일한 Idempotency-Key 요청의 기존 TaskOrder 재전송",
+            "model": TaskOrder,
+            "headers": TASK_ORDER_RESPONSE_HEADERS,
+        },
+        status.HTTP_201_CREATED: {
+            "description": "새 TaskOrder 생성",
+            "model": TaskOrder,
+            "headers": TASK_ORDER_RESPONSE_HEADERS,
+        },
+        status.HTTP_409_CONFLICT: {
+            "description": "동일한 멱등성 키의 요청 본문 충돌",
+        },
+    },
 )
-def create_task_from_natural_language(request: NaturalLanguageTaskRequest) -> TaskOrder:
+def create_task_from_natural_language(
+    request: NaturalLanguageTaskRequest,
+    response: Response,
+    idempotency_key: Annotated[
+        str | None,
+        Header(alias="Idempotency-Key"),
+    ] = None,
+) -> TaskOrder:
+    normalized_key = normalize_idempotency_key(idempotency_key)
+    request_fingerprint = make_request_fingerprint(request)
     with store.lock:
+        if normalized_key is not None:
+            replay = store.task_idempotency.get(normalized_key)
+            if replay is not None:
+                task_id, previous_fingerprint = replay
+                if previous_fingerprint != request_fingerprint:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="같은 Idempotency-Key를 다른 요청 본문에 재사용할 수 없습니다.",
+                    )
+                existing = store.tasks.get(task_id)
+                if existing is not None:
+                    response.status_code = status.HTTP_200_OK
+                    response.headers["Location"] = f"/task-orders/{existing.task_id}"
+                    response.headers["Idempotency-Replayed"] = "true"
+                    return existing
+
         try:
             task = parse_task_order(request, list(store.robots))
         except TaskParseError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         store.tasks[task.task_id] = task
+        if normalized_key is not None:
+            store.task_idempotency[normalized_key] = (
+                task.task_id,
+                request_fingerprint,
+            )
+            response.headers["Idempotency-Replayed"] = "false"
+        response.headers["Location"] = f"/task-orders/{task.task_id}"
     return task
 
 
@@ -116,13 +189,8 @@ def generate_action_proposal(
         Header(alias="Idempotency-Key"),
     ] = None,
 ) -> ActionProposal:
-    normalized_key = idempotency_key.strip() if idempotency_key is not None else None
-    if idempotency_key is not None and not normalized_key:
-        raise HTTPException(status_code=422, detail="Idempotency-Key는 비어 있을 수 없습니다.")
-    if normalized_key is not None and len(normalized_key) > 128:
-        raise HTTPException(status_code=422, detail="Idempotency-Key는 128자 이하여야 합니다.")
-
-    request_fingerprint = request.model_dump_json(exclude_none=False)
+    normalized_key = normalize_idempotency_key(idempotency_key)
+    request_fingerprint = make_request_fingerprint(request)
     with store.lock:
         task = store.tasks.get(task_id)
         if task is None:
