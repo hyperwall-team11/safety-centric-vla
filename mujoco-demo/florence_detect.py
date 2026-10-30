@@ -1,5 +1,6 @@
 """Run Florence-2 object detection on PNGs. Run inside a GPU allocation."""
 import argparse
+import hashlib
 import json
 import math
 import time
@@ -126,7 +127,9 @@ def main():
         torch.cuda.reset_peak_memory_stats()
         raw, parsed, generation_ms = detect_once(model, processor, image, task)
         result = {
-            "image": str(path), "model": model_id, "task": task,
+            "image": str(path),
+            "image_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "model": model_id, "task": task,
             "detections": parsed, "raw_output": raw,
             "generation_ms": generation_ms,
             "peak_torch_allocated_mib": torch.cuda.max_memory_allocated() / 1024**2,
