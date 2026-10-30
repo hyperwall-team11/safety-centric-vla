@@ -12,8 +12,9 @@ ROS 2 제어 어댑터, 안전 경로(HOLD·E-Stop), MuJoCo 시뮬레이션 환�
 | 9 | Mock 어댑터 (공통 Action, ACK·RESULT, E-Stop·HOLD) | 완료 | `pixi run roundtrip` |
 | CT-01 | 브리지 확장: `/joint_states`, 카메라 3대(Image + CameraInfo), TF, 주기 측정 | 완료 | `pixi run measure` |
 | CT-02 | 시나리오 장면: 금지구역, A·B 작업대와 상자, CCTV 2대 + 머리 카메라, 작업자 접근 동작 | 완료 | `pixi run snapshot` |
+| CT-03·07 | TIAGo 어댑터: 승인된 `MOVE_TO`로 실제 이동, E-Stop·HOLD 시 실제 정지 | 완료 (이동) | `pixi run roundtrip-tiago`, `pixi run stop-test` |
 
-다음 단계는 공통 Action(`MOVE_TO`)을 받아 `/cmd_vel`로 바퀴 로봇을 움직이는 MuJoCo 어댑터입니다.
+다음 단계는 TIAGo 팔로 상자를 집고 놓는 `MANIPULATE`(CT-07 조작)와 로봇 상태의 온톨로지 동기화(CT-04)입니다.
 
 ## 로봇 모델
 
@@ -81,6 +82,9 @@ macOS에서는 같은 Mac 안의 노드끼리도 서로 못 찾는 문제가 있
 | `pixi run snapshot` | 카메라 3대 이미지를 `outputs/snapshots/`에 PNG로 저장 |
 | `pixi run mock-adapter` | Mock 어댑터만 실행 |
 | `pixi run roundtrip` | Mock 어댑터 + 하네스 왕복·적합성 시험 (13개 항목) |
+| `pixi run roundtrip-tiago` | 같은 하네스를 MuJoCo 브리지 + TIAGo 어댑터로 실행 (하네스 코드는 그대로) |
+| `pixi run stop-test` | TIAGo 실제 정지 지연 시험: E-Stop·하트비트 손실을 번갈아 6회, `/odom`으로 측정 |
+| `pixi run tiago-adapter` | TIAGo 어댑터만 실행 (브리지가 먼저 떠 있어야 함) |
 | `pixi run arm` / `arm-view` | Panda 로봇 팔 집기·놓기 / 뷰어로 보기 (처음 실행 시 모델 33MB를 내려받음) |
 | `pixi run fetch-models` | 저장소에 올리지 않는 모델(Panda)만 내려받기 |
 
@@ -173,11 +177,39 @@ RoboStack Humble에 `ros-humble-mujoco-ros2-control` 0.0.3(osx-arm64·linux-64)�
 - 하트비트가 1초(5주기) 동안 없으면 스스로 `HOLD`에 들어갑니다(`triggered_by=HEARTBEAT_LOSS`).
 - 정지 후 복귀는 E-Stop 해제와 하트비트 정상 상태에서 승인된 `RESUME`으로만 가능합니다.
 
+## TIAGo 어댑터 (CT-03·07 이동)
+
+`robot_adapter/tiago_adapter_node.py` + `diff_drive_core.py`. Mock 어댑터와 같은 토픽·규약(APPROVED만 실행, ACK·RESULT, E-Stop·HOLD, 2단계 복귀)을 그대로 쓰고, 브리지와는 `/odom`(위치 입력)·`/cmd_vel`(이동 명령)으로 연결됩니다.
+
+```text
+검증 서버 ─ /safety/approved_action·/safety/estop·/safety/heartbeat ─→ tiago_adapter ─ /cmd_vel ─→ 브리지 ─→ MuJoCo TIAGo
+                                                                      ↑──────────── /odom ─────────────┘
+```
+
+- **MOVE_TO 제어기**: 목표 방향과 50° 이상 어긋나면 제자리 회전, 그 안이면 전진하며 방향 보정, 목표 5 cm 안에서 정지·성공 보고. 속도는 `min(로봇 max_speed, proposal.speed_limit, parameters.speed_limit)`, 회전은 0.8 rad/s 이하. 직선 경로만 따라가며 장애물 회피는 하지 않습니다.
+- **TIMEOUT**: 예상 이동 시간의 2배 + 10초 안에 도착하지 못하면 `TIMEOUT`.
+- **HW_ERROR**: `/odom`이 0.5초 넘게 끊기면 이동을 거부하거나 멈추고 `ERROR`. `/odom`이 돌아오면 RESUME으로 복귀.
+- **정지 유지**: `ESTOP`·`HOLD`·`ERROR` 동안 매 틱(50Hz) 0 속도를 보내 다른 `/cmd_vel`을 덮어씁니다. E-Stop 수신 콜백에서도 즉시 0을 보냅니다.
+- `MANIPULATE`는 아직 `UNSUPPORTED`로 응답합니다.
+
+### 시험 결과 (2026-10-30, MacBook)
+
+- `pixi run roundtrip-tiago`: Mock과 **같은 하네스 코드**로 13/13 통과. MOVE_TO는 실제로 0.4 m 이동해 오차 5 cm 안에 도착했습니다. (시나리오 C의 "어댑터만 교체" 방식을 미리 확인한 셈입니다.)
+- `pixi run stop-test` (TIAGo가 약 0.3 m/s로 달리는 중에 정지 신호):
+
+| 신호 | 어댑터 반응 | 실제 정지까지 (평균 / 최대) | 신호 후 밀린 거리 |
+|---|---:|---:|---:|
+| E-Stop (`/safety/estop`) | 0.3 ms | 107 ms / 141 ms | 최대 0.9 cm |
+| 하트비트 손실 | 1초 대기 후 HOLD | 1087 ms / 1181 ms | 최대 41.5 cm |
+
+정지 판정은 `/odom` 속도 < 0.02 m/s이며, `/odom`이 50Hz라 측정값에 최대 20 ms 오차가 있습니다. KPI 2(CRITICAL → E-Stop 발행 ≤ 100 ms)는 발행까지의 지연이므로 어댑터 반응(0.3 ms)이 해당하고, 실제 정지 시간은 로봇 감속을 포함한 참고값입니다.
+
 ## ONT 담당과 협의할 점
 
 1. **토픽 이름의 robot_id**: ROS 2 토픽 이름에는 `-`를 쓸 수 없어 `robot-01`은 `/adapter/robot_01/result`가 됩니다. robot_id 규칙을 영숫자와 `_`로 정하거나, 이 변환 규칙을 인터페이스 명세에 넣어야 합니다.
 2. **사유 코드 추가**: 스키마 v1.1의 `UNSUPPORTED`·`TIMEOUT`·`HW_ERROR` 외에 어댑터에서 `NOT_APPROVED`, `INVALID`, `ROBOT_BUSY`, `ROBOT_HELD`, `NO_HEARTBEAT`, `CANCELLED`, `ESTOP`을 쓰고 있습니다.
 3. **상태 토픽**: `/adapter/{robot_id}/state`는 부록 A에 없는 토픽입니다. Robot 객체 갱신 경로로 쓸지 정해야 합니다.
+4. **하트비트 손실 시 이동 거리**: 스키마 9장의 1초(5주기) 기준이면 0.3~0.4 m/s로 달리던 로봇은 정지까지 약 30~40 cm를 더 갑니다. 작업자 안전거리(1.2 m)·비상정지 반경(0.6 m)과 비교해 이 기준이 충분한지 확인이 필요합니다.
 
 ## 폴더 구조
 
@@ -196,10 +228,10 @@ control/
 │   └── manipulator.py              # Panda move_to·그리퍼·pick_and_place
 ├── ros2_ws/src/
 │   ├── mujoco_bridge/              # ROS 2 ↔ MuJoCo 브리지, odom_echo, rate_monitor
-│   ├── robot_adapter/              # 공통 Action → 로봇 명령 (Mock 어댑터)
-│   └── safety_control/             # HOLD·E-Stop 판단(gate), 토픽·QoS, 시험 하네스
+│   ├── robot_adapter/              # 공통 Action → 로봇 명령 (Mock 어댑터, TIAGo 어댑터)
+│   └── safety_control/             # HOLD·E-Stop 판단(gate), 토픽·QoS, 시험 하네스, 정지 지연 시험
 ├── tests/                          # pytest 단위 테스트
-├── scripts/                        # cmd_vel_demo.sh, roundtrip.sh, measure_rates.sh, fetch_models.sh
+├── scripts/                        # cmd_vel_demo.sh, roundtrip.sh, stop_test.sh, measure_rates.sh, fetch_models.sh
 ├── pixi.toml, pixi.lock            # 환경 정의 (macOS·Ubuntu 공용)
 ├── requirements.txt
 └── README.md
