@@ -17,12 +17,14 @@ from .models import (
     Robot,
     SafetyRule,
     TaskOrder,
+    TaskOrderPreview,
+    TaskParseErrorResponse,
     TaskStatus,
     utc_now,
 )
 from .safety import default_rules, evaluate_proposal
 from .store import store
-from .task_parser import TaskParseError, parse_task_order
+from .task_parser import TaskParseError, parse_task_order, parse_task_order_preview
 
 
 app = FastAPI(
@@ -68,6 +70,30 @@ def create_robot(robot: Robot) -> Robot:
 @app.get("/robots", response_model=list[Robot])
 def list_robots() -> list[Robot]:
     return list(store.robots.values())
+
+
+@app.post(
+    "/task-orders/preview",
+    response_model=TaskOrderPreview,
+    responses={
+        status.HTTP_422_UNPROCESSABLE_CONTENT: {
+            "description": "요청 검증 또는 자연어 작업 해석 실패",
+            "model": TaskParseErrorResponse,
+        },
+    },
+)
+def preview_task_from_natural_language(
+    request: NaturalLanguageTaskRequest,
+) -> TaskOrderPreview:
+    with store.lock:
+        known_robot_ids = list(store.robots)
+    try:
+        return parse_task_order_preview(request, known_robot_ids)
+    except TaskParseError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": exc.code.value, "message": str(exc)},
+        ) from exc
 
 
 @app.post(

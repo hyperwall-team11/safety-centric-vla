@@ -217,6 +217,23 @@ class ActionType(str, Enum):
     RESUME = "RESUME"
 
 
+class TaskOrderPreview(OntologyModel):
+    instruction: NonBlankString
+    target_robot_id: NonBlankString
+    target_object_id: NonBlankString | None
+    destination: TaskDestination
+    action_type: ActionType
+
+
+class TaskParseErrorDetail(OntologyModel):
+    code: NonBlankString
+    message: NonBlankString
+
+
+class TaskParseErrorResponse(OntologyModel):
+    detail: TaskParseErrorDetail
+
+
 class ProposalStatus(str, Enum):
     PROPOSED = "PROPOSED"
     APPROVED = "APPROVED"
