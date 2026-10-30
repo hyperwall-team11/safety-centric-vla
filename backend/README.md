@@ -57,6 +57,8 @@ python3 -m unittest discover -s tests -v
 
 `POST /task-orders/preview`는 자연어 명령을 실제 저장하지 않고 검증합니다. 성공하면 대상 로봇·물체·목적지와 예상 `MOVE_TO` 또는 `MANIPULATE` 유형을 반환합니다. 실패하면 `ROBOT_NOT_FOUND`, `DESTINATION_REQUIRED`, `DESTINATION_AMBIGUOUS`, `INVALID_INSTRUCTION` 같은 오류 코드와 사람이 읽을 수 있는 메시지를 함께 반환합니다.
 
+`POST /task-orders/preview/batch`는 1~50개 명령을 한 번에 검증합니다. 일부 항목이 실패해도 나머지를 계속 처리하며 입력 순서대로 성공 preview 또는 오류를 반환하고 `valid_count`·`invalid_count`를 집계합니다. Batch 호출도 TaskOrder를 저장하지 않습니다.
+
 ```bash
 curl -X POST http://127.0.0.1:8000/task-orders/preview \
   -H 'Content-Type: application/json' \
@@ -87,6 +89,7 @@ curl -X POST http://127.0.0.1:8000/task-orders/{task_id}/action-proposals \
 - `POST /robots`
 - `GET /robots`
 - `POST /task-orders/preview`
+- `POST /task-orders/preview/batch`
 - `POST /task-orders/from-natural-language`
 - `GET /task-orders/{task_id}`
 - `POST /task-orders/{task_id}/action-proposals`

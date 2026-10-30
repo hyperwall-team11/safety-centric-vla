@@ -234,6 +234,42 @@ class TaskParseErrorResponse(OntologyModel):
     detail: TaskParseErrorDetail
 
 
+class TaskOrderPreviewBatchRequest(OntologyModel):
+    items: list[NaturalLanguageTaskRequest] = Field(min_length=1, max_length=50)
+
+
+class TaskOrderPreviewBatchItem(OntologyModel):
+    index: int = Field(ge=0)
+    valid: bool
+    preview: TaskOrderPreview | None = None
+    error: TaskParseErrorDetail | None = None
+
+    @model_validator(mode="after")
+    def validate_result_shape(self) -> TaskOrderPreviewBatchItem:
+        if self.valid and (self.preview is None or self.error is not None):
+            raise ValueError("valid 결과에는 preview만 있어야 합니다.")
+        if not self.valid and (self.error is None or self.preview is not None):
+            raise ValueError("invalid 결과에는 error만 있어야 합니다.")
+        return self
+
+
+class TaskOrderPreviewBatchResponse(OntologyModel):
+    total: int = Field(ge=1, le=50)
+    valid_count: int = Field(ge=0)
+    invalid_count: int = Field(ge=0)
+    results: list[TaskOrderPreviewBatchItem]
+
+    @model_validator(mode="after")
+    def validate_counts(self) -> TaskOrderPreviewBatchResponse:
+        if self.total != len(self.results):
+            raise ValueError("total은 results 길이와 같아야 합니다.")
+        if self.valid_count + self.invalid_count != self.total:
+            raise ValueError("valid_count와 invalid_count 합은 total과 같아야 합니다.")
+        if self.valid_count != sum(result.valid for result in self.results):
+            raise ValueError("valid_count가 results와 일치하지 않습니다.")
+        return self
+
+
 class ProposalStatus(str, Enum):
     PROPOSED = "PROPOSED"
     APPROVED = "APPROVED"

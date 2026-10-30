@@ -30,7 +30,7 @@
 
 ## 2. 구현 엔드포인트
 
-현재 구현은 13개 path, 15개 HTTP operation으로 구성된다.
+현재 구현은 14개 path, 16개 HTTP operation으로 구성된다.
 
 | Method | Path | 성공 | 용도 |
 |---|---|---:|---|
@@ -38,6 +38,7 @@
 | `POST` | `/robots` | `201` | Robot 등록 |
 | `GET` | `/robots` | `200` | Robot 전체 조회 |
 | `POST` | `/task-orders/preview` | `200` | 자연어 명령 검증·파싱 결과 미리보기(저장하지 않음) |
+| `POST` | `/task-orders/preview/batch` | `200` | 자연어 명령 1~50개를 항목별로 일괄 검증 |
 | `POST` | `/task-orders/from-natural-language` | `201` | 자연어를 TaskOrder로 변환·저장 |
 | `GET` | `/task-orders/{task_id}` | `200` | TaskOrder 단건 조회 |
 | `POST` | `/task-orders/{task_id}/action-proposals` | `201`, `200` | TaskOrder에서 ActionProposal 생성 |
@@ -115,6 +116,21 @@
 | `ACTION_UNSUPPORTED` | 현재 지원 범위 밖의 Action 유형 |
 
 미리보기 성공·실패 모두 TaskOrder 저장소를 변경하지 않는다. 기존 생성 API의 오류 응답은 호환성을 위해 문자열 `detail` 형식을 유지한다.
+
+#### Batch 미리보기
+
+`POST /task-orders/preview/batch`는 `items`에 1~50개의 `NaturalLanguageTaskRequest`를 받아 입력 순서대로 모두 검증한다.
+
+```json
+{
+  "items": [
+    {"instruction": "robot-01 로봇을 A구역으로 이동해"},
+    {"instruction": "robot-99 로봇을 B구역으로 이동해"}
+  ]
+}
+```
+
+응답은 `total`, `valid_count`, `invalid_count`, `results`를 포함한다. 각 result는 0부터 시작하는 `index`, `valid`와 함께 성공 시 `preview`, 실패 시 `error` 중 정확히 하나만 포함한다. 한 항목의 파싱 실패가 다른 항목 처리를 중단시키지 않으며 HTTP 응답은 `200`이다. 요청 배열 자체가 비어 있거나 50개를 초과하거나 항목의 JSON 스키마가 잘못된 경우에는 전체 요청을 `422`로 거부한다. Batch 처리도 TaskOrder를 저장하지 않는다.
 
 #### 저장
 
@@ -321,4 +337,4 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q app tests
 ```
 
-OpenAPI 경로 수는 13개, operation 수는 15개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.
+OpenAPI 경로 수는 14개, operation 수는 16개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.

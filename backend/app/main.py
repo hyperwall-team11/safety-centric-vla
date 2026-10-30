@@ -18,6 +18,10 @@ from .models import (
     SafetyRule,
     TaskOrder,
     TaskOrderPreview,
+    TaskOrderPreviewBatchItem,
+    TaskOrderPreviewBatchRequest,
+    TaskOrderPreviewBatchResponse,
+    TaskParseErrorDetail,
     TaskParseErrorResponse,
     TaskStatus,
     utc_now,
@@ -94,6 +98,48 @@ def preview_task_from_natural_language(
             status_code=422,
             detail={"code": exc.code.value, "message": str(exc)},
         ) from exc
+
+
+@app.post(
+    "/task-orders/preview/batch",
+    response_model=TaskOrderPreviewBatchResponse,
+)
+def preview_tasks_from_natural_language(
+    request: TaskOrderPreviewBatchRequest,
+) -> TaskOrderPreviewBatchResponse:
+    with store.lock:
+        known_robot_ids = list(store.robots)
+
+    results: list[TaskOrderPreviewBatchItem] = []
+    for index, item in enumerate(request.items):
+        try:
+            preview = parse_task_order_preview(item, known_robot_ids)
+            results.append(
+                TaskOrderPreviewBatchItem(
+                    index=index,
+                    valid=True,
+                    preview=preview,
+                )
+            )
+        except TaskParseError as exc:
+            results.append(
+                TaskOrderPreviewBatchItem(
+                    index=index,
+                    valid=False,
+                    error=TaskParseErrorDetail(
+                        code=exc.code.value,
+                        message=str(exc),
+                    ),
+                )
+            )
+
+    valid_count = sum(result.valid for result in results)
+    return TaskOrderPreviewBatchResponse(
+        total=len(results),
+        valid_count=valid_count,
+        invalid_count=len(results) - valid_count,
+        results=results,
+    )
 
 
 @app.post(
