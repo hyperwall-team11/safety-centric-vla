@@ -1,0 +1,36 @@
+[workspace]
+name = "safety-vla-control"
+description = "CTL: ROS 2 Humble 제어 어댑터와 MuJoCo 시뮬레이션 환경"
+channels = ["robostack-humble", "conda-forge"]
+platforms = ["osx-arm64", "linux-64"]
+
+[dependencies]
+ros-humble-ros-base = "*"
+colcon-common-extensions = "*"
+setuptools = "<80"
+mujoco = "==3.15.0"
+numpy = "*"
+pillow = "*"
+pytest = "<8"  # Humble의 launch_testing 플러그인이 pytest 8과 호환되지 않음
+
+[target.osx-arm64.activation.env]
+# macOS는 멀티캐스트 탐색이 막혀 같은 Mac 안의 노드끼리도 못 찾는 경우가 있어 로컬 통신으로 제한
+ROS_LOCALHOST_ONLY = "1"
+
+[tasks]
+build = { cmd = "colcon build --symlink-install", cwd = "ros2_ws" }
+test = { cmd = "pytest -q tests" }
+# STEP 4: MuJoCo 바퀴 로봇 전진·회전·정지
+sim = { cmd = "python mujoco/simulation.py" }
+sim-view = { cmd = "mjpython mujoco/simulation.py --view" }
+# STEP 5: ROS 2 /cmd_vel ↔ MuJoCo ↔ /odom
+bridge = { cmd = "bash -c 'source ros2_ws/install/setup.bash && ros2 run mujoco_bridge bridge'", depends-on = ["build"] }
+bridge-view = { cmd = "bash -c 'source ros2_ws/install/setup.bash && mjpython ros2_ws/install/mujoco_bridge/lib/mujoco_bridge/bridge --ros-args -p viewer:=true'", depends-on = ["build"] }
+cmd-vel-demo = { cmd = "bash scripts/cmd_vel_demo.sh", depends-on = ["build"] }
+# Mock 어댑터·안전 경로
+mock-adapter = { cmd = "bash -c 'source ros2_ws/install/setup.bash && ros2 run robot_adapter mock_adapter'", depends-on = ["build"] }
+roundtrip = { cmd = "bash scripts/roundtrip.sh", depends-on = ["build"] }
+# Panda 로봇 팔 집기·놓기 (모델은 저장소에 없으므로 처음 실행 시 내려받음)
+fetch-models = { cmd = "bash scripts/fetch_models.sh" }
+arm = { cmd = "python mujoco/manipulator.py", depends-on = ["fetch-models"] }
+arm-view = { cmd = "mjpython mujoco/manipulator.py --view", depends-on = ["fetch-models"] }

@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>safety_control</name>
+  <version>0.1.0</version>
+  <description>HOLD / E-Stop 판단, 안전 경로 토픽·QoS, 검증 서버 대역 시험 하네스</description>
+  <maintainer email="minseo040727@naver.com">chxisoei</maintainer>
+  <license>TBD</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

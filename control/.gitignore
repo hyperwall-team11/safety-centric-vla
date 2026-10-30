@@ -1,0 +1,8 @@
+# pixi 환경과 colcon 빌드 산출물
+.pixi/
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# 용량이 커서 저장소에 올리지 않는 모델 (scripts/fetch_models.sh로 받음)
+mujoco/models/franka_emika_panda/
