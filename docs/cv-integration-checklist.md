@@ -23,8 +23,8 @@
 ## 실제 영상 확인 순서
 
 1. CTL과 [#16](https://github.com/hyperwall-team11/safety-centric-vla/issues/16)에서 실행 위치를 정합니다. 같은 GPU 호스트에서 브리지와 CV를 함께 실행 가능한지 먼저 확인합니다. Mac 토픽의 GPU 전달 방식은 아직 미정입니다.
-2. CTL 체크아웃에서 `cd control && pixi run bridge`. 현재 CV 체크아웃에는 `control/` 폴더가 없습니다.
-3. CV 체크아웃의 `mujoco-demo/`에서 `python check_camera_env.py`. 모든 import와 CUDA가 통과해야 다음으로 진행합니다.
+2. CTL #7·#15가 합쳐진 최신 `develop`(`bd2a543`)을 세 CV 브랜치에 반영했습니다. 한 체크아웃의 첫 터미널에서 `cd control && pixi run bridge`로 실행합니다.
+3. 같은 체크아웃의 두 번째 터미널에서 `mujoco-demo/`로 이동해 `python check_camera_env.py`. 모든 import와 CUDA가 통과해야 다음으로 진행합니다.
 4. ROS 환경에서 `ros2 topic info /cctv_1/image_raw -v`와 `ros2 topic hz /cctv_1/image_raw`로 `sensor_msgs/Image`, rgb8 640×480, 발행자를 확인합니다. 서로 같은 ROS domain을 사용해야 합니다.
 5. [실행 안내](../mujoco-demo/README.md)의 `--max-frames 30`으로 JSONL·요약 생성을 확인한 뒤 `--duration-seconds 60`으로 연속 측정합니다. 종료 이유가 `input_timeout`/`error`라면 성공으로 보고하지 않습니다.
 6. `processed`, `local_processing_hz`, `p95_processing_ms`, `p95_queue_age_ms`, `replaced_pending`, `stale_pending`, `invalid_frames`와 실행 환경을 #19에 남깁니다. JSONL에서 원래 ROS stamp, 수신 UTC, frame_id와 sensor_id도 확인합니다.
@@ -43,3 +43,15 @@
 #17과 #18을 현재 head끼리 합치면 `backend/app/main.py`에 충돌이 발생합니다. 각각 `develop`과 충돌이 없다는 표시가 떠도, 앞 PR 병합 뒤 다음 PR은 갱신과 재검증이 필요합니다.
 
 #20은 `POST /task-orders/preview`에 `{}`를 보내면 422 `detail` **목록**을 반환하지만 OpenAPI는 `TaskParseErrorResponse`의 `detail` **객체**만 선언합니다. 실제 응답을 해당 모델로 검증하면 실패합니다. 요청 본문 검증 오류와 자연어 파싱 오류 두 형태를 문서와 테스트에 반영해야 합니다.
+
+## GitHub 처리 현황
+
+- #12: 초안을 해제하고 ONT 임성현(`mongmmm`)·CTL 최민서(`chxisoei`)에게 리뷰 요청.
+- #13: #12 브랜치를 대상으로 조정하고 최민서에게 리뷰 요청.
+- #19: 이번 수신·측정 코드와 문서를 올렸으며 실제 ROS 2/GPU 실행 전까지 초안 유지.
+- #17: head `06518a1`의 코드·55개 테스트 확인 후 CV 관점 승인 리뷰 게시.
+- #18: head `42280b8`의 코드·56개 테스트 확인 후 CV 관점 승인 리뷰 게시.
+- #20: 56개 테스트 외에 실제 422 오류 스키마 불일치를 재현하여 수정 요청 리뷰 게시.
+- #11 (`develop` → `main`): 정상·위험 개입 전체 시나리오 실행 확인이 없어 승인·병합하지 않았습니다.
+
+작업 중 최신 CTL 기반을 받아 기존 CTL 테스트 36개도 통과했습니다. `control/mujoco/scenario.py --snapshot control/outputs/snapshots`로 실제 팀 장면의 `cctv_1.png`, `cctv_2.png`, `head_camera.png`를 생성했습니다. 이 정지 이미지 생성은 ROS 2 발행 또는 GPU 추론 시험을 대신하지 않습니다.

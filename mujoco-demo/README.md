@@ -48,7 +48,7 @@ python observation_export.py \
 
 `ros_camera_detect.py`는 CTL 브리지의 `/cctv_1/image_raw`를 구독해 최신 RGB 프레임을 Florence-2 `<OD>`에 입력합니다. 결과는 프레임 시각·카메라 ID·작업자 바운딩 박스가 담긴 JSONL로 저장합니다. 모델 추론이 카메라보다 느리면 오래된 프레임을 쌓지 않고 최신 프레임으로 넘어갑니다.
 
-CTL 작업 브랜치 `feat/ctl-scene-bridge`의 체크아웃에서 ROS 2 브리지를 실행합니다. **현재 CV 브랜치에는 `control/` 폴더가 없으므로 CTL과 CV를 서로 다른 체크아웃에서 실행합니다.** 카메라 영상이 필요할 때는 뷰어가 아닌 `pixi run bridge`를 사용합니다.
+CTL #7·#15가 병합된 `develop`(`bd2a543`)을 CV 브랜치에 반영했습니다. 이 체크아웃의 `control/`에서 브리지를, `mujoco-demo/`에서 CV 노드를 서로 다른 터미널로 실행할 수 있습니다. 카메라 영상이 필요할 때는 뷰어가 아닌 `pixi run bridge`를 사용합니다.
 
 ```bash
 cd control
