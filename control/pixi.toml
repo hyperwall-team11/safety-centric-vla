@@ -35,14 +35,6 @@ snapshot = { cmd = "python mujoco/scenario.py --snapshot outputs/snapshots" }
 # Mock 어댑터·안전 경로
 mock-adapter = { cmd = "bash -c 'source ros2_ws/install/setup.bash && ros2 run robot_adapter mock_adapter'", depends-on = ["build"] }
 roundtrip = { cmd = "bash scripts/roundtrip.sh", depends-on = ["build"] }
-# TIAGo 어댑터 (MuJoCo): 같은 하네스로 왕복 시험, 실제 정지 지연 시험
-tiago-adapter = { cmd = "bash -c 'source ros2_ws/install/setup.bash && ros2 run robot_adapter tiago_adapter'", depends-on = ["build"] }
-roundtrip-tiago = { cmd = "bash scripts/roundtrip.sh tiago", depends-on = ["build"] }
-stop-test = { cmd = "bash scripts/stop_test.sh", depends-on = ["build"] }
-# CT-07 조작: 시나리오 A (상자 A → B) 오프라인 / ROS 2 전체 경로
-pick-place = { cmd = "python mujoco/tiago_manipulation.py" }
-pick-place-view = { cmd = "mjpython mujoco/tiago_manipulation.py --view" }
-scenario-a = { cmd = "bash scripts/scenario_a.sh", depends-on = ["build"] }
 # Panda 로봇 팔 집기·놓기 (모델은 저장소에 없으므로 처음 실행 시 내려받음)
 fetch-models = { cmd = "bash scripts/fetch_models.sh" }
 arm = { cmd = "python mujoco/manipulator.py", depends-on = ["fetch-models"] }

@@ -141,8 +141,8 @@ def run_checks(h: Harness):
     r = result_of(pid, 2)
     check("해제 후 RESUME 복귀", r and r["success"] and h.wait_status("IDLE", 1), r and r["message"])
 
-    # 어떤 어댑터도 지원하지 않는 조작 종류 → UNSUPPORTED (Mock은 MANIPULATE 자체를 지원하지 않음)
-    pid, _ = h.send("MANIPULATE", {"manipulation": "POUR", "object_id": "box-01"})
+    pid, _ = h.send("MANIPULATE", {"manipulation": "PICK", "object_id": "box-01",
+                                   "target_pose": {"position": [0.5, 0.3, 0.02]}})
     r = result_of(pid, 2)
     check("미지원 Action UNSUPPORTED 응답", r and r["reason_code"] == "UNSUPPORTED", r and r["reason_code"])
 

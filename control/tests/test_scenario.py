@@ -35,7 +35,7 @@ def test_robot_stands_on_floor(sim):
 def test_box_rests_on_table_a(sim):
     sim.step(2.0)
     x, y, z = box_pos(sim)
-    assert (x, y) == pytest.approx((1.2, 0.82), abs=0.01)
+    assert (x, y) == pytest.approx((1.2, 1.0), abs=0.01)
     assert z == pytest.approx(0.64, abs=0.005)  # 작업대 윗면 0.6 m + 상자 반높이 0.04 m
 
 
@@ -99,35 +99,3 @@ def test_cameras_render_non_blank(sim):
             assert img.shape == (120, 160, 3) and img.std() > 5
     finally:
         rig.close()
-
-
-def test_approach_direction_uses_nearest_table_edge(sim):
-    """A·B 작업대 모두 로봇 쪽 모서리(7 cm)에서 접근하고, 베이스가 작업대와 겹치지 않는다."""
-    import tiago_manipulation as tm
-    for (pos, expected) in (tm.STATION_A, tm.STATION_B):
-        assert tm.choose_approach_yaw(sim.model, pos[:2], (0.0, 0.0)) == pytest.approx(expected)
-
-
-def test_tiago_finger_pads_replace_mesh_collision(sim):
-    m = sim.model
-    for name in ("gripper_left_finger_link", "gripper_right_finger_link"):
-        body = m.body(name).id
-        geoms = [g for g in range(m.ngeom) if m.geom_bodyid[g] == body]
-        pads = [g for g in geoms if m.geom(g).name == f"{name}_pad"]
-        meshes = [g for g in geoms if m.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH]
-        assert len(pads) == 1 and m.geom_contype[pads[0]] == 1
-        assert all(m.geom_contype[g] == 0 and m.geom_conaffinity[g] == 0 for g in meshes)
-
-
-def test_tiago_pick_and_place_scenario_a():
-    """시나리오 A 전체: A 작업대 상자를 집어 B 작업대에 세워 놓는다 (물리 시뮬레이션)."""
-    import tiago_manipulation as tm
-    sim = DiffDriveSim("scenario")
-    manip = tm.TiagoManipulator(sim, log=lambda *_: None)
-    try:
-        start, lifted, place, final = tm.scenario_a(sim, manip)
-    finally:
-        manip.close()
-    assert lifted > start[2] + 0.05                      # 들어 올렸다
-    assert np.linalg.norm(final[:2] - place[:2]) < 0.05  # B 목표 5 cm 안
-    assert final[2] == pytest.approx(0.64, abs=0.01)     # 쓰러지지 않고 세워져 있다

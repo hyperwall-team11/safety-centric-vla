@@ -12,31 +12,12 @@ import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 import mujoco
 import mujoco.viewer
 import numpy as np
 
 MODELS = Path(__file__).resolve().parent / "models"
-
-
-def add_tiago_finger_pads(spec: "mujoco.MjSpec") -> None:
-    """TIAGo 손가락에 평평한 접촉 패드를 붙이고, 손가락 메시는 보이기만 하게 바꾼다.
-
-    MuJoCo는 메시 충돌에 볼록 껍질(convex hull)을 쓴다. TIAGo 손가락 메시는 좁은 뿌리와 넓은 패드가
-    이어져 있어 껍질의 안쪽 면이 쐐기처럼 기울고, 손가락을 닫으면 물체가 손끝 쪽으로 밀려 빠진다.
-    그래서 실제 패드 위치(손가락 좌표 z -0.218~-0.129, 안쪽 면 x=0)에 얇은 상자를 붙여 충돌을 맡긴다.
-    원본 tiago.xml은 수정하지 않는다.
-    """
-    for name, outward in (("gripper_left_finger_link", -1.0), ("gripper_right_finger_link", 1.0)):
-        body = spec.body(name)
-        for geom in body.geoms:
-            geom.contype, geom.conaffinity = 0, 0
-        body.add_geom(name=f"{name}_pad", type=mujoco.mjtGeom.mjGEOM_BOX,
-                      size=[0.004, 0.02, 0.045], pos=[outward * 0.004, -0.0016, -0.172],
-                      contype=1, conaffinity=1, condim=4, friction=[1.5, 0.01, 0.001],
-                      mass=0.0, group=3, rgba=[0.15, 0.15, 0.15, 1])
 
 
 @dataclass(frozen=True)
@@ -50,18 +31,15 @@ class RobotSpec:
     right_wheel_body: str
     wheel_radius: float
     keyframe: str | None = None
-    edit: Callable | None = None  # 모델을 컴파일하기 전에 MjSpec을 고치는 함수
 
 
 ROBOTS = {
     # 시나리오 장면: TIAGo + 금지구역 + A·B 작업대와 상자 + CCTV 2대 + 머리 카메라 + 작업자 (scenario.py 참고)
     "scenario": RobotSpec(MODELS / "scenario_scene.xml", "reference", "wheel_left_joint_vel", "wheel_right_joint_vel",
-                          "wheel_left_link", "wheel_right_link", wheel_radius=0.0985, keyframe="home",
-                          edit=add_tiago_finger_pads),
+                          "wheel_left_link", "wheel_right_link", wheel_radius=0.0985, keyframe="home"),
     # PAL TIAGo: 바퀴 + 7축 팔 + 그리퍼 (MuJoCo Menagerie). 바퀴 반지름은 원본 URDF 값.
     "tiago": RobotSpec(MODELS / "tiago_scene.xml", "reference", "wheel_left_joint_vel", "wheel_right_joint_vel",
-                       "wheel_left_link", "wheel_right_link", wheel_radius=0.0985, keyframe="home",
-                       edit=add_tiago_finger_pads),
+                       "wheel_left_link", "wheel_right_link", wheel_radius=0.0985, keyframe="home"),
     # 단순 시험용 바퀴 로봇
     "simple": RobotSpec(MODELS / "diff_drive.xml", "base_joint", "left_wheel_motor", "right_wheel_motor",
                         "left_wheel", "right_wheel", wheel_radius=0.05),
@@ -74,13 +52,7 @@ class DiffDriveSim:
 
     def __init__(self, robot: str = DEFAULT_ROBOT, model_path=None):
         self.spec = spec = ROBOTS[robot]
-        path = str(model_path or spec.model_path)
-        if spec.edit:
-            mj_spec = mujoco.MjSpec.from_file(path)
-            spec.edit(mj_spec)
-            self.model = mj_spec.compile()
-        else:
-            self.model = mujoco.MjModel.from_xml_path(path)
+        self.model = mujoco.MjModel.from_xml_path(str(model_path or spec.model_path))
         self.data = mujoco.MjData(self.model)
         m = self.model
         if spec.keyframe:

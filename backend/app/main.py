@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from time import perf_counter
 from typing import Annotated
 
 from fastapi import FastAPI, Header, HTTPException, Response, status
@@ -10,14 +11,20 @@ from .models import (
     Decision,
     ExecutionLog,
     HazardEvent,
+    HazardResolveRequest,
+    HazardResolvedBy,
+    HazardSeverity,
     HazardStatus,
     NaturalLanguageTaskRequest,
     ProposalGenerationRequest,
     ProposalStatus,
     Robot,
+    RobotStatus,
     SafetyRule,
     TaskOrder,
     TaskStatus,
+    TriggerSource,
+    Zone,
     utc_now,
 )
 from .safety import default_rules, evaluate_proposal
@@ -68,6 +75,20 @@ def create_robot(robot: Robot) -> Robot:
 @app.get("/robots", response_model=list[Robot])
 def list_robots() -> list[Robot]:
     return list(store.robots.values())
+
+
+@app.post("/zones", response_model=Zone, status_code=status.HTTP_201_CREATED)
+def create_zone(zone: Zone) -> Zone:
+    with store.lock:
+        if zone.zone_id in store.zones:
+            raise HTTPException(status_code=409, detail="이미 등록된 zone_id입니다.")
+        store.zones[zone.zone_id] = zone
+    return zone
+
+
+@app.get("/zones", response_model=list[Zone])
+def list_zones() -> list[Zone]:
+    return list(store.zones.values())
 
 
 @app.post(
@@ -237,92 +258,126 @@ def create_proposal(proposal: ActionProposal) -> ActionProposal:
 
 @app.post("/action-proposals/{proposal_id}/evaluate", response_model=ActionProposal)
 def evaluate_action(proposal_id: str) -> ActionProposal:
-    proposal = store.proposals.get(proposal_id)
-    if proposal is None:
-        raise HTTPException(status_code=404, detail="ActionProposal을 찾을 수 없습니다.")
-    if proposal.status != ProposalStatus.PROPOSED:
-        raise HTTPException(status_code=409, detail="PROPOSED 상태만 평가할 수 있습니다.")
+    started_at = perf_counter()
+    with store.lock:
+        proposal = store.proposals.get(proposal_id)
+        if proposal is None:
+            raise HTTPException(status_code=404, detail="ActionProposal을 찾을 수 없습니다.")
+        if proposal.status != ProposalStatus.PROPOSED:
+            raise HTTPException(status_code=409, detail="PROPOSED 상태만 평가할 수 있습니다.")
 
-    robot = store.robots[proposal.robot_id]
-    rule_results, hazard_ids = evaluate_proposal(
-        proposal,
-        robot,
-        list(store.hazards.values()),
-        list(store.rules.values()),
-    )
-    approved = all(result.passed for result in rule_results)
-    proposal.status = ProposalStatus.APPROVED if approved else ProposalStatus.REJECTED
-    log = ExecutionLog(
-        proposal_id=proposal.proposal_id,
-        decision=Decision.APPROVE if approved else Decision.REJECT,
-        rule_results=rule_results,
-        hazard_ids=hazard_ids,
-        robot_id=proposal.robot_id,
-        result_message="안전 규칙 통과" if approved else "안전 규칙 위반으로 거절",
-    )
-    store.logs.append(log)
-    return proposal
+        robot = store.robots[proposal.robot_id]
+        task = store.tasks[proposal.task_id]
+        rule_results, hazard_ids = evaluate_proposal(
+            proposal,
+            task,
+            robot,
+            list(store.hazards.values()),
+            list(store.rules.values()),
+            list(store.zones.values()),
+        )
+        approved = all(result.passed for result in rule_results)
+        proposal.status = ProposalStatus.APPROVED if approved else ProposalStatus.REJECTED
+        log = ExecutionLog(
+            proposal_id=proposal.proposal_id,
+            decision=Decision.APPROVE if approved else Decision.REJECT,
+            rule_results=rule_results,
+            hazard_ids=hazard_ids,
+            robot_id=proposal.robot_id,
+            result_message="안전 규칙 통과" if approved else "안전 규칙 위반으로 거절",
+            evaluated_in_ms=(perf_counter() - started_at) * 1000,
+        )
+        store.logs.append(log)
+        return proposal
 
 
 @app.post("/action-proposals/{proposal_id}/execute", response_model=ActionProposal)
 def execute_action(proposal_id: str) -> ActionProposal:
-    proposal = store.proposals.get(proposal_id)
-    if proposal is None:
-        raise HTTPException(status_code=404, detail="ActionProposal을 찾을 수 없습니다.")
-    if proposal.status != ProposalStatus.APPROVED:
-        raise HTTPException(status_code=409, detail="APPROVED 상태만 실행할 수 있습니다.")
+    started_at = perf_counter()
+    with store.lock:
+        proposal = store.proposals.get(proposal_id)
+        if proposal is None:
+            raise HTTPException(status_code=404, detail="ActionProposal을 찾을 수 없습니다.")
+        if proposal.status != ProposalStatus.APPROVED:
+            raise HTTPException(status_code=409, detail="APPROVED 상태만 실행할 수 있습니다.")
 
-    robot = store.robots[proposal.robot_id]
-    rule_results, hazard_ids = evaluate_proposal(
-        proposal,
-        robot,
-        list(store.hazards.values()),
-        list(store.rules.values()),
-    )
-    if not all(result.passed for result in rule_results):
-        proposal.status = ProposalStatus.HELD
+        robot = store.robots[proposal.robot_id]
+        task = store.tasks[proposal.task_id]
+        rule_results, hazard_ids = evaluate_proposal(
+            proposal,
+            task,
+            robot,
+            list(store.hazards.values()),
+            list(store.rules.values()),
+            list(store.zones.values()),
+        )
+        evaluated_in_ms = (perf_counter() - started_at) * 1000
+        if not all(result.passed for result in rule_results):
+            proposal.status = ProposalStatus.HELD
+            task.status = TaskStatus.HELD
+            robot.status = RobotStatus.ESTOP
+            robot.updated_at = utc_now()
+            store.logs.append(
+                ExecutionLog(
+                    proposal_id=proposal.proposal_id,
+                    decision=Decision.ESTOP,
+                    rule_results=rule_results,
+                    hazard_ids=hazard_ids,
+                    robot_id=proposal.robot_id,
+                    result_message="실행 직전 안전 재검증 실패",
+                    evaluated_in_ms=evaluated_in_ms,
+                    triggered_by=TriggerSource.RULE_ENGINE,
+                )
+            )
+            raise HTTPException(status_code=409, detail="실행 직전 안전 재검증에 실패했습니다.")
+
+        proposal.status = ProposalStatus.EXECUTING
+        task.status = TaskStatus.RUNNING
+        robot.status = RobotStatus.MOVING
+        robot.updated_at = utc_now()
         store.logs.append(
             ExecutionLog(
                 proposal_id=proposal.proposal_id,
-                decision=Decision.ESTOP,
+                decision=Decision.EXECUTE,
                 rule_results=rule_results,
                 hazard_ids=hazard_ids,
                 robot_id=proposal.robot_id,
-                result_message="실행 직전 안전 재검증 실패",
+                result_message=f"Mock adapter({robot.control_adapter})로 전달됨",
+                evaluated_in_ms=evaluated_in_ms,
             )
         )
-        raise HTTPException(status_code=409, detail="실행 직전 안전 재검증에 실패했습니다.")
-
-    proposal.status = ProposalStatus.EXECUTING
-    store.logs.append(
-        ExecutionLog(
-            proposal_id=proposal.proposal_id,
-            decision=Decision.EXECUTE,
-            rule_results=rule_results,
-            hazard_ids=[],
-            robot_id=proposal.robot_id,
-            result_message=f"Mock adapter({robot.control_adapter})로 전달됨",
-        )
-    )
-    return proposal
+        return proposal
 
 
 @app.post("/hazards", response_model=HazardEvent, status_code=status.HTTP_201_CREATED)
 def create_hazard(hazard: HazardEvent) -> HazardEvent:
-    if hazard.hazard_id in store.hazards:
-        raise HTTPException(status_code=409, detail="이미 등록된 hazard_id입니다.")
-    store.hazards[hazard.hazard_id] = hazard
-    return hazard
+    with store.lock:
+        if hazard.hazard_id in store.hazards:
+            raise HTTPException(status_code=409, detail="이미 등록된 hazard_id입니다.")
+        store.hazards[hazard.hazard_id] = hazard
+        return hazard
 
 
 @app.post("/hazards/{hazard_id}/resolve", response_model=HazardEvent)
-def resolve_hazard(hazard_id: str) -> HazardEvent:
-    hazard = store.hazards.get(hazard_id)
-    if hazard is None:
-        raise HTTPException(status_code=404, detail="HazardEvent를 찾을 수 없습니다.")
-    hazard.status = HazardStatus.RESOLVED
-    hazard.resolved_at = utc_now()
-    return hazard
+def resolve_hazard(hazard_id: str, request: HazardResolveRequest) -> HazardEvent:
+    with store.lock:
+        hazard = store.hazards.get(hazard_id)
+        if hazard is None:
+            raise HTTPException(status_code=404, detail="HazardEvent를 찾을 수 없습니다.")
+        if hazard.status == HazardStatus.RESOLVED:
+            raise HTTPException(status_code=409, detail="이미 해제된 HazardEvent입니다.")
+        if (
+            hazard.severity == HazardSeverity.CRITICAL
+            and request.resolved_by != HazardResolvedBy.OPERATOR
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="CRITICAL HazardEvent는 OPERATOR만 해제할 수 있습니다.",
+            )
+        hazard.status = HazardStatus.RESOLVED
+        hazard.resolved_at = utc_now()
+        hazard.resolved_by = request.resolved_by
+        return hazard
 
 
 @app.get("/safety-rules", response_model=list[SafetyRule])

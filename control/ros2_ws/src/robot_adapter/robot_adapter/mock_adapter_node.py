@@ -17,10 +17,15 @@ STATE_HZ = 10
 
 
 class MockAdapterNode(Node):
-    def __init__(self, node_name="mock_adapter"):
-        super().__init__(node_name)
+    def __init__(self):
+        super().__init__("mock_adapter")
         robot_id = self.declare_parameter("robot_id", "robot-01").value
-        self.core = self._make_core(robot_id)
+        self.core = MockRobotCore(
+            robot_id,
+            robot_type=self.declare_parameter("robot_type", "QUADRUPED").value,
+            frame_id=self.declare_parameter("frame_id", "world").value,
+            max_speed=self.declare_parameter("max_speed", 0.4).value,
+        )
         self.result_pub = self.create_publisher(String, result_topic(robot_id), RELIABLE)
         self.state_pub = self.create_publisher(String, state_topic(robot_id), RELIABLE)
         self.create_subscription(String, APPROVED_ACTION_TOPIC, self._on_action, RELIABLE)
@@ -28,15 +33,7 @@ class MockAdapterNode(Node):
         self.create_subscription(String, HEARTBEAT_TOPIC, self._on_heartbeat, HEARTBEAT_QOS)
         self.create_timer(1.0 / TICK_HZ, self._tick)
         self.create_timer(1.0 / STATE_HZ, self._publish_state)
-        self.get_logger().info(f"{self.core.adapter_name} adapter ready: {robot_id} ({self.core.robot_type})")
-
-    def _make_core(self, robot_id):
-        return MockRobotCore(
-            robot_id,
-            robot_type=self.declare_parameter("robot_type", "QUADRUPED").value,
-            frame_id=self.declare_parameter("frame_id", "world").value,
-            max_speed=self.declare_parameter("max_speed", 0.4).value,
-        )
+        self.get_logger().info(f"mock adapter ready: {robot_id} ({self.core.robot_type})")
 
     def _on_action(self, msg):
         try:

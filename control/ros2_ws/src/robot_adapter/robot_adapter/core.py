@@ -33,7 +33,6 @@ class MockRobotCore:
     """위치만 갖는 가상 로봇. MOVE_TO·STOP·RESUME만 지원하고 MANIPULATE는 UNSUPPORTED."""
 
     supported = {"MOVE_TO", "STOP", "RESUME"}
-    adapter_name = "mock"
 
     def __init__(self, robot_id, robot_type="QUADRUPED", frame_id="world",
                  max_speed=DEFAULT_MAX_SPEED, position=(0.0, 0.0, 0.0)):
@@ -90,10 +89,10 @@ class MockRobotCore:
         return {
             "robot_id": self.robot_id,
             "robot_type": self.robot_type,
-            "control_adapter": self.adapter_name,
+            "control_adapter": "mock",
             "status": self.status,
             "pose": {"frame_id": self.frame_id, "position": [round(v, 4) for v in self.position],
-                     "orientation": self.orientation()},
+                     "orientation": [0.0, 0.0, 0.0, 1.0]},
             "velocity": round(self.velocity, 4),
             "motion_limits": {"max_speed": self.max_speed},
             "estop_active": self.gate.estop_active,
@@ -101,10 +100,6 @@ class MockRobotCore:
             "updated_at": utc_iso(now),
             "last_heartbeat_at": utc_iso(self.gate.last_heartbeat) if self.gate.last_heartbeat else None,
         }
-
-    def orientation(self):
-        """(x, y, z, w) 쿼터니언. Mock은 방향이 없다."""
-        return [0.0, 0.0, 0.0, 1.0]
 
     # ---- Action 처리 ----
     def _on_move_to(self, msg, now):

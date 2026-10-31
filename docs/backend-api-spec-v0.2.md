@@ -3,7 +3,7 @@
 - 상태: MVP 구현 명세(As-Built)
 - 기준 코드: `backend/app/main.py`, `backend/app/models.py`
 - 기준 버전: FastAPI application `0.2.0`
-- 작성일: 2026-10-16
+- 작성일: 2026-10-30
 - 기본 URL(로컬): `http://127.0.0.1:8000`
 - 대화형 문서: `/docs`
 - OpenAPI JSON: `/openapi.json`
@@ -30,13 +30,15 @@
 
 ## 2. 구현 엔드포인트
 
-현재 구현은 12개 path, 14개 HTTP operation으로 구성된다.
+현재 구현은 13개 path, 16개 HTTP operation으로 구성된다.
 
 | Method | Path | 성공 | 용도 |
 |---|---|---:|---|
 | `GET` | `/health` | `200` | 서버 상태 확인 |
 | `POST` | `/robots` | `201` | Robot 등록 |
 | `GET` | `/robots` | `200` | Robot 전체 조회 |
+| `POST` | `/zones` | `201` | Zone 등록 |
+| `GET` | `/zones` | `200` | Zone 전체 조회 |
 | `POST` | `/task-orders/from-natural-language` | `201` | 자연어를 TaskOrder로 변환·저장 |
 | `GET` | `/task-orders/{task_id}` | `200` | TaskOrder 단건 조회 |
 | `POST` | `/task-orders/{task_id}/action-proposals` | `201`, `200` | TaskOrder에서 ActionProposal 생성 |
@@ -65,6 +67,8 @@
 | `velocity` | Vector3 | `x`, `y`, `z` |
 | `motion_limits` | object | 양수 `max_speed`, `max_acceleration` |
 | `updated_at` | datetime | 생략 시 서버 생성 |
+| `last_heartbeat_at` | datetime 또는 null | 선택, 마지막 제어 어댑터 하트비트 수신 시각 |
+| `battery_level` | number 또는 null | 선택, 0 이상 1 이하 |
 
 ```json
 {
@@ -81,6 +85,8 @@
   "motion_limits": {"max_speed": 1.0, "max_acceleration": 0.5}
 }
 ```
+
+`POST /zones`는 `zone_id`, `zone_type`, `geometry`, `frame_id`, `minimum_safety_distance`를 받는다. 선택적인 `max_speed`는 양수이며 SR-01 상한에 포함된다. `estop_distance`는 0 이상이고 기본값은 `0.6`이다. 같은 `zone_id`를 다시 등록하면 `409`를 반환한다.
 
 ### 3.2 자연어 TaskOrder 생성
 
@@ -210,15 +216,18 @@ TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 
 
 1. Robot 상태가 `IDLE` 또는 `HOLD`
 2. `control_adapter`가 공백이 아님
-3. Proposal 속도가 Robot `max_speed` 이하
-4. 대상 로봇과 관련되었거나 특정 로봇이 없는 OPEN·CRITICAL HazardEvent가 없음
+3. Proposal 속도가 `min(0.4, Robot max_speed, 목적지 Zone max_speed)` 이하. Zone이 없거나 `max_speed`가 없으면 해당 항목은 제외
+4. 대상 로봇 또는 TaskOrder의 `ZONE` 목적지와 연결된 OPEN·CRITICAL HazardEvent가 없음
+
+빈 `related_robot_ids`는 전역 차단을 뜻하지 않는다. 로봇 ID가 명시적으로 연결되었거나 HazardEvent의 `zone_id`와 TaskOrder 목적지 Zone이 같을 때만 관련 위험으로 판단한다. 좌표 목적지는 Zone 연결을 추론하지 않는다.
 
 `POST /action-proposals/{proposal_id}/execute`
 
 - `APPROVED`만 실행할 수 있다.
 - 실행 직전 같은 안전 규칙을 다시 평가한다.
-- 재평가 실패 시 Proposal을 `HELD`로 바꾸고 `ESTOP` 로그를 남긴 뒤 `409`를 반환한다.
-- 통과 시 Proposal을 `EXECUTING`으로 바꾸고 Mock adapter 전달을 나타내는 `EXECUTE` 로그를 남긴다.
+- 재평가 실패 시 Proposal과 TaskOrder를 `HELD`, Robot을 `ESTOP`으로 바꾸고 `triggered_by=RULE_ENGINE`인 `ESTOP` 로그를 남긴 뒤 `409`를 반환한다.
+- 통과 시 Proposal을 `EXECUTING`, TaskOrder를 `RUNNING`, Robot을 `MOVING`으로 바꾸고 Mock adapter 전달을 나타내는 `EXECUTE` 로그를 남긴다.
+- 평가와 실행 직전 재평가 로그에는 `evaluated_in_ms`를 기록한다.
 
 ### 3.6 HazardEvent
 
@@ -230,15 +239,17 @@ TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 
 | `hazard_type` | enum | `WORKER_INTRUSION`, `COLLISION_RISK`, `FIRE`, `SMOKE`, `FALLING_OBJECT`, `UNKNOWN` |
 | `severity` | enum | `WARNING`, `CRITICAL` |
 | `source_observation_ids` | string[] | 필수 |
-| `related_robot_ids` | string[] | 필수. 빈 배열인 CRITICAL은 모든 로봇을 차단 |
+| `related_robot_ids` | string[] | 필수. 빈 배열은 명시적인 로봇 연결이 없음을 의미 |
 | `related_worker_ids` | string[] | 필수 |
 | `zone_id` | string | 필수 |
 | `status` | enum | 기본 `OPEN`; `OPEN`, `ACKNOWLEDGED`, `RESOLVED` |
 | `confidence` | number | 0 이상 1 이하 |
 | `detected_at` | datetime | 생략 시 서버 생성 |
 | `resolved_at` | datetime 또는 null | 기본 null |
+| `last_observed_at` | datetime 또는 null | 마지막 관측 시각 |
+| `resolved_by` | enum 또는 null | `SENSOR_AUTO`, `OPERATOR` |
 
-`POST /hazards/{hazard_id}/resolve`는 현재 인증 없이 상태를 `RESOLVED`로 바꾸고 `resolved_at`을 기록한다.
+`POST /hazards/{hazard_id}/resolve` 요청은 `{"resolved_by":"SENSOR_AUTO|OPERATOR"}`이다. `WARNING`은 두 주체 모두 해제할 수 있지만 `CRITICAL`은 `OPERATOR`만 허용한다. 성공 시 `status=RESOLVED`, `resolved_at`, `resolved_by`를 기록하며, 이미 해제된 이벤트나 허용되지 않은 자동 해제는 `409`를 반환한다. 인증 계층은 아직 없으므로 이 값은 호출자가 명시하는 감사 필드다.
 
 ### 3.7 SafetyRule과 ExecutionLog
 
@@ -247,12 +258,18 @@ TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 
 - `rule-speed-limit`
 - `rule-critical-hazard`
 
-`GET /execution-logs`는 평가·실행 순서대로 전체 로그를 반환한다. 로그는 `log_id`, `proposal_id`, `decision`, `rule_results`, `hazard_ids`, `robot_id`, `timestamp`, `result_message`를 포함한다.
+SafetyRule은 선택적인 `parameters`, `on_violation=REJECT|ESTOP`을 지원하며 `OBSERVATION_GAP` rule type도 모델 계약에 포함한다. `on_violation`을 생략하면 CRITICAL은 `ESTOP`, 나머지는 `REJECT`로 정규화한다.
+
+`GET /execution-logs`는 평가·실행 순서대로 전체 로그를 반환한다. 로그는 기존 필드와 선택적인 `evaluated_in_ms`, `triggered_by=RULE_ENGINE|OPERATOR|HEARTBEAT_LOSS`를 포함한다.
+
+HTTP 등록 경로가 아직 없는 v1.1 객체도 Pydantic 모델 계약에는 다음 선택 필드를 반영한다: Sensor의 `covered_zone_ids`, `last_frame_at`, `calibrated`; Observation의 `ingested_at`, `bbox`, `position_source`; Worker의 `source_sensor_ids`.
 
 ## 4. 상태 전이
 
 ```text
 TaskOrder: CREATED ── proposal 생성/등록 ──> PLANNING
+           PLANNING ── execute 재검증 통과 ──> RUNNING
+           PLANNING ── execute 재검증 실패 ──> HELD
 
 ActionProposal: PROPOSED ── evaluate 통과 ──> APPROVED
                 PROPOSED ── evaluate 실패 ──> REJECTED
@@ -260,7 +277,7 @@ ActionProposal: PROPOSED ── evaluate 통과 ──> APPROVED
                 APPROVED ── execute 재검증 실패 ──> HELD
 ```
 
-`RUNNING`, `COMPLETED`, `FAILED`, `SUCCEEDED`, ResumeTask와 실행 결과 보고 전이는 스키마에는 있으나 현재 HTTP MVP에는 구현되지 않았다.
+`COMPLETED`, `FAILED`, `SUCCEEDED`, ResumeTask와 실행 결과 보고 전이는 스키마에는 있으나 현재 HTTP MVP에는 구현되지 않았다.
 
 ## 5. 기준 문서와 현재 구현의 차이
 
@@ -270,12 +287,13 @@ ActionProposal: PROPOSED ── evaluate 통과 ──> APPROVED
 | Proposal 제출·평가 | 한 경계에서 판정 결과 반환 | 등록, 평가, 실행 API 분리 |
 | 객체 조회 | `GET /api/v1/objects/{type}` | Robot, TaskOrder, Proposal, Rule, Log의 개별 API 일부 |
 | ResumeTask | 관리자 승인 2단계 복귀 | 미구현, HELD 생성 요청은 `409` |
-| 인증·권한 | CRITICAL 해제와 Resume는 관리자 전용 | 미구현 |
-| 규칙 SR-01~06 | 속도·구역·거리·위험·상태·센서 공백 | 로봇 상태·adapter·Robot 속도·관련 CRITICAL 위험만 구현 |
-| E-Stop | ROS 2 latched 전용 경로 | HTTP 실행 재검증 실패 시 상태·로그만 변경 |
+| 인증·권한 | CRITICAL 해제와 Resume는 관리자 전용 | CRITICAL 해제 요청의 `resolved_by=OPERATOR` 검사 구현, 실제 인증·Resume는 미구현 |
+| 규칙 SR-01~06 | 속도·구역·거리·위험·상태·센서 공백 | SR-01 기본 0.4m/s·Robot·Zone 상한, 로봇 상태·adapter·관련 CRITICAL 위험 구현. 경로·거리·센서 공백은 미구현 |
+| E-Stop | ROS 2 latched 전용 경로 | 실행 재검증 실패 시 Robot ESTOP·Task HELD·감사 로그 구현, ROS 2 전용 신호는 미구현 |
 | 상태 구독 | WebSocket `/ws/state` | 미구현 |
 | 영속 저장 | Redis 또는 ROS 2 상태 연동 | 인메모리 |
-| 판정 시간 | `evaluated_in_ms` 기록 | 미구현 |
+| 판정 시간 | `evaluated_in_ms` 기록 | 평가·실행 직전 재평가 로그에 구현 |
+| 스키마 v1.1 선택 필드 | 모델에서 선택적으로 허용 | Robot, Sensor, Observation, Worker, Zone, SafetyRule, HazardEvent, ExecutionLog에 반영 |
 
 이 차이는 스키마 v1.1의 객체 정의를 변경할 사유가 아니라 구현 진척도 차이로 관리한다. 필수 필드나 열거값을 변경해야 할 때만 팀 변경 절차에 따라 스키마 버전을 올린다.
 
@@ -287,4 +305,4 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q app tests
 ```
 
-OpenAPI 경로 수는 12개, operation 수는 14개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.
+OpenAPI 경로 수는 13개, operation 수는 16개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.
