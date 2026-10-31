@@ -409,6 +409,31 @@ class HazardResolveRequest(OntologyModel):
     resolved_by: HazardResolvedBy
 
 
+class AdapterResultStatus(str, Enum):
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+
+
+class AdapterFailureCode(str, Enum):
+    UNSUPPORTED = "UNSUPPORTED"
+    TIMEOUT = "TIMEOUT"
+    HW_ERROR = "HW_ERROR"
+
+
+class AdapterResultReport(OntologyModel):
+    status: AdapterResultStatus
+    reason_code: AdapterFailureCode | None = None
+    detail: NonBlankString | None = None
+
+    @model_validator(mode="after")
+    def validate_result_contract(self) -> AdapterResultReport:
+        if self.status == AdapterResultStatus.SUCCEEDED and self.reason_code is not None:
+            raise ValueError("SUCCEEDED 결과에는 reason_code를 지정할 수 없습니다.")
+        if self.status == AdapterResultStatus.FAILED and self.reason_code is None:
+            raise ValueError("FAILED 결과에는 reason_code가 필요합니다.")
+        return self
+
+
 class Decision(str, Enum):
     APPROVE = "APPROVE"
     REJECT = "REJECT"

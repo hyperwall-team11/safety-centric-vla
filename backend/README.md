@@ -6,7 +6,7 @@
 2. `TaskOrder`를 공통 `ActionProposal`로 생성하거나 VLA 제안을 등록
 3. 최소 안전규칙(로봇 상태, 제어 어댑터, 기본·로봇·Zone 속도 상한, 연결된 CRITICAL 위험) 평가
 4. 승인된 제안만 mock 제어 어댑터에 전달
-5. 승인, 거절, 실행 판단을 `ExecutionLog`에 기록
+5. 승인, 거절, 실행, 완료·실패 판단을 `ExecutionLog`에 기록
 
 현재 저장소는 시연용 인메모리 구현입니다. 프로세스를 재시작하면 데이터가 초기화되며, 이후 Redis 저장소로 교체할 수 있도록 파서·안전규칙·API를 분리했습니다.
 
@@ -76,6 +76,8 @@ curl -X POST http://127.0.0.1:8000/task-orders/{task_id}/action-proposals \
 
 열린 CRITICAL 위험은 `related_robot_ids`에 대상 Robot이 있거나 Hazard의 Zone과 TaskOrder 목적지 Zone이 같을 때 차단합니다. 빈 `related_robot_ids` 자체는 전역 위험을 뜻하지 않습니다. CRITICAL 위험 해제는 `{"resolved_by":"OPERATOR"}` 요청만 허용하고, WARNING은 `SENSOR_AUTO`도 허용합니다.
 
+실행 중인 Proposal은 `POST /action-proposals/{proposal_id}/result`로 어댑터 결과를 보고합니다. `SUCCEEDED`는 TaskOrder를 `COMPLETED`, Robot을 `IDLE`로 돌립니다. `UNSUPPORTED`는 TaskOrder를 `PLANNING`으로 되돌려 재계획할 수 있고, `TIMEOUT`은 TaskOrder `FAILED`·Robot `HOLD`, `HW_ERROR`는 TaskOrder `FAILED`·Robot `ERROR`로 전이합니다. 같은 결과 재전송은 멱등 처리되어 감사 로그가 중복되지 않습니다.
+
 ## 구현된 최소 API
 
 - `POST /robots`
@@ -89,6 +91,7 @@ curl -X POST http://127.0.0.1:8000/task-orders/{task_id}/action-proposals \
 - `POST /action-proposals`
 - `POST /action-proposals/{proposal_id}/evaluate`
 - `POST /action-proposals/{proposal_id}/execute`
+- `POST /action-proposals/{proposal_id}/result`
 - `POST /hazards`
 - `POST /hazards/{hazard_id}/resolve`
 - `GET /safety-rules`

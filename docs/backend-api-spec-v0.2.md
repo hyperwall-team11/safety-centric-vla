@@ -30,7 +30,7 @@
 
 ## 2. 구현 엔드포인트
 
-현재 구현은 13개 path, 16개 HTTP operation으로 구성된다.
+현재 구현은 14개 path, 17개 HTTP operation으로 구성된다.
 
 | Method | Path | 성공 | 용도 |
 |---|---|---:|---|
@@ -46,6 +46,7 @@
 | `POST` | `/action-proposals` | `201` | 외부 VLA의 ActionProposal 직접 등록 |
 | `POST` | `/action-proposals/{proposal_id}/evaluate` | `200` | 안전 규칙 평가 |
 | `POST` | `/action-proposals/{proposal_id}/execute` | `200` | 실행 직전 재평가 후 Mock adapter 전달 |
+| `POST` | `/action-proposals/{proposal_id}/result` | `200` | 제어 어댑터 실행 결과 보고 |
 | `POST` | `/hazards` | `201` | HazardEvent 등록 |
 | `POST` | `/hazards/{hazard_id}/resolve` | `200` | HazardEvent 해제 |
 | `GET` | `/safety-rules` | `200` | 활성 안전 규칙 조회 |
@@ -229,6 +230,17 @@ TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 
 - 통과 시 Proposal을 `EXECUTING`, TaskOrder를 `RUNNING`, Robot을 `MOVING`으로 바꾸고 Mock adapter 전달을 나타내는 `EXECUTE` 로그를 남긴다.
 - 평가와 실행 직전 재평가 로그에는 `evaluated_in_ms`를 기록한다.
 
+`POST /action-proposals/{proposal_id}/result`
+
+- `EXECUTING` 상태에서만 최초 결과를 받을 수 있다.
+- 성공 본문은 `{"status":"SUCCEEDED","detail":"목적지 도착"}`이며 `reason_code`를 허용하지 않는다.
+- 실패 본문은 `{"status":"FAILED","reason_code":"UNSUPPORTED|TIMEOUT|HW_ERROR","detail":"선택 설명"}`이며 `reason_code`가 필수다.
+- 성공 시 Proposal `SUCCEEDED`, TaskOrder `COMPLETED`, Robot `IDLE`, `COMPLETE` 로그로 전이한다.
+- `UNSUPPORTED`는 Proposal `FAILED`, TaskOrder `PLANNING`, Robot `HOLD`로 바꿔 새 Proposal 재계획을 허용한다.
+- `TIMEOUT`은 Proposal·TaskOrder `FAILED`, Robot `HOLD`로 전이한다.
+- `HW_ERROR`는 Proposal·TaskOrder `FAILED`, Robot `ERROR`로 전이한다.
+- 동일한 결과 재전송은 저장 상태만 반환하고 로그를 중복 생성하지 않는다. 이미 기록된 결과와 다른 재전송은 `409`다.
+
 ### 3.6 HazardEvent
 
 `POST /hazards`
@@ -275,9 +287,11 @@ ActionProposal: PROPOSED ── evaluate 통과 ──> APPROVED
                 PROPOSED ── evaluate 실패 ──> REJECTED
                 APPROVED ── execute 재검증 통과 ──> EXECUTING
                 APPROVED ── execute 재검증 실패 ──> HELD
+                EXECUTING ── 완료 보고 ──> SUCCEEDED
+                EXECUTING ── 실패 보고 ──> FAILED
 ```
 
-`COMPLETED`, `FAILED`, `SUCCEEDED`, ResumeTask와 실행 결과 보고 전이는 스키마에는 있으나 현재 HTTP MVP에는 구현되지 않았다.
+ResumeTask 전이와 실제 ROS 2 어댑터 결과 토픽 연결은 아직 구현하지 않았다. 현재 결과 API는 Mock adapter 및 연동 시험용 HTTP 경계다.
 
 ## 5. 기준 문서와 현재 구현의 차이
 
@@ -290,6 +304,7 @@ ActionProposal: PROPOSED ── evaluate 통과 ──> APPROVED
 | 인증·권한 | CRITICAL 해제와 Resume는 관리자 전용 | CRITICAL 해제 요청의 `resolved_by=OPERATOR` 검사 구현, 실제 인증·Resume는 미구현 |
 | 규칙 SR-01~06 | 속도·구역·거리·위험·상태·센서 공백 | SR-01 기본 0.4m/s·Robot·Zone 상한, 로봇 상태·adapter·관련 CRITICAL 위험 구현. 경로·거리·센서 공백은 미구현 |
 | E-Stop | ROS 2 latched 전용 경로 | 실행 재검증 실패 시 Robot ESTOP·Task HELD·감사 로그 구현, ROS 2 전용 신호는 미구현 |
+| 어댑터 실행 결과 | ROS 2 result 토픽으로 완료·실패 보고 | HTTP 결과 보고, 상태 전이, 멱등 감사 로그 구현. ROS 2 토픽 연결은 미구현 |
 | 상태 구독 | WebSocket `/ws/state` | 미구현 |
 | 영속 저장 | Redis 또는 ROS 2 상태 연동 | 인메모리 |
 | 판정 시간 | `evaluated_in_ms` 기록 | 평가·실행 직전 재평가 로그에 구현 |
@@ -305,4 +320,4 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q app tests
 ```
 
-OpenAPI 경로 수는 13개, operation 수는 16개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.
+OpenAPI 경로 수는 14개, operation 수는 17개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.
