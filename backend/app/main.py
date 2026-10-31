@@ -8,6 +8,9 @@ from fastapi import FastAPI, Header, HTTPException, Response, status
 from .action_planner import ActionPlanningError, RuleBasedActionPlanner
 from .models import (
     ActionProposal,
+    AdapterFailureCode,
+    AdapterResultReport,
+    AdapterResultStatus,
     Decision,
     ExecutionLog,
     HazardEvent,
@@ -344,6 +347,66 @@ def execute_action(proposal_id: str) -> ActionProposal:
                 robot_id=proposal.robot_id,
                 result_message=f"Mock adapter({robot.control_adapter})로 전달됨",
                 evaluated_in_ms=evaluated_in_ms,
+            )
+        )
+        return proposal
+
+
+@app.post("/action-proposals/{proposal_id}/result", response_model=ActionProposal)
+def report_action_result(
+    proposal_id: str,
+    report: AdapterResultReport,
+) -> ActionProposal:
+    with store.lock:
+        proposal = store.proposals.get(proposal_id)
+        if proposal is None:
+            raise HTTPException(status_code=404, detail="ActionProposal을 찾을 수 없습니다.")
+
+        previous_report = store.proposal_results.get(proposal_id)
+        if previous_report is not None:
+            if previous_report == report:
+                return proposal
+            raise HTTPException(
+                status_code=409,
+                detail="이미 다른 실행 결과가 기록된 ActionProposal입니다.",
+            )
+
+        if proposal.status != ProposalStatus.EXECUTING:
+            raise HTTPException(status_code=409, detail="EXECUTING 상태만 결과를 보고할 수 있습니다.")
+
+        task = store.tasks[proposal.task_id]
+        robot = store.robots[proposal.robot_id]
+        if report.status == AdapterResultStatus.SUCCEEDED:
+            proposal.status = ProposalStatus.SUCCEEDED
+            task.status = TaskStatus.COMPLETED
+            robot.status = RobotStatus.IDLE
+            decision = Decision.COMPLETE
+            result_message = report.detail or "제어 어댑터 실행 완료"
+        else:
+            proposal.status = ProposalStatus.FAILED
+            decision = Decision.FAIL
+            reason_code = AdapterFailureCode(report.reason_code)
+            if reason_code == AdapterFailureCode.UNSUPPORTED:
+                task.status = TaskStatus.PLANNING
+                robot.status = RobotStatus.HOLD
+            elif reason_code == AdapterFailureCode.TIMEOUT:
+                task.status = TaskStatus.FAILED
+                robot.status = RobotStatus.HOLD
+            else:
+                task.status = TaskStatus.FAILED
+                robot.status = RobotStatus.ERROR
+            result_message = f"{reason_code.value}: {report.detail or '제어 어댑터 실행 실패'}"
+
+        robot.updated_at = utc_now()
+        store.proposal_results[proposal_id] = report
+        store.logs.append(
+            ExecutionLog(
+                proposal_id=proposal.proposal_id,
+                decision=decision,
+                rule_results=[],
+                hazard_ids=[],
+                robot_id=proposal.robot_id,
+                result_message=result_message,
             )
         )
         return proposal

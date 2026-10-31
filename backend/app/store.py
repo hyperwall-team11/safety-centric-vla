@@ -2,7 +2,16 @@ from __future__ import annotations
 
 from threading import RLock
 
-from .models import ActionProposal, ExecutionLog, HazardEvent, Robot, SafetyRule, TaskOrder, Zone
+from .models import (
+    ActionProposal,
+    AdapterResultReport,
+    ExecutionLog,
+    HazardEvent,
+    Robot,
+    SafetyRule,
+    TaskOrder,
+    Zone,
+)
 
 
 class InMemoryStore:
@@ -19,6 +28,7 @@ class InMemoryStore:
             self.tasks: dict[str, TaskOrder] = {}
             self.proposals: dict[str, ActionProposal] = {}
             self.proposal_idempotency: dict[tuple[str, str], tuple[str, str]] = {}
+            self.proposal_results: dict[str, AdapterResultReport] = {}
             self.hazards: dict[str, HazardEvent] = {}
             self.logs: list[ExecutionLog] = []
             self.rules: dict[str, SafetyRule] = {}
