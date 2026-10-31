@@ -79,7 +79,7 @@ class ApiTest(unittest.TestCase):
 
     def test_safe_proposal_is_approved_and_executed(self) -> None:
         task = self.create_task()
-        proposal = self.create_proposal(task["task_id"], speed=0.5)
+        proposal = self.create_proposal(task["task_id"], speed=0.4)
 
         evaluated = self.client.post(f"/action-proposals/{proposal['proposal_id']}/evaluate")
         self.assertEqual(evaluated.status_code, 200)
@@ -108,7 +108,7 @@ class ApiTest(unittest.TestCase):
             "confidence": 0.99,
         }
         self.assertEqual(self.client.post("/hazards", json=hazard).status_code, 201)
-        proposal = self.create_proposal(task["task_id"], speed=0.5)
+        proposal = self.create_proposal(task["task_id"], speed=0.4)
         evaluated = self.client.post(f"/action-proposals/{proposal['proposal_id']}/evaluate")
         self.assertEqual(evaluated.json()["status"], "REJECTED")
         logs = self.client.get("/execution-logs").json()
@@ -117,7 +117,7 @@ class ApiTest(unittest.TestCase):
 
     def test_new_hazard_blocks_already_approved_proposal_before_execution(self) -> None:
         task = self.create_task()
-        proposal = self.create_proposal(task["task_id"], speed=0.5)
+        proposal = self.create_proposal(task["task_id"], speed=0.4)
         evaluated = self.client.post(f"/action-proposals/{proposal['proposal_id']}/evaluate")
         self.assertEqual(evaluated.json()["status"], "APPROVED")
 

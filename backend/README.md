@@ -4,7 +4,7 @@
 
 1. 자연어 작업 명령을 검증해 `TaskOrder`로 변환
 2. `TaskOrder`를 공통 `ActionProposal`로 생성하거나 VLA 제안을 등록
-3. 최소 안전규칙(로봇 상태, 제어 어댑터, 속도 제한, 열린 CRITICAL 위험) 평가
+3. 최소 안전규칙(로봇 상태, 제어 어댑터, 기본·로봇·Zone 속도 상한, 연결된 CRITICAL 위험) 평가
 4. 승인된 제안만 mock 제어 어댑터에 전달
 5. 승인, 거절, 실행 판단을 `ExecutionLog`에 기록
 
@@ -72,10 +72,16 @@ curl -X POST http://127.0.0.1:8000/task-orders/{task_id}/action-proposals \
 
 `HELD` 작업은 일반 생성 API로 재개하지 않습니다. 관련 위험 해제까지 확인하는 별도 Resume 흐름이 팀 계약으로 추가되기 전에는 `409`를 반환합니다.
 
+평가 속도 상한은 `min(0.4, robot.motion_limits.max_speed, zone.max_speed)`이며 등록된 목적지 Zone에 `max_speed`가 없으면 Zone 항목은 제외합니다. 실행 직전 재검증이 실패하면 Proposal·TaskOrder를 `HELD`, Robot을 `ESTOP`으로 바꾸고 `RULE_ENGINE` 감사 로그를 남깁니다. 통과하면 Proposal은 `EXECUTING`, TaskOrder는 `RUNNING`, Robot은 `MOVING`으로 전이합니다.
+
+열린 CRITICAL 위험은 `related_robot_ids`에 대상 Robot이 있거나 Hazard의 Zone과 TaskOrder 목적지 Zone이 같을 때 차단합니다. 빈 `related_robot_ids` 자체는 전역 위험을 뜻하지 않습니다. CRITICAL 위험 해제는 `{"resolved_by":"OPERATOR"}` 요청만 허용하고, WARNING은 `SENSOR_AUTO`도 허용합니다.
+
 ## 구현된 최소 API
 
 - `POST /robots`
 - `GET /robots`
+- `POST /zones`
+- `GET /zones`
 - `POST /task-orders/from-natural-language`
 - `GET /task-orders/{task_id}`
 - `POST /task-orders/{task_id}/action-proposals`
