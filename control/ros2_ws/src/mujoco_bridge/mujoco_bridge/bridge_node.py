@@ -1,7 +1,8 @@
 """ROS 2 ↔ MuJoCo 브리지.
 
-구독: /cmd_vel (Twist) → 바퀴 로봇
-발행: /odom, /joint_states, TF, 카메라 3대 영상(Image + CameraInfo), 작업자 실제 위치(/sim/worker_pose)
+구독: /cmd_vel (Twist) → 바퀴 로봇, /arm/command (JSON) → TIAGo 집기·놓기
+발행: /odom, /joint_states, TF, 카메라 3대 영상(Image + CameraInfo), 작업자 실제 위치(/sim/worker_pose),
+      /arm/result (JSON)
 
     ros2 run mujoco_bridge bridge                                  # 시나리오 장면 (기본)
     ros2 run mujoco_bridge bridge --ros-args -p robot:=simple      # 단순 시험용 바퀴 로봇
@@ -16,11 +17,13 @@
 지정하며, pixi 환경에서는 기본값($PIXI_PROJECT_ROOT/mujoco)을 그대로 쓰면 된다.
 """
 import array
+import json
 import math
 import os
 import sys
 import time
 
+import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped, TransformStamped, Twist
 from nav_msgs.msg import Odometry
@@ -29,7 +32,7 @@ from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image, JointState
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
 ANY_NUMBER = ParameterDescriptor(dynamic_typing=True)  # 15와 15.0을 모두 받는다
@@ -42,7 +45,8 @@ def load_modules(mujoco_dir: str):
     sys.path.insert(0, mujoco_dir)
     import scenario
     import simulation
-    return simulation, scenario
+    import tiago_manipulation
+    return simulation, scenario, tiago_manipulation
 
 
 def make_tf(stamp, parent, child, pos, quat):
@@ -62,7 +66,7 @@ class MujocoBridge(Node):
         super().__init__("mujoco_bridge")
         default_dir = os.path.join(os.environ.get("PIXI_PROJECT_ROOT", ""), "mujoco")
         mujoco_dir = self.declare_parameter("mujoco_dir", default_dir).value
-        simulation, self.scn = load_modules(mujoco_dir)
+        simulation, self.scn, self.tm = load_modules(mujoco_dir)
         robot = self.declare_parameter("robot", simulation.DEFAULT_ROBOT).value
         model_path = self.declare_parameter("model_path", "").value or None  # 비우면 로봇 기본 장면
         physics_hz = float(self.declare_parameter("physics_hz", 100.0, ANY_NUMBER).value)  # 물리 타이머 주기 (스텝은 timestep 단위)
@@ -77,6 +81,9 @@ class MujocoBridge(Node):
         use_cameras = self.declare_parameter("cameras", True).value
         use_worker = self.declare_parameter("worker_motion", True).value
         use_viewer = self.declare_parameter("viewer", False).value
+        # 어댑터가 쓰는 object_id → MuJoCo body 이름 (쉼표로 구분, "id:body")
+        objects = self.declare_parameter("objects", "box-01:part_box").value
+        self.objects = dict(pair.split(":", 1) for pair in objects.split(",") if ":" in pair)
 
         self.sim = simulation.DiffDriveSim(robot, model_path)
         m = self.sim.model
@@ -124,6 +131,12 @@ class MujocoBridge(Node):
             self.create_timer(1.0 / 30.0, self._sync_viewer)
 
         self.create_subscription(Twist, "/cmd_vel", self._on_cmd_vel, 10)
+        # 집기·놓기: TIAGo 팔이 있는 장면에서만
+        self.manip, self.arm_task, self.arm_command, self.pending_dt = None, None, None, 0.0
+        if "arm_7_link" in {m.body(i).name for i in range(m.nbody)}:
+            self.manip = self.tm.TiagoManipulator(self.sim, log=lambda text: self.get_logger().info(text))
+            self.arm_pub = self.create_publisher(String, "/arm/result", 10)
+            self.create_subscription(String, "/arm/command", self._on_arm_command, 10)
         self.odom_pub = self.create_publisher(Odometry, "/odom", 10)
         self.joint_pub = self.create_publisher(JointState, "/joint_states", 10)
         self.tf_pub = TransformBroadcaster(self)
@@ -141,8 +154,113 @@ class MujocoBridge(Node):
 
     # ---- 입력 ----
     def _on_cmd_vel(self, msg: Twist):
+        if self.arm_task is not None:
+            return  # 집기·놓기 중에는 그 동작이 베이스를 직접 움직인다
         self.sim.set_velocity(msg.linear.x, msg.angular.z)
         self.last_cmd_at = time.monotonic()
+
+    # ---- 집기·놓기 ----
+    def _on_arm_command(self, msg: String):
+        try:
+            cmd = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self.get_logger().warning("JSON이 아닌 /arm/command 무시")
+            return
+        kind = cmd.get("manipulation")
+        if kind == "CANCEL":
+            if self.arm_task is not None:
+                self._finish_arm(False, "CANCELLED", "취소됨 (팔·베이스 현재 위치에서 정지)")
+            return
+        if self.arm_task is not None:
+            self._arm_result(cmd, False, "ROBOT_BUSY", "다른 집기·놓기 실행 중")
+            return
+        try:
+            target, yaw, body = self._resolve_target(cmd)
+        except (KeyError, ValueError, self.tm.ManipulationError) as error:
+            self._arm_result(cmd, False, "UNSUPPORTED", str(error))
+            return
+        self.sim.stop()
+        self.last_cmd_at = None
+        task = self.manip.pick(target, yaw) if kind == "PICK" else self.manip.place(target, yaw)
+        self.arm_task, self.arm_command, self.pending_dt = task, dict(cmd, body=body, target=list(target)), 0.0
+        self.get_logger().info(f"{kind} 시작: {cmd.get('object_id')} → {np.round(target, 3)}, "
+                               f"접근 {math.degrees(yaw):.0f}°")
+
+    def _resolve_target(self, cmd):
+        """(물체 중심 목표 위치, 접근 yaw, 물체 body 이름)"""
+        m, d = self.sim.model, self.sim.data
+        kind = cmd.get("manipulation")
+        if kind not in ("PICK", "PLACE"):
+            raise ValueError(f"manipulation은 PICK 또는 PLACE: {kind!r}")
+        body = self.objects.get(cmd.get("object_id"))
+        if body is None:
+            raise KeyError(f"모르는 object_id {cmd.get('object_id')!r} (bridge objects 파라미터: {self.objects})")
+        if kind == "PICK":
+            # 시뮬에서는 물체의 실제 위치를 쓴다. 실제 시스템에서는 인식 결과(Observation)로 바뀔 부분.
+            target = d.xpos[m.body(body).id].copy()
+        else:
+            position = ((cmd.get("target_pose") or {}).get("position"))
+            if not (isinstance(position, (list, tuple)) and len(position) == 3):
+                raise ValueError("PLACE에는 target_pose.position [x, y, z]가 필요")
+            target = np.array(position, dtype=float)
+        x, y, _ = self.sim.pose()
+        yaw = cmd.get("approach_yaw")
+        yaw = float(yaw) if yaw is not None else self.tm.choose_approach_yaw(m, target[:2], (x, y))
+        return target, yaw, body
+
+    def _finish_arm(self, success, reason_code, message):
+        cmd = self.arm_command
+        self.arm_task, self.arm_command, self.pending_dt = None, None, 0.0
+        self.sim.stop()
+        self._arm_result(cmd, success, reason_code, message)
+
+    def _arm_result(self, cmd, success, reason_code, message):
+        body = cmd.get("body")
+        pose = self.sim.data.xpos[self.sim.model.body(body).id].round(4).tolist() if body else None
+        self.arm_pub.publish(String(data=json.dumps({
+            "command_id": cmd.get("command_id"), "manipulation": cmd.get("manipulation"),
+            "object_id": cmd.get("object_id"), "success": success, "reason_code": reason_code,
+            "message": message, "object_position": pose}, ensure_ascii=False)))
+        # rclpy 로거는 같은 호출 위치에서 심각도를 바꿀 수 없어 줄을 나눈다
+        if success:
+            self.get_logger().info(f"{cmd.get('manipulation')} 성공: {message}")
+        else:
+            self.get_logger().warning(f"{cmd.get('manipulation')} 실패: {message}")
+
+    def _check_arm_outcome(self):
+        """동작이 끝났을 때 물체가 실제로 들렸는지·놓였는지 확인한다."""
+        cmd = self.arm_command
+        m, d = self.sim.model, self.sim.data
+        pos = d.xpos[m.body(cmd["body"]).id]
+        target = np.array(cmd["target"])
+        if cmd["manipulation"] == "PICK":
+            lifted = pos[2] - target[2]
+            if lifted < 0.05:
+                return False, "HW_ERROR", f"물체를 들지 못함 (높이 변화 {lifted * 100:.1f} cm)"
+            return True, None, f"집기 완료 (물체 {lifted * 100:.0f} cm 들어 올림)"
+        err = float(np.linalg.norm(pos[:2] - target[:2]))
+        if err > 0.05 or abs(pos[2] - target[2]) > 0.02:
+            return False, "HW_ERROR", f"목표에 놓지 못함 (수평 오차 {err * 100:.1f} cm, 높이 {pos[2]:.3f} m)"
+        return True, None, f"놓기 완료 (오차 {err * 100:.1f} cm)"
+
+    def _advance_sim(self, duration):
+        """duration초 진행. 집기·놓기 중이면 그 동작의 단계에 맞춰 진행한다."""
+        while duration > 1e-9:
+            if self.arm_task is not None and self.pending_dt <= 1e-9:
+                try:
+                    self.pending_dt = next(self.arm_task)
+                except StopIteration:
+                    self._finish_arm(*self._check_arm_outcome())
+                    continue
+                except self.tm.ManipulationError as error:
+                    self._finish_arm(False, "UNSUPPORTED", str(error))
+                    continue
+            dt = min(duration, self.pending_dt) if self.arm_task is not None else duration
+            if self.worker:
+                self.worker.apply(self.sim.model, self.sim.data)
+            self.sim.step(dt)
+            duration -= dt
+            self.pending_dt -= dt
 
     # ---- 물리 ----
     def _physics(self):
@@ -153,9 +271,7 @@ class MujocoBridge(Node):
             self.last_cmd_at = None
         lag = (self.sim_start + (now - self.wall_start)) - self.sim.time
         if lag > 0:
-            if self.worker:
-                self.worker.apply(self.sim.model, self.sim.data)
-            self.sim.step(min(lag, MAX_CATCHUP_S))
+            self._advance_sim(min(lag, MAX_CATCHUP_S))
         if now - self.last_rtf_log >= 10.0:
             rtf = (self.sim.time - self.sim_start) / (now - self.wall_start)
             self.get_logger().info(f"sim {self.sim.time:.1f} s / wall {now - self.wall_start:.1f} s "
@@ -264,6 +380,8 @@ class MujocoBridge(Node):
         self.static_tf_pub.sendTransform(tfs)
 
     def close(self):
+        if self.manip is not None:
+            self.manip.close()
         if self.rig is not None:
             self.rig.close()
         if self.viewer is not None:
