@@ -11,7 +11,13 @@ from .models import (
     RuleSeverity,
     RuleType,
     SafetyRule,
+    TaskOrder,
+    ViolationAction,
+    Zone,
 )
+
+
+DEFAULT_SPEED_LIMIT = 0.4
 
 
 def default_rules() -> list[SafetyRule]:
@@ -22,6 +28,8 @@ def default_rules() -> list[SafetyRule]:
             target_robot_type="ALL",
             condition={"operator": "lte", "reference": "robot.motion_limits.max_speed"},
             severity=RuleSeverity.CRITICAL,
+            parameters={"default_max_speed": DEFAULT_SPEED_LIMIT},
+            on_violation=ViolationAction.REJECT,
         ),
         SafetyRule(
             rule_id="rule-critical-hazard",
@@ -29,15 +37,18 @@ def default_rules() -> list[SafetyRule]:
             target_robot_type="ALL",
             condition={"blocked_severity": "CRITICAL", "blocked_status": "OPEN"},
             severity=RuleSeverity.CRITICAL,
+            on_violation=ViolationAction.REJECT,
         ),
     ]
 
 
 def evaluate_proposal(
     proposal: ActionProposal,
+    task: TaskOrder,
     robot: Robot,
     hazards: list[HazardEvent],
     rules: list[SafetyRule],
+    zones: list[Zone],
 ) -> tuple[list[RuleResult], list[str]]:
     results = [
         RuleResult(
@@ -56,6 +67,11 @@ def evaluate_proposal(
         ),
     ]
     blocked_hazard_ids: list[str] = []
+    destination_zone_id = getattr(task.destination, "zone_id", None)
+    destination_zone = next(
+        (zone for zone in zones if zone.zone_id == destination_zone_id),
+        None,
+    )
 
     for rule in rules:
         if not rule.enabled:
@@ -63,15 +79,19 @@ def evaluate_proposal(
         if rule.target_robot_type not in ("ALL", robot.robot_type):
             continue
         if rule.rule_type == RuleType.SPEED:
-            passed = proposal.speed_limit <= robot.motion_limits.max_speed
+            speed_caps = [DEFAULT_SPEED_LIMIT, robot.motion_limits.max_speed]
+            if destination_zone is not None and destination_zone.max_speed is not None:
+                speed_caps.append(destination_zone.max_speed)
+            allowed_speed = min(speed_caps)
+            passed = proposal.speed_limit <= allowed_speed
             results.append(
                 RuleResult(
                     rule_id=rule.rule_id,
                     passed=passed,
                     reason=(
-                        f"요청 속도 {proposal.speed_limit}m/s <= 허용 속도 {robot.motion_limits.max_speed}m/s"
+                        f"요청 속도 {proposal.speed_limit}m/s <= 허용 속도 {allowed_speed}m/s"
                         if passed
-                        else f"요청 속도 {proposal.speed_limit}m/s > 허용 속도 {robot.motion_limits.max_speed}m/s"
+                        else f"요청 속도 {proposal.speed_limit}m/s > 허용 속도 {allowed_speed}m/s"
                     ),
                 )
             )
@@ -81,7 +101,13 @@ def evaluate_proposal(
                 for hazard in hazards
                 if hazard.status == HazardStatus.OPEN
                 and hazard.severity == HazardSeverity.CRITICAL
-                and (not hazard.related_robot_ids or robot.robot_id in hazard.related_robot_ids)
+                and (
+                    robot.robot_id in hazard.related_robot_ids
+                    or (
+                        destination_zone_id is not None
+                        and hazard.zone_id == destination_zone_id
+                    )
+                )
             ]
             blocked_hazard_ids.extend(hazard.hazard_id for hazard in blocking)
             results.append(

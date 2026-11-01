@@ -6,6 +6,7 @@
 
 - [실행 안내](mujoco-demo/README.md)
 - [2026-10-09 진행 기록](docs/멘토링_진행공유_2026-10-09.md)
+- [기준 문서 목록 (개발계획서·스키마·사용자 정의서)](docs/README.md)
 
 온톨로지 기반 실행 거버넌스를 적용한 안전 중심 VLA 로봇 제어 플랫폼입니다.
 
@@ -23,7 +24,7 @@ VLA(Vision-Language-Action) 모델은 자연어와 시각 정보를 바탕으로
 - 속도, 토크, 금지구역, 작업자 안전거리 기준으로 행동 검증
 - 위험 행동 거부와 `TriggerEStop`, `Hold State` 처리
 - 승인된 Action만 ROS 2 제어 노드로 전달
-- Isaac Sim 디지털 트윈과 온톨로지 상태 동기화
+- MuJoCo 시뮬레이션과 온톨로지 상태 동기화
 - 제안·승인·거부·실행 전 과정을 감사 로그로 기록
 
 최종 결과물은 정상 실행과 실시간 위험 개입 두 시나리오의 End-to-End 시연입니다.
@@ -49,7 +50,7 @@ VLA(Vision-Language-Action) 모델은 자연어와 시각 정보를 바탕으로
        │                 │
        ▼                 ▼
  ROS 2 실행       TriggerEStop
- Isaac Sim 동기화  Hold State
+ MuJoCo 동기화    Hold State
        │
        ▼
      Audit Trail
@@ -130,9 +131,9 @@ VLA(Vision-Language-Action) 모델은 자연어와 시각 정보를 바탕으로
 
 | 기간 | 단계 | 주요 작업 | 마일스톤 |
 |---|---|---|---|
-| 1~4주 | 기반·스키마 | 요구분석, Object/Link/Action 스키마, ROS 2·Isaac Sim 환경 구성 | M1: 온톨로지 스키마 확정 |
+| 1~4주 | 기반·스키마 | 요구분석, Object/Link/Action 스키마, ROS 2·MuJoCo 환경 구성 | M1: 온톨로지 스키마 확정 |
 | 5~8주 | 모듈 개발 | 온톨로지 서버, Action 파이프라인, NLP 파서, VLM 위험 인식, Guardrail | M2: Action 파이프라인 데모 |
-| 9~12주 | 시스템 통합 | VLA Proposal 연동, ROS 2 실행, Isaac Sim과 온톨로지 동기화 | M3: 통합 파이프라인 가동 |
+| 9~12주 | 시스템 통합 | VLA Proposal 연동, ROS 2 실행, MuJoCo와 온톨로지 동기화 | M3: 통합 파이프라인 가동 |
 | 13~16주 | 검증·시연 | 정상·위험 개입 시험, 감사 로그 검증, 최종 시연·보고서 | M4: MVP 최종 시연 |
 
 ## 팀 역할
@@ -142,7 +143,7 @@ VLA(Vision-Language-Action) 모델은 자연어와 시각 정보를 바탕으로
 | CV | 강영한(팀장) | VLM 위험 감지, Worker·HazardEvent 갱신 |
 | NLP | 팀원 A | 자연어 명령 파싱, TaskOrder·VLA 인터페이스 |
 | ONT | 팀원 B | 온톨로지 스키마, Action 서버, Guardrail, 감사 로그 |
-| CTL | 팀원 C | ROS 2 제어, Isaac Sim, 상태 동기화 |
+| CTL | 팀원 C | ROS 2 제어, MuJoCo, 상태 동기화 |
 
 모든 모듈은 온톨로지 API를 공통 인터페이스로 사용합니다. 초기 단계에서 스키마를 확정해 병렬 개발과 통합을 지원합니다.
 
@@ -151,14 +152,14 @@ VLA(Vision-Language-Action) 모델은 자연어와 시각 정보를 바탕으로
 - AI: PyTorch, OpenVLA, LLaVA 또는 Florence-2, OpenCV
 - 온톨로지 백엔드: FastAPI, Redis, WebSocket 또는 gRPC
 - 로봇 제어: ROS 2 Humble/Jazzy
-- 시뮬레이션: NVIDIA Isaac Sim / Isaac Lab
-- 모델·상태 연동: Object/Link/Action 스키마, Isaac Sim 양방향 동기화
+- 시뮬레이션: MuJoCo 3.15.0 (ROS 2 브리지 직접 구현)
+- 모델·상태 연동: Object/Link/Action 스키마, MuJoCo 양방향 동기화
 
 ## 제약사항
 
 - ISO 10218 및 ISO/TS 15066 관련 안전 요구를 검토
 - 모듈 간 주요 상태·행동 통신은 온톨로지 API를 통해 관리
-- OpenVLA, LLaVA, ROS 2, Isaac Sim 및 기타 오픈소스 라이선스 준수
+- OpenVLA, LLaVA, ROS 2, MuJoCo 및 기타 오픈소스 라이선스 준수
 - 본 프로젝트의 목표는 한 학기 MVP이며, 상용 안전 인증 제품을 의미하지 않음
 
 ## 참고 자료
