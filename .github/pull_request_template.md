@@ -1,5 +1,5 @@
 <!--
-PR 제목: <type>(<모듈>): <요약>   예) feat(ont): add speed/torque submission criteria
+PR 제목: <type>(<모듈>): <한국어 요약>   예) feat(ont): 속도·토크 제출 기준 추가
 대상 브랜치: develop (main 반영은 develop → main PR로만 합니다)
 -->
 
@@ -27,7 +27,7 @@ Closes #
 - [ ] `cv` (VLM 위험 감지, Worker·HazardEvent 갱신)
 - [ ] `nlp` (자연어 파싱, TaskOrder, VLA 인터페이스)
 - [ ] `ont` (온톨로지 스키마, Action 서버, Guardrail, 감사 로그)
-- [ ] `ctl` (ROS 2 제어, Isaac Sim, 상태 동기화)
+- [ ] `ctl` (ROS 2 제어, MuJoCo, 상태 동기화)
 - [ ] `backend` (FastAPI 서버 공통 코드)
 - [ ] `sim` (MuJoCo 데모 등 시뮬레이션 실험)
 - [ ] `docs` / `chore` (문서, CI, 설정)

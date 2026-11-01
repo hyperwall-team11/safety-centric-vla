@@ -1,0 +1,51 @@
+<mujoco model="safety_vla_robot_demo">
+  <!-- Franka Panda: MuJoCo Menagerie (Apache-2.0), franka_emika_panda/ 참고 -->
+  <include file="franka_emika_panda/panda.xml"/>
+  <compiler meshdir="franka_emika_panda/assets"/>
+
+  <option timestep="0.002"/>
+  <visual>
+    <global offwidth="640" offheight="480"/>
+    <headlight ambient="0.4 0.4 0.4" diffuse="0.6 0.6 0.6"/>
+  </visual>
+  <asset>
+    <texture name="floor_texture" type="2d" builtin="checker"
+             rgb1="0.65 0.65 0.65" rgb2="0.45 0.45 0.45" width="256" height="256"/>
+    <material name="floor_material" texture="floor_texture" texrepeat="4 4"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 -2 6" dir="0 0 -1"/>
+    <geom name="floor" type="plane" size="5 5 0.1" material="floor_material"/>
+    <!-- 로봇 작업 반경 표시. 시각화일 뿐 안전 규칙을 실행하지 않습니다. -->
+    <geom name="keep_out_marking" type="box" pos="0 0 0.006"
+          size="1.2 1.2 0.005" rgba="0.9 0.1 0.1 0.45" contype="0" conaffinity="0"/>
+    <camera name="cctv_1" pos="0 -6 5" xyaxes="1 0 0 0 0.64 0.768" fovy="55"/>
+
+    <!-- 시나리오 1: A구역 부품 상자를 B 작업대로 이송 -->
+    <site name="zone_a" type="box" pos="0.5 0.3 0.012" size="0.08 0.08 0.001" rgba="0.2 0.4 0.9 0.6"/>
+    <site name="zone_b" type="box" pos="0.5 -0.3 0.012" size="0.08 0.08 0.001" rgba="0.2 0.8 0.3 0.6"/>
+    <body name="part_box" pos="0.5 0.3 0.025">
+      <freejoint name="part_box_joint"/>
+      <geom name="part_box_geom" type="box" size="0.025 0.025 0.025" mass="0.1"
+            rgba="0.85 0.6 0.25 1" friction="1.5 0.01 0.001"/>
+    </body>
+
+    <!-- 단순 작업자 모형 (mocap: 코드에서 위치만 이동) -->
+    <body name="worker" mocap="true" pos="2 0 0">
+      <geom name="torso" type="capsule" fromto="0 0 0.85 0 0 1.35" size="0.18" rgba="1 0.65 0.05 1" contype="0" conaffinity="0"/>
+      <geom name="head" type="sphere" pos="0 0 1.65" size="0.15" rgba="0.85 0.65 0.5 1" contype="0" conaffinity="0"/>
+      <geom name="left_leg" type="capsule" fromto="-0.12 0 0.15 -0.12 0 0.8" size="0.07" rgba="0.1 0.2 0.6 1" contype="0" conaffinity="0"/>
+      <geom name="right_leg" type="capsule" fromto="0.12 0 0.15 0.12 0 0.8" size="0.07" rgba="0.1 0.2 0.6 1" contype="0" conaffinity="0"/>
+      <geom name="left_arm" type="capsule" fromto="-0.23 0 1.35 -0.35 0 0.9" size="0.06" rgba="1 0.65 0.05 1" contype="0" conaffinity="0"/>
+      <geom name="right_arm" type="capsule" fromto="0.23 0 1.35 0.35 0 0.9" size="0.06" rgba="1 0.65 0.05 1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+
+  <keyframe>
+    <!-- 로봇 7관절 + 그리퍼 2 + 상자 freejoint 7 -->
+    <key name="home"
+         qpos="0 0 0 -1.57079 0 1.57079 -0.7853 0.04 0.04  0.5 0.3 0.025 1 0 0 0"
+         ctrl="0 0 0 -1.57079 0 1.57079 -0.7853 255"/>
+  </keyframe>
+</mujoco>

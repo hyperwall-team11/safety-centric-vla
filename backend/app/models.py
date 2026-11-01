@@ -82,6 +82,8 @@ class Robot(OntologyModel):
     velocity: Vector3
     motion_limits: MotionLimits
     updated_at: datetime = Field(default_factory=utc_now)
+    last_heartbeat_at: datetime | None = None
+    battery_level: float | None = Field(default=None, ge=0, le=1)
 
 
 class SensorType(str, Enum):
@@ -104,6 +106,9 @@ class Sensor(OntologyModel):
     pose: Pose
     status: SensorStatus
     mounted_robot_id: str | None
+    covered_zone_ids: list[str] = Field(default_factory=list)
+    last_frame_at: datetime | None = None
+    calibrated: bool | None = None
 
 
 class DetectedType(str, Enum):
@@ -115,6 +120,12 @@ class DetectedType(str, Enum):
     OBSTACLE = "OBSTACLE"
 
 
+class PositionSource(str, Enum):
+    WORLD = "WORLD"
+    ZONE_MAPPED = "ZONE_MAPPED"
+    IMAGE_ONLY = "IMAGE_ONLY"
+
+
 class Observation(OntologyModel):
     observation_id: str
     sensor_id: str
@@ -124,6 +135,9 @@ class Observation(OntologyModel):
     frame_id: str
     confidence: float = Field(ge=0, le=1)
     track_id: str | None
+    ingested_at: datetime | None = None
+    bbox: tuple[float, float, float, float] | None = None
+    position_source: PositionSource | None = None
 
 
 class WorkerSafetyStatus(str, Enum):
@@ -140,6 +154,7 @@ class Worker(OntologyModel):
     safety_status: WorkerSafetyStatus
     last_seen_at: datetime
     confidence: float = Field(ge=0, le=1)
+    source_sensor_ids: list[str] = Field(default_factory=list)
 
 
 class PhysicalObject(OntologyModel):
@@ -164,6 +179,8 @@ class Zone(OntologyModel):
     geometry: dict[str, Any]
     frame_id: str
     minimum_safety_distance: float = Field(ge=0)
+    max_speed: float | None = Field(default=None, gt=0)
+    estop_distance: float = Field(default=0.6, ge=0)
 
 
 class TaskStatus(str, Enum):
@@ -312,12 +329,18 @@ class RuleType(str, Enum):
     KEEP_OUT = "KEEP_OUT"
     SAFETY_DISTANCE = "SAFETY_DISTANCE"
     HAZARD_STATE = "HAZARD_STATE"
+    OBSERVATION_GAP = "OBSERVATION_GAP"
 
 
 class RuleSeverity(str, Enum):
     INFO = "INFO"
     WARNING = "WARNING"
     CRITICAL = "CRITICAL"
+
+
+class ViolationAction(str, Enum):
+    REJECT = "REJECT"
+    ESTOP = "ESTOP"
 
 
 class SafetyRule(OntologyModel):
@@ -327,6 +350,18 @@ class SafetyRule(OntologyModel):
     condition: dict[str, Any]
     severity: RuleSeverity
     enabled: bool = True
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    on_violation: ViolationAction | None = None
+
+    @model_validator(mode="after")
+    def set_default_violation_action(self) -> SafetyRule:
+        if self.on_violation is None:
+            self.on_violation = (
+                ViolationAction.ESTOP
+                if self.severity == RuleSeverity.CRITICAL
+                else ViolationAction.REJECT
+            )
+        return self
 
 
 class HazardType(str, Enum):
@@ -349,6 +384,11 @@ class HazardStatus(str, Enum):
     RESOLVED = "RESOLVED"
 
 
+class HazardResolvedBy(str, Enum):
+    SENSOR_AUTO = "SENSOR_AUTO"
+    OPERATOR = "OPERATOR"
+
+
 class HazardEvent(OntologyModel):
     hazard_id: str = Field(default_factory=lambda: new_id("hazard"))
     hazard_type: HazardType
@@ -361,6 +401,12 @@ class HazardEvent(OntologyModel):
     confidence: float = Field(ge=0, le=1)
     detected_at: datetime = Field(default_factory=utc_now)
     resolved_at: datetime | None = None
+    last_observed_at: datetime | None = None
+    resolved_by: HazardResolvedBy | None = None
+
+
+class HazardResolveRequest(OntologyModel):
+    resolved_by: HazardResolvedBy
 
 
 class Decision(str, Enum):
@@ -370,6 +416,12 @@ class Decision(str, Enum):
     EXECUTE = "EXECUTE"
     COMPLETE = "COMPLETE"
     FAIL = "FAIL"
+
+
+class TriggerSource(str, Enum):
+    RULE_ENGINE = "RULE_ENGINE"
+    OPERATOR = "OPERATOR"
+    HEARTBEAT_LOSS = "HEARTBEAT_LOSS"
 
 
 class RuleResult(OntologyModel):
@@ -387,3 +439,5 @@ class ExecutionLog(OntologyModel):
     robot_id: str
     timestamp: datetime = Field(default_factory=utc_now)
     result_message: str
+    evaluated_in_ms: float | None = Field(default=None, ge=0)
+    triggered_by: TriggerSource | None = None

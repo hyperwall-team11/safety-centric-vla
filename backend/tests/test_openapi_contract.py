@@ -15,6 +15,8 @@ class OpenApiContractTest(unittest.TestCase):
             ("GET", "/health"),
             ("POST", "/robots"),
             ("GET", "/robots"),
+            ("POST", "/zones"),
+            ("GET", "/zones"),
             ("GET", "/task-orders"),
             ("POST", "/task-orders/from-natural-language"),
             ("GET", "/task-orders/{task_id}"),
@@ -30,7 +32,7 @@ class OpenApiContractTest(unittest.TestCase):
         }
 
         self.assertEqual(schema["info"]["version"], "0.2.0")
-        self.assertEqual(len(schema["paths"]), 13)
+        self.assertEqual(len(schema["paths"]), 14)
         self.assertEqual(actual_operations, expected_operations)
         list_operation = schema["paths"]["/task-orders"]["get"]
         self.assertEqual(

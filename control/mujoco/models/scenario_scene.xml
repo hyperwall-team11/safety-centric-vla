@@ -1,0 +1,111 @@
+<mujoco model="scenario_scene">
+  <!--
+    시나리오 A·B 장면 (개발계획서 3-3 최소 시연 구성): TIAGo + CCTV 2대 + 로봇 머리 카메라.
+    A구역 작업대의 부품 상자를 B 작업대로 옮기고, 작업자가 금지구역에 들어오면 위험 개입.
+    tiago.xml(Menagerie 원본)은 수정하지 않는다.
+
+    주의: tiago.xml의 기본값(geom contype=0, type=mesh, mass=0)이 이 파일의 geom에도 적용되므로
+    모든 geom에 type·충돌 설정·질량을 명시한다.
+  -->
+  <include file="pal_tiago/tiago.xml"/>
+  <compiler meshdir="pal_tiago/assets/"/>
+
+  <visual>
+    <global offwidth="640" offheight="480" azimuth="135" elevation="-25"/>
+    <headlight ambient="0.4 0.4 0.4" diffuse="0.6 0.6 0.6"/>
+  </visual>
+  <asset>
+    <texture name="floor_texture" type="2d" builtin="checker"
+             rgb1="0.65 0.65 0.65" rgb2="0.45 0.45 0.45" width="256" height="256"/>
+    <material name="floor_material" texture="floor_texture" texrepeat="6 6"/>
+    <material name="table_material" rgba="0.55 0.4 0.25 1"/>
+  </asset>
+
+  <!-- 팔·머리·몸통은 위치 제어, 바퀴는 속도 제어 (원본 tiago_position.xml과 같은 값) -->
+  <default>
+    <default class="position">
+      <position dampratio="1"/>
+    </default>
+  </default>
+  <actuator>
+    <position class="position" name="arm_position_1_position" joint="arm_1_joint" inheritrange="1.0" kp="3000"/>
+    <position class="position" name="arm_position_2_position" joint="arm_2_joint" inheritrange="1.0" kp="3000"/>
+    <position class="position" name="arm_position_3_position" joint="arm_3_joint" inheritrange="1.0" kp="3000"/>
+    <position class="position" name="arm_position_4_position" joint="arm_4_joint" inheritrange="1.0" kp="3000"/>
+    <position class="position" name="arm_position_5_position" joint="arm_5_joint" inheritrange="1.0" kp="500"/>
+    <position class="position" name="arm_position_6_position" joint="arm_6_joint" inheritrange="1.0" kp="500"/>
+    <position class="position" name="arm_position_7_position" joint="arm_7_joint" inheritrange="1.0" kp="500"/>
+    <position class="position" name="gripper_left_finger_position" joint="gripper_left_finger_joint"
+      inheritrange="0.999" forcerange="-5.197 5.197" kp="1000" kv="80"/>
+    <position class="position" name="gripper_right_finger_position" joint="gripper_right_finger_joint"
+      inheritrange="0.999" forcerange="-5.197 5.197" kp="1000" kv="80"/>
+    <position class="position" name="head_1_joint_position" joint="head_1_joint" inheritrange="1.0" kp="20"/>
+    <position class="position" name="head_2_joint_position" joint="head_2_joint" inheritrange="1.0" kp="20"/>
+    <position class="position" name="torso_lift_joint_position" joint="torso_lift_joint" inheritrange="1.0" kp="30000"/>
+    <velocity name="wheel_left_joint_vel" joint="wheel_left_joint" ctrlrange="-5 5" kv="100"/>
+    <velocity name="wheel_right_joint_vel" joint="wheel_right_joint" ctrlrange="-5 5" kv="100"/>
+  </actuator>
+
+  <worldbody>
+    <light pos="1 -2 6" dir="0 0.3 -1"/>
+    <light pos="2 2 5" dir="0 -0.3 -1" diffuse="0.3 0.3 0.3"/>
+    <geom name="floor" type="plane" size="6 6 0.1" material="floor_material"
+          contype="1" conaffinity="1" group="0"/>
+
+    <!-- KeepOutZone: 로봇 작업 셀. 시각 표시만 하고 충돌·안전 판정은 하지 않는다. -->
+    <geom name="keep_out_zone" type="box" pos="1.2 0 0.003" size="0.7 0.6 0.002"
+          rgba="0.9 0.1 0.1 0.35" contype="0" conaffinity="0" group="0" mass="0"/>
+
+    <!-- A구역 작업대 + 부품 상자 -->
+    <geom name="zone_a_marking" type="box" pos="1.2 1.0 0.003" size="0.4 0.3 0.002"
+          rgba="0.2 0.4 0.9 0.35" contype="0" conaffinity="0" group="0" mass="0"/>
+    <body name="table_a" pos="1.2 1.0 0">
+      <geom name="table_a_top" type="box" pos="0 0 0.58" size="0.3 0.25 0.02" material="table_material"
+            contype="1" conaffinity="1" group="0" mass="10"/>
+      <geom name="table_a_leg" type="box" pos="0 0 0.28" size="0.05 0.05 0.28" material="table_material"
+            contype="1" conaffinity="1" group="0" mass="5"/>
+    </body>
+    <body name="part_box" pos="1.2 1.0 0.64">
+      <freejoint name="part_box_joint"/>
+      <!-- 그리퍼 최대 벌림 0.09 m보다 작은 폭 0.06 m -->
+      <geom name="part_box_geom" type="box" size="0.03 0.03 0.04" mass="0.2" rgba="0.95 0.6 0.15 1"
+            contype="1" conaffinity="1" group="0" condim="4" friction="1.5 0.01 0.001"/>
+    </body>
+
+    <!-- B 작업대 (A 작업대와 같은 높이 0.6 m) -->
+    <geom name="zone_b_marking" type="box" pos="1.2 -1.0 0.003" size="0.4 0.3 0.002"
+          rgba="0.2 0.8 0.3 0.35" contype="0" conaffinity="0" group="0" mass="0"/>
+    <body name="table_b" pos="1.2 -1.0 0">
+      <geom name="table_b_top" type="box" pos="0 0 0.58" size="0.3 0.25 0.02" material="table_material"
+            contype="1" conaffinity="1" group="0" mass="10"/>
+      <geom name="table_b_leg" type="box" pos="0 0 0.28" size="0.05 0.05 0.28" material="table_material"
+            contype="1" conaffinity="1" group="0" mass="5"/>
+    </body>
+
+    <!-- CCTV 2대: 서로 다른 방향에서 작업 셀 중심(work_area_center)을 바라본다 -->
+    <body name="work_area_center" pos="1.2 0 0.3"/>
+    <camera name="cctv_1" pos="1.2 -4.2 3.2" mode="targetbody" target="work_area_center" fovy="60"/>
+    <camera name="cctv_2" pos="4.6 2.6 3.0" mode="targetbody" target="work_area_center" fovy="60"/>
+    <geom name="cctv_1_housing" type="box" pos="1.2 -4.3 3.25" size="0.08 0.12 0.06" rgba="0.2 0.2 0.2 1"
+          contype="0" conaffinity="0" group="0" mass="0"/>
+    <geom name="cctv_2_housing" type="box" pos="4.7 2.7 3.05" size="0.12 0.08 0.06" rgba="0.2 0.2 0.2 1"
+          contype="0" conaffinity="0" group="0" mass="0"/>
+
+    <!-- 작업자 모형 (mocap): simulation.WorkerScript가 경로점을 따라 위치를 갱신한다 -->
+    <body name="worker" mocap="true" pos="3.4 1.8 0">
+      <geom type="capsule" fromto="0 0 0.85 0 0 1.35" size="0.18" rgba="1 0.65 0.05 1" contype="0" conaffinity="0" group="0" mass="0"/>
+      <geom type="sphere" pos="0 0 1.65" size="0.15" rgba="0.85 0.65 0.5 1" contype="0" conaffinity="0" group="0" mass="0"/>
+      <geom type="capsule" fromto="0 -0.12 0.15 0 -0.12 0.8" size="0.07" rgba="0.1 0.2 0.6 1" contype="0" conaffinity="0" group="0" mass="0"/>
+      <geom type="capsule" fromto="0 0.12 0.15 0 0.12 0.8" size="0.07" rgba="0.1 0.2 0.6 1" contype="0" conaffinity="0" group="0" mass="0"/>
+      <geom type="capsule" fromto="0 -0.23 1.35 0 -0.35 0.9" size="0.06" rgba="1 0.65 0.05 1" contype="0" conaffinity="0" group="0" mass="0"/>
+      <geom type="capsule" fromto="0 0.23 1.35 0 0.35 0.9" size="0.06" rgba="1 0.65 0.05 1" contype="0" conaffinity="0" group="0" mass="0"/>
+    </body>
+  </worldbody>
+
+  <keyframe>
+    <!-- TIAGo 29 (원본 home, 바닥 z=0 기준으로 베이스 높이만 0.005) + 상자 freejoint 7 -->
+    <key name="home" ctrl="0.2 -1.34 -0.2 1.94 -1.57 1.37 0 0 0 0 0 0.15 0 0"
+      qpos="0 0 0.005 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0.15 0 0 0.20 -1.34 -0.20 1.94 -1.57 1.37 0.0 0 0
+            1.2 1.0 0.64 1 0 0 0"/>
+  </keyframe>
+</mujoco>
