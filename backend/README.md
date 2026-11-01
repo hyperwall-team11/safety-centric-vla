@@ -51,6 +51,8 @@ python3 -m unittest discover -s tests -v
 
 TaskOrder 생성 요청에 선택적인 `Idempotency-Key` 헤더를 보내면 네트워크 재시도나 중복 클릭에도 같은 작업을 한 번만 생성합니다. 같은 키와 본문을 다시 보내면 기존 TaskOrder를 `200`으로 반환하고, 같은 키에 다른 본문을 보내면 `409`입니다. 키는 공백 제외 1~128자입니다. 응답의 `Idempotency-Replayed` 헤더로 최초 생성 여부를, `Location` 헤더로 생성된 TaskOrder 조회 경로를 확인할 수 있습니다. 동시 요청도 같은 키라면 하나의 작업으로 직렬화됩니다. 요청 비교에는 기본값까지 정규화한 SHA-256 fingerprint를 사용하므로 자연어 원문을 멱등성 기록에 중복 저장하지 않습니다.
 
+`POST /task-orders/preview`는 TaskOrder를 저장하지 않고 자연어 명령의 정규화 결과, 대상 로봇·물체, 목적지와 예상 Action 유형을 반환합니다. 해석 실패는 `ROBOT_NOT_FOUND`, `DESTINATION_REQUIRED`처럼 구조화된 오류 코드와 한글 메시지로 제공합니다. `POST /task-orders/preview/batch`는 1~50개 요청을 입력 순서대로 검증하며 일부 항목이 실패해도 나머지 결과와 성공·실패 집계를 반환합니다. 두 미리보기 API는 성공·실패 모두 저장소를 변경하지 않습니다.
+
 공백이 포함된 구역명은 `"조립 라인 구역"으로`처럼 따옴표로 묶습니다. 물체 ID는 `상자3`, `상자 번호 3`, `3번 상자`, `박스3`, `box-3`, `obj-3` 형식을 지원합니다.
 
 현재 자동 변환 범위는 로봇 이동과 물체 운반입니다. `STOP`, `RESUME`은 Action enum에는 존재하지만 목적지가 필수인 TaskOrder v1.1 계약상 아직 자동 변환하지 않고 `422`를 반환합니다.
@@ -85,6 +87,8 @@ curl -X POST http://127.0.0.1:8000/task-orders/{task_id}/action-proposals \
 - `POST /zones`
 - `GET /zones`
 - `GET /task-orders`
+- `POST /task-orders/preview`
+- `POST /task-orders/preview/batch`
 - `POST /task-orders/from-natural-language`
 - `GET /task-orders/{task_id}`
 - `POST /task-orders/{task_id}/action-proposals`

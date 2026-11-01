@@ -30,7 +30,7 @@
 
 ## 2. 구현 엔드포인트
 
-현재 구현은 14개 path, 17개 HTTP operation으로 구성된다.
+현재 구현은 16개 path, 19개 HTTP operation으로 구성된다.
 
 | Method | Path | 성공 | 용도 |
 |---|---|---:|---|
@@ -40,6 +40,8 @@
 | `POST` | `/zones` | `201` | Zone 등록 |
 | `GET` | `/zones` | `200` | Zone 전체 조회 |
 | `GET` | `/task-orders` | `200` | TaskOrder 필터·정렬·페이지 목록 조회 |
+| `POST` | `/task-orders/preview` | `200` | 자연어 명령 단건 비저장 검증 |
+| `POST` | `/task-orders/preview/batch` | `200` | 자연어 명령 1~50건 일괄 비저장 검증 |
 | `POST` | `/task-orders/from-natural-language` | `201` | 자연어를 TaskOrder로 변환·저장 |
 | `GET` | `/task-orders/{task_id}` | `200` | TaskOrder 단건 조회 |
 | `POST` | `/task-orders/{task_id}/action-proposals` | `201`, `200` | TaskOrder에서 ActionProposal 생성 |
@@ -92,6 +94,12 @@
 ### 3.2 자연어 TaskOrder 생성
 
 `GET /task-orders`는 저장된 TaskOrder를 생성 순서로 반환한다. `status`, `target_robot_id`를 단독 또는 함께 필터링하고, `order=asc|desc`, `offset`(기본 0), `limit`(기본 50, 최대 100)으로 정렬·페이지네이션한다. 응답의 `X-Total-Count` 헤더는 필터 적용 후 페이지네이션 전 전체 건수다.
+
+`POST /task-orders/preview`는 `NaturalLanguageTaskRequest`를 실제 저장하지 않고 해석한다. 성공 응답은 정규화된 `instruction`, `target_robot_id`, `target_object_id`, `destination`, 예상 `action_type=MOVE_TO|MANIPULATE`를 포함한다. 자연어 해석 실패 응답의 `detail`은 안정적인 오류 `code`와 한글 `message` 객체다. 빈 필드·잘못된 타입 같은 요청 모델 검증 실패의 `detail`은 FastAPI 검증 오류 배열이며, OpenAPI 422 응답은 두 형태를 `anyOf`로 선언한다. 실제 생성 API는 기존 호환성을 위해 문자열 `detail`을 유지한다.
+
+오류 코드는 명령(`INVALID_INSTRUCTION`, `UNSUPPORTED_CONTROL_ACTION`), 로봇(`ROBOT_NOT_FOUND`, `ROBOT_AMBIGUOUS`, `ROBOT_CONFLICT`, `ROBOT_REQUIRED`), 목적지·물체(`DESTINATION_INVALID`, `DESTINATION_REQUIRED`, `DESTINATION_AMBIGUOUS`, `OBJECT_AMBIGUOUS`), Action(`ACTION_INVALID`, `ACTION_UNSUPPORTED`)으로 구분한다.
+
+`POST /task-orders/preview/batch` 요청은 `items` 1~50개를 받는다. 각 항목을 입력 순서대로 독립 검증하고 `valid=true`이면 `preview`, `false`이면 `error`를 반환한다. `total`, `valid_count`, `invalid_count` 집계를 포함하며 일부 실패가 전체 요청을 중단하지 않는다. 두 preview 경로 모두 성공·실패 시 `store.tasks`를 변경하지 않는다.
 
 `POST /task-orders/from-natural-language`
 
@@ -325,4 +333,4 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q app tests
 ```
 
-OpenAPI 경로 수는 14개, operation 수는 17개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.
+OpenAPI 경로 수는 16개, operation 수는 19개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.
