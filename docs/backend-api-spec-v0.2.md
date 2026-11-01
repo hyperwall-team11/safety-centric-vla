@@ -233,6 +233,7 @@ TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 
 `POST /action-proposals/{proposal_id}/result`
 
 - `EXECUTING` 상태에서만 최초 결과를 받을 수 있다.
+- TaskOrder가 `RUNNING`, Robot이 `MOVING`인 일관된 실행 상태에서만 결과를 반영한다. E-Stop 등으로 상태가 바뀐 뒤 도착한 지연 결과는 `409`로 거절해 안전 상태를 덮어쓰지 않는다.
 - 성공 본문은 `{"status":"SUCCEEDED","detail":"목적지 도착"}`이며 `reason_code`를 허용하지 않는다.
 - 실패 본문은 `{"status":"FAILED","reason_code":"UNSUPPORTED|TIMEOUT|HW_ERROR","detail":"선택 설명"}`이며 `reason_code`가 필수다.
 - 성공 시 Proposal `SUCCEEDED`, TaskOrder `COMPLETED`, Robot `IDLE`, `COMPLETE` 로그로 전이한다.

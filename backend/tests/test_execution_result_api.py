@@ -131,6 +131,22 @@ class ExecutionResultApiTest(unittest.TestCase):
         self.assertEqual(conflict.status_code, 409)
         self.assertEqual(len(store.logs), log_count)
 
+    def test_late_result_cannot_overwrite_estop_state(self) -> None:
+        task, proposal = self.start_execution()
+        store.tasks[task["task_id"]].status = "HELD"
+        store.robots["robot-01"].status = "ESTOP"
+        log_count = len(store.logs)
+
+        response = self.report(
+            proposal["proposal_id"],
+            {"status": "SUCCEEDED", "detail": "late adapter result"},
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(store.tasks[task["task_id"]].status, "HELD")
+        self.assertEqual(store.robots["robot-01"].status, "ESTOP")
+        self.assertEqual(store.proposals[proposal["proposal_id"]].status, "EXECUTING")
+        self.assertEqual(len(store.logs), log_count)
+
     def test_result_contract_and_state_are_validated(self) -> None:
         task_response = self.client.post(
             "/task-orders/from-natural-language",

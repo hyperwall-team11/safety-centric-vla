@@ -376,6 +376,11 @@ def report_action_result(
 
         task = store.tasks[proposal.task_id]
         robot = store.robots[proposal.robot_id]
+        if task.status != TaskStatus.RUNNING or robot.status != RobotStatus.MOVING:
+            raise HTTPException(
+                status_code=409,
+                detail="TaskOrder와 Robot이 실행 중 상태가 아니어서 결과를 반영할 수 없습니다.",
+            )
         if report.status == AdapterResultStatus.SUCCEEDED:
             proposal.status = ProposalStatus.SUCCEEDED
             task.status = TaskStatus.COMPLETED
