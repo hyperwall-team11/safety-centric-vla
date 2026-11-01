@@ -95,7 +95,7 @@
 
 `GET /task-orders`는 저장된 TaskOrder를 생성 순서로 반환한다. `status`, `target_robot_id`를 단독 또는 함께 필터링하고, `order=asc|desc`, `offset`(기본 0), `limit`(기본 50, 최대 100)으로 정렬·페이지네이션한다. 응답의 `X-Total-Count` 헤더는 필터 적용 후 페이지네이션 전 전체 건수다.
 
-`POST /task-orders/preview`는 `NaturalLanguageTaskRequest`를 실제 저장하지 않고 해석한다. 성공 응답은 정규화된 `instruction`, `target_robot_id`, `target_object_id`, `destination`, 예상 `action_type=MOVE_TO|MANIPULATE`를 포함한다. 실패 응답의 `detail`은 안정적인 오류 `code`와 한글 `message`를 포함하며, 실제 생성 API는 기존 호환성을 위해 문자열 `detail`을 유지한다.
+`POST /task-orders/preview`는 `NaturalLanguageTaskRequest`를 실제 저장하지 않고 해석한다. 성공 응답은 정규화된 `instruction`, `target_robot_id`, `target_object_id`, `destination`, 예상 `action_type=MOVE_TO|MANIPULATE`를 포함한다. 자연어 해석 실패 응답의 `detail`은 안정적인 오류 `code`와 한글 `message` 객체다. 빈 필드·잘못된 타입 같은 요청 모델 검증 실패의 `detail`은 FastAPI 검증 오류 배열이며, OpenAPI 422 응답은 두 형태를 `anyOf`로 선언한다. 실제 생성 API는 기존 호환성을 위해 문자열 `detail`을 유지한다.
 
 오류 코드는 명령(`INVALID_INSTRUCTION`, `UNSUPPORTED_CONTROL_ACTION`), 로봇(`ROBOT_NOT_FOUND`, `ROBOT_AMBIGUOUS`, `ROBOT_CONFLICT`, `ROBOT_REQUIRED`), 목적지·물체(`DESTINATION_INVALID`, `DESTINATION_REQUIRED`, `DESTINATION_AMBIGUOUS`, `OBJECT_AMBIGUOUS`), Action(`ACTION_INVALID`, `ACTION_UNSUPPORTED`)으로 구분한다.
 

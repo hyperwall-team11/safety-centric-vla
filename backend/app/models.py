@@ -251,6 +251,18 @@ class TaskParseErrorResponse(OntologyModel):
     detail: TaskParseErrorDetail
 
 
+class RequestValidationErrorDetail(OntologyModel):
+    type: NonBlankString
+    loc: list[str | int]
+    msg: NonBlankString
+    input: Any | None = None
+    ctx: dict[str, Any] | None = None
+
+
+class RequestValidationErrorResponse(OntologyModel):
+    detail: list[RequestValidationErrorDetail]
+
+
 class TaskOrderPreviewBatchRequest(OntologyModel):
     items: list[NaturalLanguageTaskRequest] = Field(min_length=1, max_length=50)
 

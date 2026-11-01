@@ -20,6 +20,7 @@ from .models import (
     NaturalLanguageTaskRequest,
     ProposalGenerationRequest,
     ProposalStatus,
+    RequestValidationErrorResponse,
     Robot,
     RobotStatus,
     SafetyRule,
@@ -169,7 +170,7 @@ def list_tasks(
     responses={
         status.HTTP_422_UNPROCESSABLE_CONTENT: {
             "description": "요청 검증 또는 자연어 작업 해석 실패",
-            "model": TaskParseErrorResponse,
+            "model": TaskParseErrorResponse | RequestValidationErrorResponse,
         },
     },
 )

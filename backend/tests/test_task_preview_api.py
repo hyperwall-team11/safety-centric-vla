@@ -3,6 +3,7 @@ import unittest
 from fastapi.testclient import TestClient
 
 from app.main import app, seed_rules
+from app.models import RequestValidationErrorResponse, TaskParseErrorResponse
 from app.store import store
 
 
@@ -90,7 +91,20 @@ class TaskOrderPreviewApiTest(unittest.TestCase):
                 detail = response.json()["detail"]
                 self.assertEqual(detail["code"], expected_code)
                 self.assertTrue(detail["message"])
+                TaskParseErrorResponse.model_validate(response.json())
         self.assertEqual(store.tasks, {})
+
+    def test_request_validation_errors_match_documented_union(self) -> None:
+        for payload in ({}, {"instruction": 123}):
+            with self.subTest(payload=payload):
+                response = self.client.post("/task-orders/preview", json=payload)
+                self.assertEqual(response.status_code, 422, response.text)
+                RequestValidationErrorResponse.model_validate(response.json())
+
+        error_schema = app.openapi()["paths"]["/task-orders/preview"]["post"][
+            "responses"
+        ]["422"]["content"]["application/json"]["schema"]
+        self.assertEqual(len(error_schema["anyOf"]), 2)
 
     def test_existing_create_endpoint_keeps_string_error_detail(self) -> None:
         response = self.client.post(
