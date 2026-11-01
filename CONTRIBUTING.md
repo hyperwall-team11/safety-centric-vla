@@ -100,19 +100,7 @@ docs(ont): describe ActionProposal state transitions
 
 ### PR 본문
 
-```markdown
-## 변경 내용
-- 무엇을 바꿨는지
-
-## 이유
-- 왜 바꿨는지, 관련 요구사항 ID (R1~R5)
-
-## 확인 방법
-- 실행한 명령, 테스트 결과, 스크린샷
-
-## 영향 범위
-- 다른 모듈에 영향이 있는지 (특히 온톨로지 API 변경 여부)
-```
+PR을 열면 [.github/pull_request_template.md](.github/pull_request_template.md)가 자동으로 채워집니다. 섹션 구조와 제목을 그대로 두고 내용만 작성하며, 해당 없는 섹션은 지우지 말고 `해당 없음`이라고 적습니다. `gh pr create --body`나 AI 도구로 본문을 직접 넣을 때도 이 템플릿 구조를 따릅니다(AI 도구용 규칙은 [AGENTS.md](AGENTS.md)).
 
 ### 머지 방식
 
