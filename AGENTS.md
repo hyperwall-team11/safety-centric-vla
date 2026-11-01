@@ -40,7 +40,7 @@ AI 코딩 도구(Claude Code, Codex, Cursor 등)가 이 저장소에서 작업�
 
 - type: `feat` `fix` `docs` `refactor` `test` `chore`
 - 모듈: `cv` `nlp` `ont` `ctl` `backend` `sim` (문서·CI 전반이면 생략 가능: `docs: ...`)
-- 요약은 50자 이내, 영어 또는 한국어. 필요하면 한 줄 띄우고 본문에 변경 이유를 적습니다.
+- 요약은 50자 이내, **한국어로** 씁니다. type·모듈·코드 식별자만 영어로 둡니다. 필요하면 한 줄 띄우고 본문에 변경 이유를 한국어로 적습니다.
 
 ## 5. Pull Request 작성 규칙
 

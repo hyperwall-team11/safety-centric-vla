@@ -51,7 +51,7 @@ git checkout -b feat/ont-submission-criteria
 
 # 2. 작업 후 커밋
 git add .
-git commit -m "feat(ont): add speed/torque submission criteria"
+git commit -m "feat(ont): 속도·토크 제출 기준 추가"
 
 # 3. 푸시 전에 develop 최신 내용 반영
 git fetch origin
@@ -78,15 +78,15 @@ git push -u origin feat/ont-submission-criteria
 | `test` | 테스트 추가·수정 |
 | `chore` | 빌드, CI, 설정, 의존성 |
 
-- 요약은 50자 이내로, 영어 또는 한국어로 씁니다.
+- 요약은 50자 이내로, **한국어로** 씁니다. type·모듈·코드 식별자(`TaskOrder` 등)만 영어로 둡니다.
 - 필요하면 한 줄을 띄우고 본문에 변경 이유를 적습니다.
 
 예시:
 
 ```text
-feat(cv): publish HazardEvent when worker enters KeepOutZone
-fix(ctl): reduce TriggerEStop latency below 100ms
-docs(ont): describe ActionProposal state transitions
+feat(cv): 작업자가 KeepOutZone 진입 시 HazardEvent 발행
+fix(ctl): TriggerEStop 지연을 100ms 미만으로 단축
+docs(ont): ActionProposal 상태 전이 설명 추가
 ```
 
 ## 4. Pull Request
