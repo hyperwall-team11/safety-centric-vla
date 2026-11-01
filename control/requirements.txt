@@ -1,0 +1,6 @@
+# pixi를 쓰지 않고 pip로 MuJoCo 부분만 설치할 때 사용 (Python 3.10 이상)
+# ROS 2 Humble은 pip로 설치되지 않으므로 pixi(권장) 또는 Ubuntu apt로 설치한다. 전체 환경은 pixi.toml 참고.
+mujoco==3.15.0
+numpy
+pillow
+pytest<8

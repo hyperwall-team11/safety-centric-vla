@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from threading import RLock
 
-from .models import ActionProposal, ExecutionLog, HazardEvent, Robot, SafetyRule, TaskOrder
+from .models import ActionProposal, ExecutionLog, HazardEvent, Robot, SafetyRule, TaskOrder, Zone
 
 
 class InMemoryStore:
@@ -15,6 +15,7 @@ class InMemoryStore:
     def reset(self) -> None:
         with self._lock:
             self.robots: dict[str, Robot] = {}
+            self.zones: dict[str, Zone] = {}
             self.tasks: dict[str, TaskOrder] = {}
             self.task_idempotency: dict[str, tuple[str, str]] = {}
             self.proposals: dict[str, ActionProposal] = {}
