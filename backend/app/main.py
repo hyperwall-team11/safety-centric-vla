@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from typing import Annotated
+from hashlib import sha256
+from time import perf_counter
+from typing import Annotated, Literal
 
-from fastapi import FastAPI, Header, HTTPException, Response, status
+from fastapi import FastAPI, Header, HTTPException, Query, Response, status
+from pydantic import BaseModel
 
 from .action_planner import ActionPlanningError, RuleBasedActionPlanner
 from .models import (
@@ -10,11 +13,15 @@ from .models import (
     Decision,
     ExecutionLog,
     HazardEvent,
+    HazardResolveRequest,
+    HazardResolvedBy,
+    HazardSeverity,
     HazardStatus,
     NaturalLanguageTaskRequest,
     ProposalGenerationRequest,
     ProposalStatus,
     Robot,
+    RobotStatus,
     SafetyRule,
     TaskOrder,
     TaskOrderPreview,
@@ -24,6 +31,8 @@ from .models import (
     TaskParseErrorDetail,
     TaskParseErrorResponse,
     TaskStatus,
+    TriggerSource,
+    Zone,
     utc_now,
 )
 from .safety import default_rules, evaluate_proposal
@@ -47,6 +56,36 @@ PLANNABLE_TASK_STATUSES = {
     TaskStatus.CREATED,
     TaskStatus.PLANNING,
 }
+TASK_LIST_RESPONSE_HEADERS = {
+    "X-Total-Count": {
+        "description": "필터 적용 후 페이지네이션 전 전체 TaskOrder 수",
+        "schema": {"type": "integer", "minimum": 0},
+    },
+}
+TASK_ORDER_RESPONSE_HEADERS = {
+    "Location": {
+        "description": "생성되거나 재전송된 TaskOrder의 조회 경로",
+        "schema": {"type": "string"},
+    },
+    "Idempotency-Replayed": {
+        "description": "멱등성 키 요청의 기존 TaskOrder 재전송 여부",
+        "schema": {"type": "string", "enum": ["true", "false"]},
+    },
+}
+
+
+def normalize_idempotency_key(idempotency_key: str | None) -> str | None:
+    normalized_key = idempotency_key.strip() if idempotency_key is not None else None
+    if idempotency_key is not None and not normalized_key:
+        raise HTTPException(status_code=422, detail="Idempotency-Key는 비어 있을 수 없습니다.")
+    if normalized_key is not None and len(normalized_key) > 128:
+        raise HTTPException(status_code=422, detail="Idempotency-Key는 128자 이하여야 합니다.")
+    return normalized_key
+
+
+def make_request_fingerprint(request: BaseModel) -> str:
+    canonical_request = request.model_dump_json(exclude_none=False)
+    return sha256(canonical_request.encode("utf-8")).hexdigest()
 
 
 def seed_rules() -> None:
@@ -74,6 +113,54 @@ def create_robot(robot: Robot) -> Robot:
 @app.get("/robots", response_model=list[Robot])
 def list_robots() -> list[Robot]:
     return list(store.robots.values())
+
+
+@app.post("/zones", response_model=Zone, status_code=status.HTTP_201_CREATED)
+def create_zone(zone: Zone) -> Zone:
+    with store.lock:
+        if zone.zone_id in store.zones:
+            raise HTTPException(status_code=409, detail="이미 등록된 zone_id입니다.")
+        store.zones[zone.zone_id] = zone
+    return zone
+
+
+@app.get("/zones", response_model=list[Zone])
+def list_zones() -> list[Zone]:
+    return list(store.zones.values())
+
+
+@app.get(
+    "/task-orders",
+    response_model=list[TaskOrder],
+    responses={
+        status.HTTP_200_OK: {
+            "description": "필터 및 페이지네이션된 TaskOrder 목록",
+            "headers": TASK_LIST_RESPONSE_HEADERS,
+        },
+    },
+)
+def list_tasks(
+    response: Response,
+    task_status: Annotated[TaskStatus | None, Query(alias="status")] = None,
+    target_robot_id: Annotated[str | None, Query(min_length=1)] = None,
+    order: Annotated[Literal["asc", "desc"], Query()] = "asc",
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> list[TaskOrder]:
+    with store.lock:
+        tasks = list(store.tasks.values())
+        if task_status is not None:
+            tasks = [task for task in tasks if task.status == task_status]
+        if target_robot_id is not None:
+            tasks = [
+                task
+                for task in tasks
+                if task.target_robot_id == target_robot_id
+            ]
+        response.headers["X-Total-Count"] = str(len(tasks))
+        if order == "desc":
+            tasks.reverse()
+        return tasks[offset : offset + limit]
 
 
 @app.post(
@@ -146,14 +233,61 @@ def preview_tasks_from_natural_language(
     "/task-orders/from-natural-language",
     response_model=TaskOrder,
     status_code=status.HTTP_201_CREATED,
+    responses={
+        status.HTTP_200_OK: {
+            "description": "동일한 Idempotency-Key 요청의 기존 TaskOrder 재전송",
+            "model": TaskOrder,
+            "headers": TASK_ORDER_RESPONSE_HEADERS,
+        },
+        status.HTTP_201_CREATED: {
+            "description": "새 TaskOrder 생성",
+            "model": TaskOrder,
+            "headers": TASK_ORDER_RESPONSE_HEADERS,
+        },
+        status.HTTP_409_CONFLICT: {
+            "description": "동일한 멱등성 키의 요청 본문 충돌",
+        },
+    },
 )
-def create_task_from_natural_language(request: NaturalLanguageTaskRequest) -> TaskOrder:
+def create_task_from_natural_language(
+    request: NaturalLanguageTaskRequest,
+    response: Response,
+    idempotency_key: Annotated[
+        str | None,
+        Header(alias="Idempotency-Key"),
+    ] = None,
+) -> TaskOrder:
+    normalized_key = normalize_idempotency_key(idempotency_key)
+    request_fingerprint = make_request_fingerprint(request)
     with store.lock:
+        if normalized_key is not None:
+            replay = store.task_idempotency.get(normalized_key)
+            if replay is not None:
+                task_id, previous_fingerprint = replay
+                if previous_fingerprint != request_fingerprint:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="같은 Idempotency-Key를 다른 요청 본문에 재사용할 수 없습니다.",
+                    )
+                existing = store.tasks.get(task_id)
+                if existing is not None:
+                    response.status_code = status.HTTP_200_OK
+                    response.headers["Location"] = f"/task-orders/{existing.task_id}"
+                    response.headers["Idempotency-Replayed"] = "true"
+                    return existing
+
         try:
             task = parse_task_order(request, list(store.robots))
         except TaskParseError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         store.tasks[task.task_id] = task
+        if normalized_key is not None:
+            store.task_idempotency[normalized_key] = (
+                task.task_id,
+                request_fingerprint,
+            )
+            response.headers["Idempotency-Replayed"] = "false"
+        response.headers["Location"] = f"/task-orders/{task.task_id}"
     return task
 
 
@@ -188,13 +322,8 @@ def generate_action_proposal(
         Header(alias="Idempotency-Key"),
     ] = None,
 ) -> ActionProposal:
-    normalized_key = idempotency_key.strip() if idempotency_key is not None else None
-    if idempotency_key is not None and not normalized_key:
-        raise HTTPException(status_code=422, detail="Idempotency-Key는 비어 있을 수 없습니다.")
-    if normalized_key is not None and len(normalized_key) > 128:
-        raise HTTPException(status_code=422, detail="Idempotency-Key는 128자 이하여야 합니다.")
-
-    request_fingerprint = request.model_dump_json(exclude_none=False)
+    normalized_key = normalize_idempotency_key(idempotency_key)
+    request_fingerprint = make_request_fingerprint(request)
     with store.lock:
         task = store.tasks.get(task_id)
         if task is None:
@@ -309,92 +438,126 @@ def create_proposal(proposal: ActionProposal) -> ActionProposal:
 
 @app.post("/action-proposals/{proposal_id}/evaluate", response_model=ActionProposal)
 def evaluate_action(proposal_id: str) -> ActionProposal:
-    proposal = store.proposals.get(proposal_id)
-    if proposal is None:
-        raise HTTPException(status_code=404, detail="ActionProposal을 찾을 수 없습니다.")
-    if proposal.status != ProposalStatus.PROPOSED:
-        raise HTTPException(status_code=409, detail="PROPOSED 상태만 평가할 수 있습니다.")
+    started_at = perf_counter()
+    with store.lock:
+        proposal = store.proposals.get(proposal_id)
+        if proposal is None:
+            raise HTTPException(status_code=404, detail="ActionProposal을 찾을 수 없습니다.")
+        if proposal.status != ProposalStatus.PROPOSED:
+            raise HTTPException(status_code=409, detail="PROPOSED 상태만 평가할 수 있습니다.")
 
-    robot = store.robots[proposal.robot_id]
-    rule_results, hazard_ids = evaluate_proposal(
-        proposal,
-        robot,
-        list(store.hazards.values()),
-        list(store.rules.values()),
-    )
-    approved = all(result.passed for result in rule_results)
-    proposal.status = ProposalStatus.APPROVED if approved else ProposalStatus.REJECTED
-    log = ExecutionLog(
-        proposal_id=proposal.proposal_id,
-        decision=Decision.APPROVE if approved else Decision.REJECT,
-        rule_results=rule_results,
-        hazard_ids=hazard_ids,
-        robot_id=proposal.robot_id,
-        result_message="안전 규칙 통과" if approved else "안전 규칙 위반으로 거절",
-    )
-    store.logs.append(log)
-    return proposal
+        robot = store.robots[proposal.robot_id]
+        task = store.tasks[proposal.task_id]
+        rule_results, hazard_ids = evaluate_proposal(
+            proposal,
+            task,
+            robot,
+            list(store.hazards.values()),
+            list(store.rules.values()),
+            list(store.zones.values()),
+        )
+        approved = all(result.passed for result in rule_results)
+        proposal.status = ProposalStatus.APPROVED if approved else ProposalStatus.REJECTED
+        log = ExecutionLog(
+            proposal_id=proposal.proposal_id,
+            decision=Decision.APPROVE if approved else Decision.REJECT,
+            rule_results=rule_results,
+            hazard_ids=hazard_ids,
+            robot_id=proposal.robot_id,
+            result_message="안전 규칙 통과" if approved else "안전 규칙 위반으로 거절",
+            evaluated_in_ms=(perf_counter() - started_at) * 1000,
+        )
+        store.logs.append(log)
+        return proposal
 
 
 @app.post("/action-proposals/{proposal_id}/execute", response_model=ActionProposal)
 def execute_action(proposal_id: str) -> ActionProposal:
-    proposal = store.proposals.get(proposal_id)
-    if proposal is None:
-        raise HTTPException(status_code=404, detail="ActionProposal을 찾을 수 없습니다.")
-    if proposal.status != ProposalStatus.APPROVED:
-        raise HTTPException(status_code=409, detail="APPROVED 상태만 실행할 수 있습니다.")
+    started_at = perf_counter()
+    with store.lock:
+        proposal = store.proposals.get(proposal_id)
+        if proposal is None:
+            raise HTTPException(status_code=404, detail="ActionProposal을 찾을 수 없습니다.")
+        if proposal.status != ProposalStatus.APPROVED:
+            raise HTTPException(status_code=409, detail="APPROVED 상태만 실행할 수 있습니다.")
 
-    robot = store.robots[proposal.robot_id]
-    rule_results, hazard_ids = evaluate_proposal(
-        proposal,
-        robot,
-        list(store.hazards.values()),
-        list(store.rules.values()),
-    )
-    if not all(result.passed for result in rule_results):
-        proposal.status = ProposalStatus.HELD
+        robot = store.robots[proposal.robot_id]
+        task = store.tasks[proposal.task_id]
+        rule_results, hazard_ids = evaluate_proposal(
+            proposal,
+            task,
+            robot,
+            list(store.hazards.values()),
+            list(store.rules.values()),
+            list(store.zones.values()),
+        )
+        evaluated_in_ms = (perf_counter() - started_at) * 1000
+        if not all(result.passed for result in rule_results):
+            proposal.status = ProposalStatus.HELD
+            task.status = TaskStatus.HELD
+            robot.status = RobotStatus.ESTOP
+            robot.updated_at = utc_now()
+            store.logs.append(
+                ExecutionLog(
+                    proposal_id=proposal.proposal_id,
+                    decision=Decision.ESTOP,
+                    rule_results=rule_results,
+                    hazard_ids=hazard_ids,
+                    robot_id=proposal.robot_id,
+                    result_message="실행 직전 안전 재검증 실패",
+                    evaluated_in_ms=evaluated_in_ms,
+                    triggered_by=TriggerSource.RULE_ENGINE,
+                )
+            )
+            raise HTTPException(status_code=409, detail="실행 직전 안전 재검증에 실패했습니다.")
+
+        proposal.status = ProposalStatus.EXECUTING
+        task.status = TaskStatus.RUNNING
+        robot.status = RobotStatus.MOVING
+        robot.updated_at = utc_now()
         store.logs.append(
             ExecutionLog(
                 proposal_id=proposal.proposal_id,
-                decision=Decision.ESTOP,
+                decision=Decision.EXECUTE,
                 rule_results=rule_results,
                 hazard_ids=hazard_ids,
                 robot_id=proposal.robot_id,
-                result_message="실행 직전 안전 재검증 실패",
+                result_message=f"Mock adapter({robot.control_adapter})로 전달됨",
+                evaluated_in_ms=evaluated_in_ms,
             )
         )
-        raise HTTPException(status_code=409, detail="실행 직전 안전 재검증에 실패했습니다.")
-
-    proposal.status = ProposalStatus.EXECUTING
-    store.logs.append(
-        ExecutionLog(
-            proposal_id=proposal.proposal_id,
-            decision=Decision.EXECUTE,
-            rule_results=rule_results,
-            hazard_ids=[],
-            robot_id=proposal.robot_id,
-            result_message=f"Mock adapter({robot.control_adapter})로 전달됨",
-        )
-    )
-    return proposal
+        return proposal
 
 
 @app.post("/hazards", response_model=HazardEvent, status_code=status.HTTP_201_CREATED)
 def create_hazard(hazard: HazardEvent) -> HazardEvent:
-    if hazard.hazard_id in store.hazards:
-        raise HTTPException(status_code=409, detail="이미 등록된 hazard_id입니다.")
-    store.hazards[hazard.hazard_id] = hazard
-    return hazard
+    with store.lock:
+        if hazard.hazard_id in store.hazards:
+            raise HTTPException(status_code=409, detail="이미 등록된 hazard_id입니다.")
+        store.hazards[hazard.hazard_id] = hazard
+        return hazard
 
 
 @app.post("/hazards/{hazard_id}/resolve", response_model=HazardEvent)
-def resolve_hazard(hazard_id: str) -> HazardEvent:
-    hazard = store.hazards.get(hazard_id)
-    if hazard is None:
-        raise HTTPException(status_code=404, detail="HazardEvent를 찾을 수 없습니다.")
-    hazard.status = HazardStatus.RESOLVED
-    hazard.resolved_at = utc_now()
-    return hazard
+def resolve_hazard(hazard_id: str, request: HazardResolveRequest) -> HazardEvent:
+    with store.lock:
+        hazard = store.hazards.get(hazard_id)
+        if hazard is None:
+            raise HTTPException(status_code=404, detail="HazardEvent를 찾을 수 없습니다.")
+        if hazard.status == HazardStatus.RESOLVED:
+            raise HTTPException(status_code=409, detail="이미 해제된 HazardEvent입니다.")
+        if (
+            hazard.severity == HazardSeverity.CRITICAL
+            and request.resolved_by != HazardResolvedBy.OPERATOR
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="CRITICAL HazardEvent는 OPERATOR만 해제할 수 있습니다.",
+            )
+        hazard.status = HazardStatus.RESOLVED
+        hazard.resolved_at = utc_now()
+        hazard.resolved_by = request.resolved_by
+        return hazard
 
 
 @app.get("/safety-rules", response_model=list[SafetyRule])

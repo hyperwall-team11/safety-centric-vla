@@ -3,7 +3,7 @@
 - 상태: MVP 구현 명세(As-Built)
 - 기준 코드: `backend/app/main.py`, `backend/app/models.py`
 - 기준 버전: FastAPI application `0.2.0`
-- 작성일: 2026-10-16
+- 작성일: 2026-10-30
 - 기본 URL(로컬): `http://127.0.0.1:8000`
 - 대화형 문서: `/docs`
 - OpenAPI JSON: `/openapi.json`
@@ -30,15 +30,18 @@
 
 ## 2. 구현 엔드포인트
 
-현재 구현은 14개 path, 16개 HTTP operation으로 구성된다.
+현재 구현은 16개 path, 19개 HTTP operation으로 구성된다.
 
 | Method | Path | 성공 | 용도 |
 |---|---|---:|---|
 | `GET` | `/health` | `200` | 서버 상태 확인 |
 | `POST` | `/robots` | `201` | Robot 등록 |
 | `GET` | `/robots` | `200` | Robot 전체 조회 |
-| `POST` | `/task-orders/preview` | `200` | 자연어 명령 검증·파싱 결과 미리보기(저장하지 않음) |
-| `POST` | `/task-orders/preview/batch` | `200` | 자연어 명령 1~50개를 항목별로 일괄 검증 |
+| `POST` | `/zones` | `201` | Zone 등록 |
+| `GET` | `/zones` | `200` | Zone 전체 조회 |
+| `GET` | `/task-orders` | `200` | TaskOrder 필터·정렬·페이지 목록 조회 |
+| `POST` | `/task-orders/preview` | `200` | 자연어 명령 단건 비저장 검증 |
+| `POST` | `/task-orders/preview/batch` | `200` | 자연어 명령 1~50건 일괄 비저장 검증 |
 | `POST` | `/task-orders/from-natural-language` | `201` | 자연어를 TaskOrder로 변환·저장 |
 | `GET` | `/task-orders/{task_id}` | `200` | TaskOrder 단건 조회 |
 | `POST` | `/task-orders/{task_id}/action-proposals` | `201`, `200` | TaskOrder에서 ActionProposal 생성 |
@@ -67,6 +70,8 @@
 | `velocity` | Vector3 | `x`, `y`, `z` |
 | `motion_limits` | object | 양수 `max_speed`, `max_acceleration` |
 | `updated_at` | datetime | 생략 시 서버 생성 |
+| `last_heartbeat_at` | datetime 또는 null | 선택, 마지막 제어 어댑터 하트비트 수신 시각 |
+| `battery_level` | number 또는 null | 선택, 0 이상 1 이하 |
 
 ```json
 {
@@ -84,57 +89,32 @@
 }
 ```
 
+`POST /zones`는 `zone_id`, `zone_type`, `geometry`, `frame_id`, `minimum_safety_distance`를 받는다. 선택적인 `max_speed`는 양수이며 SR-01 상한에 포함된다. `estop_distance`는 0 이상이고 기본값은 `0.6`이다. 같은 `zone_id`를 다시 등록하면 `409`를 반환한다.
+
 ### 3.2 자연어 TaskOrder 생성
 
-#### 저장 없는 검증·미리보기
+`GET /task-orders`는 저장된 TaskOrder를 생성 순서로 반환한다. `status`, `target_robot_id`를 단독 또는 함께 필터링하고, `order=asc|desc`, `offset`(기본 0), `limit`(기본 50, 최대 100)으로 정렬·페이지네이션한다. 응답의 `X-Total-Count` 헤더는 필터 적용 후 페이지네이션 전 전체 건수다.
 
-`POST /task-orders/preview`는 `NaturalLanguageTaskRequest`를 받아 실제 TaskOrder를 생성하거나 저장하지 않고 다음 결과를 반환한다.
+`POST /task-orders/preview`는 `NaturalLanguageTaskRequest`를 실제 저장하지 않고 해석한다. 성공 응답은 정규화된 `instruction`, `target_robot_id`, `target_object_id`, `destination`, 예상 `action_type=MOVE_TO|MANIPULATE`를 포함한다. 실패 응답의 `detail`은 안정적인 오류 `code`와 한글 `message`를 포함하며, 실제 생성 API는 기존 호환성을 위해 문자열 `detail`을 유지한다.
 
-| 필드 | 타입 | 설명 |
-|---|---|---|
-| `instruction` | string | 정규화된 명령 원문 |
-| `target_robot_id` | string | 식별된 등록 로봇 |
-| `target_object_id` | string 또는 null | 식별된 대상 물체 |
-| `destination` | union | `ZONE` 또는 `COORDINATE` 목적지 |
-| `action_type` | enum | 예상 `MOVE_TO` 또는 `MANIPULATE` |
+오류 코드는 명령(`INVALID_INSTRUCTION`, `UNSUPPORTED_CONTROL_ACTION`), 로봇(`ROBOT_NOT_FOUND`, `ROBOT_AMBIGUOUS`, `ROBOT_CONFLICT`, `ROBOT_REQUIRED`), 목적지·물체(`DESTINATION_INVALID`, `DESTINATION_REQUIRED`, `DESTINATION_AMBIGUOUS`, `OBJECT_AMBIGUOUS`), Action(`ACTION_INVALID`, `ACTION_UNSUPPORTED`)으로 구분한다.
 
-자연어 해석 실패 응답은 `detail.code`와 `detail.message`를 제공한다. 주요 코드는 다음과 같다.
-
-| 오류 코드 | 의미 |
-|---|---|
-| `INVALID_INSTRUCTION` | 질문·부정문·조건문·과거 서술 등 실행 명령이 아님 |
-| `UNSUPPORTED_CONTROL_ACTION` | STOP·RESUME은 TaskOrder 자동 변환에서 미지원 |
-| `ROBOT_NOT_FOUND` | 등록되지 않은 로봇 |
-| `ROBOT_AMBIGUOUS` | 여러 로봇이 언급됨 |
-| `ROBOT_CONFLICT` | 본문과 `target_robot_id`가 충돌 |
-| `ROBOT_REQUIRED` | 대상 로봇을 결정할 수 없음 |
-| `DESTINATION_INVALID` | 좌표·구역명 형식 오류 |
-| `DESTINATION_REQUIRED` | 목적지가 없음 |
-| `DESTINATION_AMBIGUOUS` | 목적지가 여러 개임 |
-| `OBJECT_AMBIGUOUS` | 대상 물체가 여러 개임 |
-| `ACTION_INVALID` | 지원 동사를 안전하게 결정할 수 없음 |
-| `ACTION_UNSUPPORTED` | 현재 지원 범위 밖의 Action 유형 |
-
-미리보기 성공·실패 모두 TaskOrder 저장소를 변경하지 않는다. 기존 생성 API의 오류 응답은 호환성을 위해 문자열 `detail` 형식을 유지한다.
-
-#### Batch 미리보기
-
-`POST /task-orders/preview/batch`는 `items`에 1~50개의 `NaturalLanguageTaskRequest`를 받아 입력 순서대로 모두 검증한다.
-
-```json
-{
-  "items": [
-    {"instruction": "robot-01 로봇을 A구역으로 이동해"},
-    {"instruction": "robot-99 로봇을 B구역으로 이동해"}
-  ]
-}
-```
-
-응답은 `total`, `valid_count`, `invalid_count`, `results`를 포함한다. 각 result는 0부터 시작하는 `index`, `valid`와 함께 성공 시 `preview`, 실패 시 `error` 중 정확히 하나만 포함한다. 한 항목의 파싱 실패가 다른 항목 처리를 중단시키지 않으며 HTTP 응답은 `200`이다. 요청 배열 자체가 비어 있거나 50개를 초과하거나 항목의 JSON 스키마가 잘못된 경우에는 전체 요청을 `422`로 거부한다. Batch 처리도 TaskOrder를 저장하지 않는다.
-
-#### 저장
+`POST /task-orders/preview/batch` 요청은 `items` 1~50개를 받는다. 각 항목을 입력 순서대로 독립 검증하고 `valid=true`이면 `preview`, `false`이면 `error`를 반환한다. `total`, `valid_count`, `invalid_count` 집계를 포함하며 일부 실패가 전체 요청을 중단하지 않는다. 두 preview 경로 모두 성공·실패 시 `store.tasks`를 변경하지 않는다.
 
 `POST /task-orders/from-natural-language`
+
+선택 헤더:
+
+| 헤더 | 규칙 |
+|---|---|
+| `Idempotency-Key` | 공백 제외 1~128자. 같은 키·본문 재요청은 기존 TaskOrder와 `200`을 반환하며, 같은 키에 다른 본문은 `409` |
+
+응답 헤더:
+
+| 헤더 | 규칙 |
+|---|---|
+| `Location` | 생성되거나 재전송된 TaskOrder의 조회 경로 `/task-orders/{task_id}` |
+| `Idempotency-Replayed` | 키를 보낸 최초 생성은 `false`, 기존 TaskOrder 재전송은 `true`. 키가 없으면 생략 |
 
 요청:
 
@@ -177,6 +157,10 @@
 ```
 
 파서는 로봇, 목적지, 실행 동사를 확실히 식별하지 못하면 추측하지 않고 `422`를 반환한다. 부정문, 조건문, 질문, 과거 서술, 복수 로봇·복수 목적지도 거부한다.
+
+파싱에 실패한 요청은 멱등성 키를 점유하지 않으므로, 같은 키로 수정된 요청을 다시 보낼 수 있다. 같은 키의 동시 요청은 저장소 lock 안에서 직렬화되어 TaskOrder를 정확히 한 번만 생성한다. 서로 다른 키는 본문이 같아도 별도 작업을 생성한다.
+
+요청 비교에는 Pydantic 모델의 기본값을 포함한 정규 JSON의 SHA-256 fingerprint를 사용한다. 따라서 `frame_id` 같은 기본값을 생략하거나 같은 값으로 명시한 요청은 동일하게 처리되며, 멱등성 mapping에는 자연어 요청 원문을 별도로 복제하지 않는다. 같은 fingerprint 방식은 ActionProposal 생성 재시도에도 적용한다.
 
 ### 3.3 TaskOrder 기반 ActionProposal 생성
 
@@ -260,15 +244,18 @@ TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 
 
 1. Robot 상태가 `IDLE` 또는 `HOLD`
 2. `control_adapter`가 공백이 아님
-3. Proposal 속도가 Robot `max_speed` 이하
-4. 대상 로봇과 관련되었거나 특정 로봇이 없는 OPEN·CRITICAL HazardEvent가 없음
+3. Proposal 속도가 `min(0.4, Robot max_speed, 목적지 Zone max_speed)` 이하. Zone이 없거나 `max_speed`가 없으면 해당 항목은 제외
+4. 대상 로봇 또는 TaskOrder의 `ZONE` 목적지와 연결된 OPEN·CRITICAL HazardEvent가 없음
+
+빈 `related_robot_ids`는 전역 차단을 뜻하지 않는다. 로봇 ID가 명시적으로 연결되었거나 HazardEvent의 `zone_id`와 TaskOrder 목적지 Zone이 같을 때만 관련 위험으로 판단한다. 좌표 목적지는 Zone 연결을 추론하지 않는다.
 
 `POST /action-proposals/{proposal_id}/execute`
 
 - `APPROVED`만 실행할 수 있다.
 - 실행 직전 같은 안전 규칙을 다시 평가한다.
-- 재평가 실패 시 Proposal을 `HELD`로 바꾸고 `ESTOP` 로그를 남긴 뒤 `409`를 반환한다.
-- 통과 시 Proposal을 `EXECUTING`으로 바꾸고 Mock adapter 전달을 나타내는 `EXECUTE` 로그를 남긴다.
+- 재평가 실패 시 Proposal과 TaskOrder를 `HELD`, Robot을 `ESTOP`으로 바꾸고 `triggered_by=RULE_ENGINE`인 `ESTOP` 로그를 남긴 뒤 `409`를 반환한다.
+- 통과 시 Proposal을 `EXECUTING`, TaskOrder를 `RUNNING`, Robot을 `MOVING`으로 바꾸고 Mock adapter 전달을 나타내는 `EXECUTE` 로그를 남긴다.
+- 평가와 실행 직전 재평가 로그에는 `evaluated_in_ms`를 기록한다.
 
 ### 3.6 HazardEvent
 
@@ -280,15 +267,17 @@ TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 
 | `hazard_type` | enum | `WORKER_INTRUSION`, `COLLISION_RISK`, `FIRE`, `SMOKE`, `FALLING_OBJECT`, `UNKNOWN` |
 | `severity` | enum | `WARNING`, `CRITICAL` |
 | `source_observation_ids` | string[] | 필수 |
-| `related_robot_ids` | string[] | 필수. 빈 배열인 CRITICAL은 모든 로봇을 차단 |
+| `related_robot_ids` | string[] | 필수. 빈 배열은 명시적인 로봇 연결이 없음을 의미 |
 | `related_worker_ids` | string[] | 필수 |
 | `zone_id` | string | 필수 |
 | `status` | enum | 기본 `OPEN`; `OPEN`, `ACKNOWLEDGED`, `RESOLVED` |
 | `confidence` | number | 0 이상 1 이하 |
 | `detected_at` | datetime | 생략 시 서버 생성 |
 | `resolved_at` | datetime 또는 null | 기본 null |
+| `last_observed_at` | datetime 또는 null | 마지막 관측 시각 |
+| `resolved_by` | enum 또는 null | `SENSOR_AUTO`, `OPERATOR` |
 
-`POST /hazards/{hazard_id}/resolve`는 현재 인증 없이 상태를 `RESOLVED`로 바꾸고 `resolved_at`을 기록한다.
+`POST /hazards/{hazard_id}/resolve` 요청은 `{"resolved_by":"SENSOR_AUTO|OPERATOR"}`이다. `WARNING`은 두 주체 모두 해제할 수 있지만 `CRITICAL`은 `OPERATOR`만 허용한다. 성공 시 `status=RESOLVED`, `resolved_at`, `resolved_by`를 기록하며, 이미 해제된 이벤트나 허용되지 않은 자동 해제는 `409`를 반환한다. 인증 계층은 아직 없으므로 이 값은 호출자가 명시하는 감사 필드다.
 
 ### 3.7 SafetyRule과 ExecutionLog
 
@@ -297,12 +286,18 @@ TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 
 - `rule-speed-limit`
 - `rule-critical-hazard`
 
-`GET /execution-logs`는 평가·실행 순서대로 전체 로그를 반환한다. 로그는 `log_id`, `proposal_id`, `decision`, `rule_results`, `hazard_ids`, `robot_id`, `timestamp`, `result_message`를 포함한다.
+SafetyRule은 선택적인 `parameters`, `on_violation=REJECT|ESTOP`을 지원하며 `OBSERVATION_GAP` rule type도 모델 계약에 포함한다. `on_violation`을 생략하면 CRITICAL은 `ESTOP`, 나머지는 `REJECT`로 정규화한다.
+
+`GET /execution-logs`는 평가·실행 순서대로 전체 로그를 반환한다. 로그는 기존 필드와 선택적인 `evaluated_in_ms`, `triggered_by=RULE_ENGINE|OPERATOR|HEARTBEAT_LOSS`를 포함한다.
+
+HTTP 등록 경로가 아직 없는 v1.1 객체도 Pydantic 모델 계약에는 다음 선택 필드를 반영한다: Sensor의 `covered_zone_ids`, `last_frame_at`, `calibrated`; Observation의 `ingested_at`, `bbox`, `position_source`; Worker의 `source_sensor_ids`.
 
 ## 4. 상태 전이
 
 ```text
 TaskOrder: CREATED ── proposal 생성/등록 ──> PLANNING
+           PLANNING ── execute 재검증 통과 ──> RUNNING
+           PLANNING ── execute 재검증 실패 ──> HELD
 
 ActionProposal: PROPOSED ── evaluate 통과 ──> APPROVED
                 PROPOSED ── evaluate 실패 ──> REJECTED
@@ -310,7 +305,7 @@ ActionProposal: PROPOSED ── evaluate 통과 ──> APPROVED
                 APPROVED ── execute 재검증 실패 ──> HELD
 ```
 
-`RUNNING`, `COMPLETED`, `FAILED`, `SUCCEEDED`, ResumeTask와 실행 결과 보고 전이는 스키마에는 있으나 현재 HTTP MVP에는 구현되지 않았다.
+`COMPLETED`, `FAILED`, `SUCCEEDED`, ResumeTask와 실행 결과 보고 전이는 스키마에는 있으나 현재 HTTP MVP에는 구현되지 않았다.
 
 ## 5. 기준 문서와 현재 구현의 차이
 
@@ -320,12 +315,13 @@ ActionProposal: PROPOSED ── evaluate 통과 ──> APPROVED
 | Proposal 제출·평가 | 한 경계에서 판정 결과 반환 | 등록, 평가, 실행 API 분리 |
 | 객체 조회 | `GET /api/v1/objects/{type}` | Robot, TaskOrder, Proposal, Rule, Log의 개별 API 일부 |
 | ResumeTask | 관리자 승인 2단계 복귀 | 미구현, HELD 생성 요청은 `409` |
-| 인증·권한 | CRITICAL 해제와 Resume는 관리자 전용 | 미구현 |
-| 규칙 SR-01~06 | 속도·구역·거리·위험·상태·센서 공백 | 로봇 상태·adapter·Robot 속도·관련 CRITICAL 위험만 구현 |
-| E-Stop | ROS 2 latched 전용 경로 | HTTP 실행 재검증 실패 시 상태·로그만 변경 |
+| 인증·권한 | CRITICAL 해제와 Resume는 관리자 전용 | CRITICAL 해제 요청의 `resolved_by=OPERATOR` 검사 구현, 실제 인증·Resume는 미구현 |
+| 규칙 SR-01~06 | 속도·구역·거리·위험·상태·센서 공백 | SR-01 기본 0.4m/s·Robot·Zone 상한, 로봇 상태·adapter·관련 CRITICAL 위험 구현. 경로·거리·센서 공백은 미구현 |
+| E-Stop | ROS 2 latched 전용 경로 | 실행 재검증 실패 시 Robot ESTOP·Task HELD·감사 로그 구현, ROS 2 전용 신호는 미구현 |
 | 상태 구독 | WebSocket `/ws/state` | 미구현 |
 | 영속 저장 | Redis 또는 ROS 2 상태 연동 | 인메모리 |
-| 판정 시간 | `evaluated_in_ms` 기록 | 미구현 |
+| 판정 시간 | `evaluated_in_ms` 기록 | 평가·실행 직전 재평가 로그에 구현 |
+| 스키마 v1.1 선택 필드 | 모델에서 선택적으로 허용 | Robot, Sensor, Observation, Worker, Zone, SafetyRule, HazardEvent, ExecutionLog에 반영 |
 
 이 차이는 스키마 v1.1의 객체 정의를 변경할 사유가 아니라 구현 진척도 차이로 관리한다. 필수 필드나 열거값을 변경해야 할 때만 팀 변경 절차에 따라 스키마 버전을 올린다.
 
@@ -337,4 +333,4 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q app tests
 ```
 
-OpenAPI 경로 수는 14개, operation 수는 16개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.
+OpenAPI 경로 수는 16개, operation 수는 19개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.
