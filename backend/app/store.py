@@ -17,6 +17,7 @@ class InMemoryStore:
             self.robots: dict[str, Robot] = {}
             self.zones: dict[str, Zone] = {}
             self.tasks: dict[str, TaskOrder] = {}
+            self.task_idempotency: dict[str, tuple[str, str]] = {}
             self.proposals: dict[str, ActionProposal] = {}
             self.proposal_idempotency: dict[tuple[str, str], tuple[str, str]] = {}
             self.hazards: dict[str, HazardEvent] = {}
