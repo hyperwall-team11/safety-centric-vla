@@ -65,6 +65,122 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(task["destination"]["position"]["y"], -2.0)
         self.assertEqual(task["status"], "CREATED")
 
+    def test_lists_task_orders_in_creation_order(self) -> None:
+        self.assertEqual(self.client.get("/task-orders").json(), [])
+        first = self.create_task("robot-01 로봇을 A구역으로 이동해")
+        second = self.create_task("robot-01 로봇을 B구역으로 이동해")
+
+        response = self.client.get("/task-orders")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            [task["task_id"] for task in response.json()],
+            [first["task_id"], second["task_id"]],
+        )
+
+    def test_filters_task_orders_by_status_and_robot(self) -> None:
+        first = self.create_task("robot-01 로봇을 A구역으로 이동해")
+        self.assertEqual(
+            self.client.post(
+                "/robots",
+                json={**ROBOT, "robot_id": "robot-02"},
+            ).status_code,
+            201,
+        )
+        second_response = self.client.post(
+            "/task-orders/from-natural-language",
+            json={"instruction": "robot-02 로봇을 B구역으로 이동해"},
+        )
+        self.assertEqual(second_response.status_code, 201, second_response.text)
+        second = second_response.json()
+        self.assertEqual(
+            self.client.post(
+                f"/task-orders/{first['task_id']}/action-proposals",
+                json={},
+            ).status_code,
+            201,
+        )
+
+        planning = self.client.get("/task-orders", params={"status": "PLANNING"})
+        robot_02 = self.client.get(
+            "/task-orders",
+            params={"target_robot_id": "robot-02"},
+        )
+        combined = self.client.get(
+            "/task-orders",
+            params={"status": "CREATED", "target_robot_id": "robot-02"},
+        )
+
+        self.assertEqual(
+            [task["task_id"] for task in planning.json()],
+            [first["task_id"]],
+        )
+        self.assertEqual(
+            [task["task_id"] for task in robot_02.json()],
+            [second["task_id"]],
+        )
+        self.assertEqual(
+            [task["task_id"] for task in combined.json()],
+            [second["task_id"]],
+        )
+        self.assertEqual(combined.headers["X-Total-Count"], "1")
+
+    def test_rejects_unknown_task_status_filter(self) -> None:
+        response = self.client.get("/task-orders", params={"status": "UNKNOWN"})
+        self.assertEqual(response.status_code, 422, response.text)
+
+    def test_paginates_task_orders_and_reports_filtered_total(self) -> None:
+        tasks = [
+            self.create_task(f"robot-01 로봇을 {zone}구역으로 이동해")
+            for zone in ("A", "B", "C")
+        ]
+
+        page = self.client.get(
+            "/task-orders",
+            params={"offset": 1, "limit": 1},
+        )
+        beyond_last_page = self.client.get(
+            "/task-orders",
+            params={"offset": 10, "limit": 1},
+        )
+
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertEqual(page.headers["X-Total-Count"], "3")
+        self.assertEqual(
+            [task["task_id"] for task in page.json()],
+            [tasks[1]["task_id"]],
+        )
+        self.assertEqual(beyond_last_page.json(), [])
+        self.assertEqual(beyond_last_page.headers["X-Total-Count"], "3")
+
+    def test_rejects_invalid_task_order_pagination(self) -> None:
+        for params in ({"offset": -1}, {"limit": 0}, {"limit": 101}):
+            with self.subTest(params=params):
+                response = self.client.get("/task-orders", params=params)
+                self.assertEqual(response.status_code, 422, response.text)
+
+    def test_orders_task_orders_before_pagination(self) -> None:
+        tasks = [
+            self.create_task(f"robot-01 로봇을 {zone}구역으로 이동해")
+            for zone in ("A", "B", "C")
+        ]
+
+        descending = self.client.get(
+            "/task-orders",
+            params={"order": "desc", "limit": 2},
+        )
+
+        self.assertEqual(descending.status_code, 200, descending.text)
+        self.assertEqual(
+            [task["task_id"] for task in descending.json()],
+            [tasks[2]["task_id"], tasks[1]["task_id"]],
+        )
+        self.assertEqual(descending.headers["X-Total-Count"], "3")
+
+    def test_rejects_unknown_task_order_sort_value(self) -> None:
+        response = self.client.get("/task-orders", params={"order": "newest"})
+        self.assertEqual(response.status_code, 422, response.text)
+
     def test_zone_and_object_are_extracted_without_neighboring_words(self) -> None:
         task = self.create_task("robot-01 로봇으로 상자 3을 B 작업대로 옮겨")
         self.assertEqual(task["destination"], {"type": "ZONE", "zone_id": "B작업대"})

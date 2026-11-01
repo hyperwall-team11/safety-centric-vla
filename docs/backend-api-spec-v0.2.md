@@ -30,7 +30,7 @@
 
 ## 2. 구현 엔드포인트
 
-현재 구현은 13개 path, 16개 HTTP operation으로 구성된다.
+현재 구현은 14개 path, 17개 HTTP operation으로 구성된다.
 
 | Method | Path | 성공 | 용도 |
 |---|---|---:|---|
@@ -39,6 +39,7 @@
 | `GET` | `/robots` | `200` | Robot 전체 조회 |
 | `POST` | `/zones` | `201` | Zone 등록 |
 | `GET` | `/zones` | `200` | Zone 전체 조회 |
+| `GET` | `/task-orders` | `200` | TaskOrder 필터·정렬·페이지 목록 조회 |
 | `POST` | `/task-orders/from-natural-language` | `201` | 자연어를 TaskOrder로 변환·저장 |
 | `GET` | `/task-orders/{task_id}` | `200` | TaskOrder 단건 조회 |
 | `POST` | `/task-orders/{task_id}/action-proposals` | `201`, `200` | TaskOrder에서 ActionProposal 생성 |
@@ -89,6 +90,8 @@
 `POST /zones`는 `zone_id`, `zone_type`, `geometry`, `frame_id`, `minimum_safety_distance`를 받는다. 선택적인 `max_speed`는 양수이며 SR-01 상한에 포함된다. `estop_distance`는 0 이상이고 기본값은 `0.6`이다. 같은 `zone_id`를 다시 등록하면 `409`를 반환한다.
 
 ### 3.2 자연어 TaskOrder 생성
+
+`GET /task-orders`는 저장된 TaskOrder를 생성 순서로 반환한다. `status`, `target_robot_id`를 단독 또는 함께 필터링하고, `order=asc|desc`, `offset`(기본 0), `limit`(기본 50, 최대 100)으로 정렬·페이지네이션한다. 응답의 `X-Total-Count` 헤더는 필터 적용 후 페이지네이션 전 전체 건수다.
 
 `POST /task-orders/from-natural-language`
 
@@ -305,4 +308,4 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q app tests
 ```
 
-OpenAPI 경로 수는 13개, operation 수는 16개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.
+OpenAPI 경로 수는 14개, operation 수는 17개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.
