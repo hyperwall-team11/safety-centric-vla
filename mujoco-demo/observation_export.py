@@ -8,8 +8,15 @@ from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
 
+# MuJoCo camera axes: x right, y up, looking along -z. A ROS optical TF (y down, +z forward)
+# needs converting first; using one directly would project the ray the wrong way.
+ROTATION_CONVENTION = "mujoco_camera"
+
+
 def ground_position(box, width, height, camera):
     """Intersect the ray through a bounding box's bottom centre with the floor."""
+    if camera.get("rotation_convention") != ROTATION_CONVENTION:
+        raise ValueError(f"Camera rotation_convention must be {ROTATION_CONVENTION}")
     x1, y1, x2, y2 = (float(value) for value in box)
     if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
         raise ValueError(f"Invalid pixel box: {box}")
@@ -69,6 +76,9 @@ def export(detection_paths, metadata_path):
             raise ValueError(f"Expected world frame for calibrated camera: {image_name}")
         if "camera" not in capture:
             raise ValueError(f"Missing camera calibration for {image_name}; rerun capture.py")
+        if capture["camera"].get("rotation_convention") != ROTATION_CONVENTION:
+            raise ValueError(f"Camera rotation_convention must be {ROTATION_CONVENTION} "
+                             f"for {image_name}; rerun capture.py")
         if result.get("task") != "<OD>":
             raise ValueError(f"Expected Florence <OD> result: {result_path}")
         detection = result["detections"]["<OD>"]

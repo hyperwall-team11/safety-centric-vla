@@ -40,7 +40,9 @@ python observation_export.py \
   --output vlm_results/observations.json
 ```
 
-변환기는 `person`을 `WORKER`로 매핑하고 상자의 아래쪽 중앙 픽셀에서 바닥 평면(`z=0`)으로 광선을 투영해 `world` 좌표를 추정합니다. 발이 가려졌거나 상자가 부정확하면 위치 오차가 생길 수 있습니다. 출력의 `observation_details`에는 상자 `[x, y, w, h]`와 계산 방식을 보관합니다. `ground_truth_*`는 위치 계산에 사용하지 않습니다.
+변환기는 `person`을 `WORKER`로 매핑하고 상자의 아래쪽 중앙 픽셀에서 바닥 평면(`z=0`)으로 광선을 투영해 `world` 좌표를 추정합니다. 상자 아래쪽 중앙이 실제 바닥 접점이라고 가정합니다. 이 가정에는 원근 편향이 있습니다. 화면 가장자리로 갈수록 몸 위쪽이 바깥으로 기울어 보여 상자 중앙이 발보다 바깥쪽에 놓이므로, 분할 렌더로 만든 정확한 상자에서도 x 오차가 최대 약 0.22m 생기고 화면 중앙에서는 0입니다([측정](../docs/cv-review-2026-10-30.md#2026-11-02-pr-12-리뷰-반영)). 발이 가려졌거나 탐지 상자가 부정확하면 오차는 더 커질 수 있고, 실제 Florence-2 상자의 오차는 측정하지 않았습니다. 금지구역 경계 판정에 그대로 쓰지 마세요. 출력의 `observation_details`에는 상자 `[x, y, w, h]`와 계산 방식을 보관합니다. `ground_truth_*`는 위치 계산에 사용하지 않습니다.
+
+메타데이터의 회전은 `rotation_convention: "mujoco_camera"`(x 오른쪽, y 위, 시선 -z)입니다. 이 표시가 없거나 다르면 변환을 거부하므로 예전 `metadata.json`은 `capture.py`로 다시 만들어야 합니다. CTL 브리지의 TF·`CameraInfo`는 ROS 광학 좌표계(y 아래, 시선 +z)라서 변환 없이 넣을 수 없습니다. 또한 `scene.xml`의 `cctv_1`(위치 0, -6, 5)은 CTL `scenario_scene.xml`의 `cctv_1`과 다른 카메라이므로, 이 변환 결과를 CTL 장면 좌표와 같다고 보면 안 됩니다.
 
 현재 Florence-2 `<OD>` 출력에는 신뢰도 점수가 없습니다. 따라서 실제 출력은 `pending_confidence`에 보류되고, 필수 `confidence`가 없는 값을 완전한 `Observation`이나 안전 판단 입력으로 사용하지 않습니다. 향후 **검증된 탐지기**가 `<OD>` 결과에 상자별 `scores` 배열을 제공하면 `observations`에 스키마 v1.1의 필수 필드를 갖춘 레코드가 나옵니다. 임의의 점수나 고정값을 넣지 마세요. 현재 백엔드 `Observation` 모델은 v1.1의 선택 필드(`bbox`, `position_source`, `ingested_at`)를 받지 않고 등록 API도 없으므로, 서버 연결은 ONT 담당과 인터페이스를 정한 뒤 진행합니다.
 
