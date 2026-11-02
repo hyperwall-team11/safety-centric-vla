@@ -5,6 +5,7 @@ import json
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -20,6 +21,7 @@ class ObservationExportTests(unittest.TestCase):
         self.camera = {
             "position_m": [1, 2, 2],
             "rotation_cam_to_world": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+            "rotation_convention": "mujoco_camera",
             "fovy_deg": 90,
             "ground_plane_z_m": 0,
         }
@@ -64,6 +66,23 @@ class ObservationExportTests(unittest.TestCase):
                     [300, 100, 641, 240], [300, 100, 340, float("nan")]):
             with self.subTest(box=box), self.assertRaises(ValueError):
                 ground_position(box, 640, 480, self.camera)
+
+    def test_rotation_convention_is_required(self):
+        for convention in (None, "ros_optical"):
+            self.camera["rotation_convention"] = convention
+            with self.subTest(convention=convention):
+                with self.assertRaisesRegex(ValueError, "rotation_convention"):
+                    ground_position([300, 100, 340, 240], 640, 480, self.camera)
+                with self.assertRaisesRegex(ValueError, "rerun capture.py"):
+                    self.run_export()
+
+    def test_worker_model_reaches_the_floor(self):
+        scene = ET.parse(Path(__file__).resolve().parents[1] / "scene.xml")
+        worker = scene.find(".//body[@name='worker']")
+        lowest = min(min(float(v) for v in geom.get("fromto").split()[2::3])
+                     - float(geom.get("size"))
+                     for geom in worker.findall("geom") if geom.get("fromto"))
+        self.assertAlmostEqual(lowest, 0)
 
     def test_upward_camera_is_rejected(self):
         self.camera["rotation_cam_to_world"] = [[1, 0, 0], [0, -1, 0], [0, 0, -1]]

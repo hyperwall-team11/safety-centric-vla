@@ -36,6 +36,7 @@ with mujoco.Renderer(model, height=480, width=640) as renderer:
             "camera": {
                 "position_m": data.cam_xpos[camera_id].tolist(),
                 "rotation_cam_to_world": data.cam_xmat[camera_id].reshape(3, 3).tolist(),
+                "rotation_convention": "mujoco_camera",
                 "fovy_deg": float(model.cam_fovy[camera_id]),
                 "ground_plane_z_m": 0.0,
             },
