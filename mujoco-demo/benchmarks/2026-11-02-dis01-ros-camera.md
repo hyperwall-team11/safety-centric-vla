@@ -1,0 +1,63 @@
+# ROS 2 카메라 입력 Florence-2 실측 — 2026-11-02
+
+MuJoCo 카메라 → ROS 2 토픽 → Florence-2 GPU 탐지를 같은 노드에서 처음으로 끝까지 실행한 기록입니다.
+
+**요약: 실행 경로는 동작했지만, 60초 처리율 5.74 Hz는 7 Hz 기준에 못 미칩니다.**
+
+## 실행 조건
+
+- 노드: `DIS01` (Slurm `p02`, 작업 33854, GPU 1개, CPU 4코어)
+- GPU·드라이버: NVIDIA RTX A6000, 535.261.03
+- 코드: `feat/cv-ros-camera` `44629b4`
+- 환경: Conda `vla-cv-ros` (Python 3.12.16, ROS 2 Humble, `torch 2.5.1+cu121`, transformers 4.49.0, mujoco 3.15.0)
+- 입력: CTL `mujoco_bridge` 기본값(카메라 3대, 목표 15 Hz, 640×480) 중 `/cctv_1/image_raw`
+- 통신: 같은 노드 안에서 `ROS_LOCALHOST_ONLY=1`, `ROS_DOMAIN_ID=38`
+- 모델: `/abr/coss38/florence-2-base`, `<OD>`
+
+브리지와 CV가 같은 GPU·CPU 4코어를 함께 사용했습니다. 측정 전 구독자 없는 상태에서 `ros2 topic hz`는 약 14.88 Hz, 메시지 타입은 `sensor_msgs/msg/Image`였습니다.
+
+## 결과
+
+| 항목 | 30프레임 | 60초 |
+| --- | ---: | ---: |
+| 종료 사유 | `max_frames_reached` | `duration_reached` |
+| 처리 프레임 | 30 | 345 |
+| 수신 콜백 | 96 | 798 |
+| 처리 전 교체 | 65 | 452 |
+| 오래되어 폐기 | 0 | 0 |
+| 잘못된 프레임 | 0 | 0 |
+| 측정 구간 | 6.50초 | 60.06초 |
+| 처리율 | 4.61 Hz | **5.74 Hz** |
+| p95 처리 시간 | 211.74 ms | **217.14 ms** |
+| p95 로컬 대기 | 65.51 ms | 121.30 ms |
+
+두 측정 모두 첫 수신부터 잡으므로 첫 추론의 준비 시간과 결과 저장이 포함됩니다. 측정 동안 브리지는 계속 실행됐고 시뮬레이션은 실시간 대비 1.00배였습니다.
+
+## 해석과 한계
+
+- 2026-10-16 정지 이미지 측정(12.46 Hz, p95 81.98 ms)보다 느립니다. **원인은 아직 확인하지 않았습니다.** 렌더링과의 GPU·CPU 공유, 4코어 제한, 시뮬 영상에서의 생성 길이 차이가 후보입니다. 측정 범위도 달라 두 값을 직접 비교하지 않습니다.
+- 처리 전 교체가 많은 것은 최신 프레임만 처리하는 의도된 동작이지만, 처리가 입력을 따라가지 못한다는 뜻이기도 합니다.
+- 로컬 대기는 수신 뒤 대기 시간입니다. 촬영·전송을 포함한 전체 지연이나 위험 감지부터 E-Stop까지의 지연이 아닙니다. DDS가 콜백 전에 버린 프레임은 세지 못합니다.
+- 탐지 정확도는 평가하지 않았습니다. 로그의 `people=1`은 사람 라벨 개수일 뿐이며, 합성 영상 결과가 실제 사람 영상 성능을 뜻하지도 않습니다.
+- 한 카메라만 추론했습니다. 다중 카메라 처리율은 측정하지 않았습니다.
+- 메시지의 인코딩·해상도는 `ros2 topic` 출력으로 따로 확인하지 않았습니다. 구독기가 잘못된 프레임을 0건으로 기록했습니다.
+
+## 서버 환경에서 확인한 사항
+
+- `DIS01` 드라이버는 CUDA 12.2까지 지원하므로 최신 기본 PyTorch(`2.15.0+cu132`)는 CUDA를 사용할 수 없었습니다. `cu121` 빌드로 고정했습니다.
+- `DIS01`에는 NVIDIA 그래픽 라이브러리가 설치되어 있지 않아 기본 상태의 MuJoCo EGL 렌더링이 실패했습니다. 드라이버와 같은 버전의 NVIDIA 설치 파일을 설치 없이 압축만 풀어 사용자 폴더에 두고, 아래처럼 지정해 렌더링했습니다. 시스템 드라이버는 변경하지 않았으며, 드라이버 버전이 다른 노드에서는 사용할 수 없습니다.
+
+```bash
+N=~/nvidia-user/NVIDIA-Linux-x86_64-535.261.03
+export LD_LIBRARY_PATH=$N:$LD_LIBRARY_PATH __EGL_VENDOR_LIBRARY_FILENAMES=$N/10_nvidia.json MUJOCO_GL=egl
+```
+
+- 렌더러 종료 때 `EGLError`가 `Exception ignored`로 출력되지만, 렌더링 결과와 측정은 그 전에 끝납니다. 원인은 조사하지 않았습니다.
+- 브리지는 `control/` 수정 없이 `colcon build --symlink-install --packages-select mujoco_bridge` 후 `ros2 run mujoco_bridge bridge --ros-args -p mujoco_dir:=<저장소>/control/mujoco`로 실행했습니다.
+
+원본 결과는 서버의 `~/safety-centric-vla/mujoco-demo/vlm_results/ros_camera_30.*`, `ros_camera_60s.*`와 `~/cv-run.txt`에 있습니다.
+
+## 다음 확인
+
+1. 느린 원인 분리: CPU를 늘린 측정, 브리지 부하를 줄인 측정, 같은 영상의 정지 프레임 측정.
+2. 7 Hz를 넘지 못하면 계획서대로 경량 탐지기 전환을 검토합니다.

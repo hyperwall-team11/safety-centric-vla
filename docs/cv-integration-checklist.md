@@ -8,7 +8,7 @@
 |---|---|---|
 | [#12](https://github.com/hyperwall-team11/safety-centric-vla/pull/12) | 이미지 해시·카메라 메타데이터·Observation 내보내기 | ONT: 필수 필드와 신뢰도 보류 / CTL: 카메라 행렬 |
 | [#13](https://github.com/hyperwall-team11/safety-centric-vla/pull/13) | 정지 이미지 연속 추론 벤치마크 | 처리율·지연의 측정 범위와 GPU 실측 기록 |
-| [#19](https://github.com/hyperwall-team11/safety-centric-vla/pull/19) | ROS 2 CCTV 입력과 탐지 JSONL·요약 | 실제 카메라 입력·CUDA 실행 확인 후 리뷰 |
+| [#19](https://github.com/hyperwall-team11/safety-centric-vla/pull/19) | ROS 2 CCTV 입력과 탐지 JSONL·요약 | 2026-11-02 실행 완료, [측정 기록](../mujoco-demo/benchmarks/2026-11-02-dis01-ros-camera.md) 기준으로 리뷰. 처리율 5.74 Hz로 7 Hz 미달 |
 
 #13에 #12 기반을 반영하면서 README 충돌을 해결했고, #19에도 갱신된 기반을 반영했습니다. 리뷰 차이가 섞이지 않도록 #13은 #12 작업 브랜치, #19는 #13 작업 브랜치를 대상으로 쌓습니다. #12를 `develop`에 Squash and merge한 뒤 #13의 대상을 `develop`으로 변경하고 diff를 확인합니다. #13 병합 뒤 #19도 같은 절차를 따릅니다. `develop`/`main` 직접 push와 작성자 단독 승인은 사용하지 않습니다.
 
@@ -48,7 +48,7 @@
 
 - #12: 초안을 해제하고 ONT 임성현(`mongmmm`)·CTL 최민서(`chxisoei`)에게 리뷰 요청.
 - #13: #12 브랜치를 대상으로 조정하고 최민서에게 리뷰 요청.
-- #19: 이번 수신·측정 코드와 문서를 올렸으며 실제 ROS 2/GPU 실행 전까지 초안 유지.
+- #19: 이번 수신·측정 코드와 문서를 올렸으며 실제 ROS 2/GPU 실행 전까지 초안 유지. 2026-11-02 DIS01에서 30프레임·60초 실행을 완료했습니다. 처리율 미달의 원인은 미확인입니다.
 - #17: head `06518a1`의 코드·55개 테스트 확인 후 CV 관점 승인 리뷰 게시.
 - #18: head `42280b8`의 코드·56개 테스트 확인 후 CV 관점 승인 리뷰 게시.
 - #20: 56개 테스트 외에 실제 422 오류 스키마 불일치를 재현하여 수정 요청 리뷰 게시.
