@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from hashlib import sha256
 from time import perf_counter
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import FastAPI, Header, HTTPException, Response, status
+from fastapi import FastAPI, Header, HTTPException, Query, Response, status
+from pydantic import BaseModel
 
 from .action_planner import ActionPlanningError, RuleBasedActionPlanner
 from .models import (
@@ -21,10 +23,17 @@ from .models import (
     NaturalLanguageTaskRequest,
     ProposalGenerationRequest,
     ProposalStatus,
+    RequestValidationErrorResponse,
     Robot,
     RobotStatus,
     SafetyRule,
     TaskOrder,
+    TaskOrderPreview,
+    TaskOrderPreviewBatchItem,
+    TaskOrderPreviewBatchRequest,
+    TaskOrderPreviewBatchResponse,
+    TaskParseErrorDetail,
+    TaskParseErrorResponse,
     TaskStatus,
     TriggerSource,
     Zone,
@@ -32,7 +41,7 @@ from .models import (
 )
 from .safety import default_rules, evaluate_proposal
 from .store import store
-from .task_parser import TaskParseError, parse_task_order
+from .task_parser import TaskParseError, parse_task_order, parse_task_order_preview
 
 
 app = FastAPI(
@@ -51,6 +60,36 @@ PLANNABLE_TASK_STATUSES = {
     TaskStatus.CREATED,
     TaskStatus.PLANNING,
 }
+TASK_LIST_RESPONSE_HEADERS = {
+    "X-Total-Count": {
+        "description": "필터 적용 후 페이지네이션 전 전체 TaskOrder 수",
+        "schema": {"type": "integer", "minimum": 0},
+    },
+}
+TASK_ORDER_RESPONSE_HEADERS = {
+    "Location": {
+        "description": "생성되거나 재전송된 TaskOrder의 조회 경로",
+        "schema": {"type": "string"},
+    },
+    "Idempotency-Replayed": {
+        "description": "멱등성 키 요청의 기존 TaskOrder 재전송 여부",
+        "schema": {"type": "string", "enum": ["true", "false"]},
+    },
+}
+
+
+def normalize_idempotency_key(idempotency_key: str | None) -> str | None:
+    normalized_key = idempotency_key.strip() if idempotency_key is not None else None
+    if idempotency_key is not None and not normalized_key:
+        raise HTTPException(status_code=422, detail="Idempotency-Key는 비어 있을 수 없습니다.")
+    if normalized_key is not None and len(normalized_key) > 128:
+        raise HTTPException(status_code=422, detail="Idempotency-Key는 128자 이하여야 합니다.")
+    return normalized_key
+
+
+def make_request_fingerprint(request: BaseModel) -> str:
+    canonical_request = request.model_dump_json(exclude_none=False)
+    return sha256(canonical_request.encode("utf-8")).hexdigest()
 
 
 def seed_rules() -> None:
@@ -94,18 +133,165 @@ def list_zones() -> list[Zone]:
     return list(store.zones.values())
 
 
+@app.get(
+    "/task-orders",
+    response_model=list[TaskOrder],
+    responses={
+        status.HTTP_200_OK: {
+            "description": "필터 및 페이지네이션된 TaskOrder 목록",
+            "headers": TASK_LIST_RESPONSE_HEADERS,
+        },
+    },
+)
+def list_tasks(
+    response: Response,
+    task_status: Annotated[TaskStatus | None, Query(alias="status")] = None,
+    target_robot_id: Annotated[str | None, Query(min_length=1)] = None,
+    order: Annotated[Literal["asc", "desc"], Query()] = "asc",
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> list[TaskOrder]:
+    with store.lock:
+        tasks = list(store.tasks.values())
+        if task_status is not None:
+            tasks = [task for task in tasks if task.status == task_status]
+        if target_robot_id is not None:
+            tasks = [
+                task
+                for task in tasks
+                if task.target_robot_id == target_robot_id
+            ]
+        response.headers["X-Total-Count"] = str(len(tasks))
+        if order == "desc":
+            tasks.reverse()
+        return tasks[offset : offset + limit]
+
+
+@app.post(
+    "/task-orders/preview",
+    response_model=TaskOrderPreview,
+    responses={
+        status.HTTP_422_UNPROCESSABLE_CONTENT: {
+            "description": "요청 검증 또는 자연어 작업 해석 실패",
+            "model": TaskParseErrorResponse | RequestValidationErrorResponse,
+        },
+    },
+)
+def preview_task_from_natural_language(
+    request: NaturalLanguageTaskRequest,
+) -> TaskOrderPreview:
+    with store.lock:
+        known_robot_ids = list(store.robots)
+    try:
+        return parse_task_order_preview(request, known_robot_ids)
+    except TaskParseError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": exc.code.value, "message": str(exc)},
+        ) from exc
+
+
+@app.post(
+    "/task-orders/preview/batch",
+    response_model=TaskOrderPreviewBatchResponse,
+)
+def preview_tasks_from_natural_language(
+    request: TaskOrderPreviewBatchRequest,
+) -> TaskOrderPreviewBatchResponse:
+    with store.lock:
+        known_robot_ids = list(store.robots)
+
+    results: list[TaskOrderPreviewBatchItem] = []
+    for index, item in enumerate(request.items):
+        try:
+            preview = parse_task_order_preview(item, known_robot_ids)
+            results.append(
+                TaskOrderPreviewBatchItem(
+                    index=index,
+                    valid=True,
+                    preview=preview,
+                )
+            )
+        except TaskParseError as exc:
+            results.append(
+                TaskOrderPreviewBatchItem(
+                    index=index,
+                    valid=False,
+                    error=TaskParseErrorDetail(
+                        code=exc.code.value,
+                        message=str(exc),
+                    ),
+                )
+            )
+
+    valid_count = sum(result.valid for result in results)
+    return TaskOrderPreviewBatchResponse(
+        total=len(results),
+        valid_count=valid_count,
+        invalid_count=len(results) - valid_count,
+        results=results,
+    )
+
+
 @app.post(
     "/task-orders/from-natural-language",
     response_model=TaskOrder,
     status_code=status.HTTP_201_CREATED,
+    responses={
+        status.HTTP_200_OK: {
+            "description": "동일한 Idempotency-Key 요청의 기존 TaskOrder 재전송",
+            "model": TaskOrder,
+            "headers": TASK_ORDER_RESPONSE_HEADERS,
+        },
+        status.HTTP_201_CREATED: {
+            "description": "새 TaskOrder 생성",
+            "model": TaskOrder,
+            "headers": TASK_ORDER_RESPONSE_HEADERS,
+        },
+        status.HTTP_409_CONFLICT: {
+            "description": "동일한 멱등성 키의 요청 본문 충돌",
+        },
+    },
 )
-def create_task_from_natural_language(request: NaturalLanguageTaskRequest) -> TaskOrder:
+def create_task_from_natural_language(
+    request: NaturalLanguageTaskRequest,
+    response: Response,
+    idempotency_key: Annotated[
+        str | None,
+        Header(alias="Idempotency-Key"),
+    ] = None,
+) -> TaskOrder:
+    normalized_key = normalize_idempotency_key(idempotency_key)
+    request_fingerprint = make_request_fingerprint(request)
     with store.lock:
+        if normalized_key is not None:
+            replay = store.task_idempotency.get(normalized_key)
+            if replay is not None:
+                task_id, previous_fingerprint = replay
+                if previous_fingerprint != request_fingerprint:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="같은 Idempotency-Key를 다른 요청 본문에 재사용할 수 없습니다.",
+                    )
+                existing = store.tasks.get(task_id)
+                if existing is not None:
+                    response.status_code = status.HTTP_200_OK
+                    response.headers["Location"] = f"/task-orders/{existing.task_id}"
+                    response.headers["Idempotency-Replayed"] = "true"
+                    return existing
+
         try:
             task = parse_task_order(request, list(store.robots))
         except TaskParseError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         store.tasks[task.task_id] = task
+        if normalized_key is not None:
+            store.task_idempotency[normalized_key] = (
+                task.task_id,
+                request_fingerprint,
+            )
+            response.headers["Idempotency-Replayed"] = "false"
+        response.headers["Location"] = f"/task-orders/{task.task_id}"
     return task
 
 
@@ -140,13 +326,8 @@ def generate_action_proposal(
         Header(alias="Idempotency-Key"),
     ] = None,
 ) -> ActionProposal:
-    normalized_key = idempotency_key.strip() if idempotency_key is not None else None
-    if idempotency_key is not None and not normalized_key:
-        raise HTTPException(status_code=422, detail="Idempotency-Key는 비어 있을 수 없습니다.")
-    if normalized_key is not None and len(normalized_key) > 128:
-        raise HTTPException(status_code=422, detail="Idempotency-Key는 128자 이하여야 합니다.")
-
-    request_fingerprint = request.model_dump_json(exclude_none=False)
+    normalized_key = normalize_idempotency_key(idempotency_key)
+    request_fingerprint = make_request_fingerprint(request)
     with store.lock:
         task = store.tasks.get(task_id)
         if task is None:

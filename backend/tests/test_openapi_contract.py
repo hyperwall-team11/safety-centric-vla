@@ -17,6 +17,9 @@ class OpenApiContractTest(unittest.TestCase):
             ("GET", "/robots"),
             ("POST", "/zones"),
             ("GET", "/zones"),
+            ("GET", "/task-orders"),
+            ("POST", "/task-orders/preview"),
+            ("POST", "/task-orders/preview/batch"),
             ("POST", "/task-orders/from-natural-language"),
             ("GET", "/task-orders/{task_id}"),
             ("POST", "/task-orders/{task_id}/action-proposals"),
@@ -32,8 +35,17 @@ class OpenApiContractTest(unittest.TestCase):
         }
 
         self.assertEqual(schema["info"]["version"], "0.2.0")
-        self.assertEqual(len(schema["paths"]), 14)
+        self.assertEqual(len(schema["paths"]), 17)
         self.assertEqual(actual_operations, expected_operations)
+        list_operation = schema["paths"]["/task-orders"]["get"]
+        self.assertEqual(
+            {parameter["name"] for parameter in list_operation["parameters"]},
+            {"status", "target_robot_id", "order", "offset", "limit"},
+        )
+        self.assertIn(
+            "X-Total-Count",
+            list_operation["responses"]["200"]["headers"],
+        )
 
 
 if __name__ == "__main__":
