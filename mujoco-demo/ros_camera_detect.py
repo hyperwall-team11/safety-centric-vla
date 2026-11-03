@@ -1,7 +1,8 @@
-"""Subscribe to a MuJoCo ROS 2 camera and run Florence-2 on recent frames.
+"""Subscribe to a MuJoCo ROS 2 camera and run a person detector on recent frames.
 
-This records detections for CV integration. Florence-2 <OD> does not provide a
-calibrated confidence score, so this node does not publish safety Observations.
+This records detections for CV integration and does not publish safety Observations.
+Florence-2 <OD> has no confidence score; RT-DETR scores are checked against the WORKER
+threshold, and every returned label is recorded for miss analysis.
 """
 
 import argparse
@@ -18,21 +19,20 @@ from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image as RosImage
-from transformers import AutoModelForCausalLM, AutoProcessor
 
 from camera_frames import LatestFrameBuffer, person_detections, rgb_image
-from florence_detect import detect_once, percentile
+from detectors import DETECTORS, WORKER_SCORE_THRESHOLD
+from florence_detect import percentile
 
 
-TASK = "<OD>"
 DEFAULT_TOPIC = "/cctv_1/image_raw"
+DEFAULT_MODELS = {"florence2": "microsoft/Florence-2-base", "rtdetr": "PekingU/rtdetr_r50vd"}
 
 
 class CameraDetector(Node):
-    def __init__(self, model, processor, args):
+    def __init__(self, detector, args):
         super().__init__("cv_camera_detector")
-        self.model = model
-        self.processor = processor
+        self.detector = detector
         self.args = args
         self.topic = args.topic
         self.output = args.output
@@ -86,9 +86,8 @@ class CameraDetector(Node):
             self.get_logger().warning(f"Skipping camera frame: {error}")
             self.invalid += 1
             return
-        _, parsed, generation_ms = detect_once(self.model, self.processor, image, TASK)
-        detection = parsed.get(TASK, {})
-        people = person_detections(detection, msg.width, msg.height)
+        detection, inference_ms = self.detector.detect(image)
+        people = person_detections(detection, msg.width, msg.height, WORKER_SCORE_THRESHOLD)
 
         stamp = msg.header.stamp
         record = {
@@ -101,10 +100,15 @@ class CameraDetector(Node):
             "processed_at_utc": datetime.now(timezone.utc).isoformat(),
             "queue_age_ms": age_ms,
             "image_size": [msg.width, msg.height],
-            "task": TASK,
+            "detector": self.detector.name,
+            "task": self.detector.task,
             "people": people,
             "pending_confidence": detection.get("scores") is None and bool(people),
-            "generation_ms": generation_ms,
+            # 모든 라벨을 남겨 미탐지가 '못 찾음'인지 '다른 라벨'인지 구분한다.
+            "all_detections": {"labels": detection["labels"], "bboxes": detection["bboxes"],
+                               "scores": detection.get("scores")},
+            "worker_score_threshold": WORKER_SCORE_THRESHOLD if detection.get("scores") is not None else None,
+            "generation_ms": inference_ms,
             "processing_ms": (time.perf_counter() - started) * 1000,
             "note": "Detection record only; not an approved safety Observation or HazardEvent.",
         }
@@ -127,7 +131,7 @@ class CameraDetector(Node):
         counters.pop("last_received_monotonic")
         elapsed = 0.0 if first is None else time.monotonic() - first
         summary = {
-            "topic": self.topic, "model": self.args.model, "gpu": torch.cuda.get_device_name(0),
+            "topic": self.topic, "detector": self.detector.name, "model": self.args.model, "gpu": torch.cuda.get_device_name(0),
             "stop_reason": self.stop_reason, "processed": self.processed,
             **counters, "stale_pending": self.stale, "invalid_frames": self.invalid,
             "local_window_seconds": elapsed,
@@ -149,7 +153,8 @@ class CameraDetector(Node):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--topic", default=DEFAULT_TOPIC)
-    parser.add_argument("--model", default="microsoft/Florence-2-base")
+    parser.add_argument("--detector", choices=sorted(DETECTORS), default="florence2")
+    parser.add_argument("--model", help="model id or local path (default depends on --detector)")
     parser.add_argument("--output", type=Path, default=Path("vlm_results/ros_camera.jsonl"))
     stop = parser.add_mutually_exclusive_group()
     stop.add_argument("--max-frames", type=int)
@@ -157,6 +162,7 @@ def main():
     parser.add_argument("--idle-timeout-seconds", type=float, default=15)
     parser.add_argument("--max-frame-age-ms", type=float, default=500)
     args = parser.parse_args()
+    args.model = args.model or DEFAULT_MODELS[args.detector]
     if not args.topic.startswith("/") or not args.topic.endswith("/image_raw"):
         parser.error("--topic must be an absolute .../image_raw topic")
     if args.max_frames is not None and args.max_frames <= 0:
@@ -168,18 +174,14 @@ def main():
     if not torch.cuda.is_available():
         raise SystemExit("CUDA is unavailable. Run with ROS 2 and CUDA PyTorch in the same Python environment.")
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    print(f"Loading {args.model} on {torch.cuda.get_device_name(0)}...", flush=True)
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model, trust_remote_code=True, torch_dtype=torch.float16,
-        attn_implementation="eager",
-    ).to("cuda").eval()
-    processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
+    print(f"Loading {args.detector} {args.model} on {torch.cuda.get_device_name(0)}...", flush=True)
+    detector = DETECTORS[args.detector](args.model)
 
     rclpy.init()
     node = None
     executor = MultiThreadedExecutor(num_threads=2)
     try:
-        node = CameraDetector(model, processor, args)
+        node = CameraDetector(detector, args)
         executor.add_node(node)
         while rclpy.ok() and not node.finished:
             executor.spin_once(timeout_sec=0.1)

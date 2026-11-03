@@ -61,7 +61,8 @@ def rgb_image(msg):
     return Image.frombytes("RGB", (msg.width, msg.height), data, "raw", "RGB", msg.step, 1)
 
 
-def person_detections(detection, width, height):
+def person_detections(detection, width, height, min_score=None):
+    """Keep person boxes; with ``min_score``, drop scored boxes below it."""
     boxes, labels = detection.get("bboxes", []), detection.get("labels", [])
     scores = detection.get("scores")
     if len(boxes) != len(labels) or (scores is not None and len(scores) != len(boxes)):
@@ -79,6 +80,8 @@ def person_detections(detection, width, height):
         if scores is not None and (isinstance(score, bool) or not isinstance(score, (int, float))
                                    or not math.isfinite(score) or not 0 <= score <= 1):
             raise ValueError("Detector confidence must be finite and within [0, 1]")
+        if min_score is not None and score is not None and score < min_score:
+            continue
         people.append({"bbox_xyxy": [x1, y1, x2, y2],
                        "confidence": None if score is None else float(score)})
     return people

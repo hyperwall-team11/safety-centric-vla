@@ -77,6 +77,20 @@ python ros_camera_detect.py \
 
 다른 영상 토픽은 `/cctv_2/image_raw`, `/robot/head_camera/image_raw`입니다. 각 카메라의 `.../camera_info`와 TF, 정답 비교용 `/sim/worker_pose`·`/sim/worker_in_keep_out`도 CTL 브리지가 발행합니다. 이 노드는 우선 한 카메라의 탐지 기록만 만듭니다. Florence-2 `<OD>`가 신뢰도 점수를 내지 않으면 `pending_confidence=true`로 표시하며, 안전 판정용 `Observation`·`HazardEvent`를 발행하지 않습니다. ROS 2 카메라 입력부터 모델 출력까지의 실제 동작·처리율은 아직 측정하지 않았습니다.
 
+### 탐지기 선택
+
+`--detector rtdetr`로 RT-DETR(`PekingU/rtdetr_r50vd`, COCO 학습)을 쓸 수 있습니다. 기본값은 기존과 같은 `florence2`입니다. 2026-11-02 측정에서 Florence-2의 1분 처리율이 7 Hz 미만이었으므로, 개발계획서 5-2의 경량 탐지기 전환 규칙에 따라 추가했습니다. YOLO 계열 대신 RT-DETR을 고른 이유는 Apache-2.0 라이선스이고, 현재 환경의 Transformers로 추가 설치 없이 쓸 수 있기 때문입니다. 모델 가중치의 라이선스와 사용 조건은 모델 카드에서 따로 확인하세요.
+
+```bash
+python ros_camera_detect.py --detector rtdetr --model /path/to/rtdetr_r50vd \
+  --topic /cctv_1/image_raw --output vlm_results/ros_camera_rtdetr.jsonl --duration-seconds 60
+```
+
+- RT-DETR은 상자별 점수를 줍니다. `person`이면서 점수가 0.5(계획서의 WORKER 임계) 이상인 상자만 `people`에 넣고 `confidence`를 채웁니다.
+- 두 탐지기 모두 모델이 낸 라벨 전체를 `all_detections`에 기록합니다. RT-DETR은 점수 0.3 이상만 남깁니다. 미탐지가 "못 찾음"인지 "다른 라벨"인지 구분하는 분석용이며 작업자 판정에는 쓰지 않습니다.
+- `generation_ms`는 Florence-2에서는 생성 시간, RT-DETR에서는 모델 순전파 시간입니다. 둘 다 전처리·후처리를 제외합니다.
+- RT-DETR의 실제 처리율과 탐지율은 아직 측정하지 않았습니다.
+
 ## 연속 추론 속도 측정 (CV-03)
 
 GPU 할당을 받은 터미널에서 아래처럼 실행하면 모델 로드와 워밍업 3회를 제외하고 두 정지 이미지를 순서대로 **60초 이상 반복 추론**합니다. 출력은 `vlm_results/benchmark.json`에 저장됩니다.
