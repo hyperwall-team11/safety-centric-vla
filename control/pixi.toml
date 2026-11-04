@@ -34,6 +34,7 @@ measure = { cmd = "bash scripts/measure_rates.sh", depends-on = ["build"] }
 snapshot = { cmd = "python mujoco/scenario.py --snapshot outputs/snapshots" }
 # Mock 어댑터·안전 경로
 mock-adapter = { cmd = "bash -c 'source ros2_ws/install/setup.bash && ros2 run robot_adapter mock_adapter'", depends-on = ["build"] }
+tiago-adapter = { cmd = "bash -c 'source ros2_ws/install/setup.bash && ros2 run robot_adapter tiago_adapter'", depends-on = ["build"] }
 roundtrip = { cmd = "bash scripts/roundtrip.sh", depends-on = ["build"] }
 # Panda 로봇 팔 집기·놓기 (모델은 저장소에 없으므로 처음 실행 시 내려받음)
 fetch-models = { cmd = "bash scripts/fetch_models.sh" }

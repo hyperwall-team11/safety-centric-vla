@@ -12,8 +12,9 @@ ROS 2 제어 어댑터, 안전 경로(HOLD·E-Stop), MuJoCo 시뮬레이션 환�
 | 9 | Mock 어댑터 (공통 Action, ACK·RESULT, E-Stop·HOLD) | 완료 | `pixi run roundtrip` |
 | CT-01 | 브리지 확장: `/joint_states`, 카메라 3대(Image + CameraInfo), TF, 주기 측정 | 완료 | `pixi run measure` |
 | CT-02 | 시나리오 장면: 금지구역, A·B 작업대와 상자, CCTV 2대 + 머리 카메라, 작업자 접근 동작 | 완료 | `pixi run snapshot` |
+| CT-03 | Backend 승인 명령·RESULT 연동, `proposal_id` 중복 실행 방지 | 완료 | `pixi run test` |
 
-다음 단계는 공통 Action(`MOVE_TO`)을 받아 `/cmd_vel`로 바퀴 로봇을 움직이는 MuJoCo 어댑터입니다.
+다음 단계는 Backend와 TIAGo 어댑터를 함께 띄운 통합 시나리오 자동화입니다.
 
 ## 로봇 모델
 
@@ -80,6 +81,7 @@ macOS에서는 같은 Mac 안의 노드끼리도 서로 못 찾는 문제가 있
 | `pixi run measure` | 브리지(물리 + 카메라 3대)를 띄우고 토픽 주기 1분 측정. 인자: `-- 초 카메라Hz 가로 세로` |
 | `pixi run snapshot` | 카메라 3대 이미지를 `outputs/snapshots/`에 PNG로 저장 |
 | `pixi run mock-adapter` | Mock 어댑터만 실행 |
+| `pixi run tiago-adapter` | 공통 Action을 `/cmd_vel`·`/arm/command`로 바꾸는 TIAGo 어댑터 실행 |
 | `pixi run roundtrip` | Mock 어댑터 + 하네스 왕복·적합성 시험 (13개 항목) |
 | `pixi run arm` / `arm-view` | Panda 로봇 팔 집기·놓기 / 뷰어로 보기 (처음 실행 시 모델 33MB를 내려받음) |
 | `pixi run fetch-models` | 저장소에 올리지 않는 모델(Panda)만 내려받기 |
@@ -167,6 +169,7 @@ RoboStack Humble에 `ros-humble-mujoco-ros2-control` 0.0.3(osx-arm64·linux-64)�
 
 - `status=APPROVED`가 아닌 제안은 ACK 없이 `NOT_APPROVED`로 거부합니다.
 - 수신 즉시 ACK를 보내고, 완료·실패 시 RESULT를 보냅니다.
+- 같은 `proposal_id`와 같은 명령을 다시 받으면 동작을 반복하지 않고 기존 ACK 또는 최종 RESULT를 재전송합니다.
 - 지원하지 않는 Action(Mock은 `MANIPULATE`)은 `UNSUPPORTED`로 응답합니다.
 - 속도는 `min(로봇 max_speed, proposal.speed_limit, parameters.speed_limit)`로 제한합니다. 기본값은 SR-01의 0.4 m/s입니다.
 - `/safety/estop`의 `active=true`를 받으면 즉시 `ESTOP`으로 바꾸고 실행 중인 제안을 중단합니다. 해석할 수 없는 E-Stop 메시지도 정지로 처리합니다.
