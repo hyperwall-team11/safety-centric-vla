@@ -20,6 +20,15 @@ python3 -m uvicorn app.main:app --reload
 
 Swagger UI: <http://127.0.0.1:8000/docs>
 
+운영 콘솔: <http://127.0.0.1:8000/console>
+
+운영 콘솔에서는 별도 프론트엔드 빌드 없이 다음 흐름을 확인할 수 있습니다.
+
+1. 자연어 명령 미리보기와 `TaskOrder` 생성
+2. 로봇 빠른 등록과 현재 상태 확인
+3. `ActionProposal` 생성, 안전 평가, 승인 제안 실행
+4. 작업 상태 필터와 최근 `ExecutionLog` 확인
+
 현재 코드 기준 요청·응답, 상태 전이, 오류와 기준 문서 대비 차이는 [Backend API 명세 v0.2](../docs/backend-api-spec-v0.2.md)를 참고합니다.
 
 ## 테스트
