@@ -1,0 +1,175 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Three.js CCTV</title>
+<style>html,body{margin:0;background:#000}canvas{display:block}</style>
+<script type="importmap">{"imports":{"three":"/node_modules/three/build/three.module.js"}}</script>
+</head>
+<body>
+<script type="module">
+// MuJoCo ① 장면을 그대로 그린다. 좌표는 MuJoCo 월드(z 위)를 변환 없이 쓰고,
+// 카메라 자세만 MuJoCo cam_xmat에서 가져온다(MuJoCo·Three.js 카메라 모두 -z를 보고 +y가 위).
+import * as THREE from 'three';
+
+const W = 640, H = 480;
+const meta = await (await fetch('/data/scene.json')).json();
+const frames = new Float32Array(await (await fetch('/data/frames.bin')).arrayBuffer());
+const nGeom = meta.ngeom_export;
+const frameLen = nGeom * 12 + meta.nskinvert * 3;
+
+const dec = (b64, T) => { const s = atob(b64); const u = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return new T(u.buffer); };
+
+function makeRenderer(antialias) {
+  const r = new THREE.WebGLRenderer({ antialias, preserveDrawingBuffer: true });
+  r.setPixelRatio(1); r.setSize(W, H);
+  document.body.appendChild(r.domElement);
+  return r;
+}
+const renderer = makeRenderer(true);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+const maskRenderer = makeRenderer(false);
+maskRenderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x8a8f94);
+
+// 공장 바닥 느낌의 콘크리트 텍스처 (절차 생성, 시드 고정)
+function concreteTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 512;
+  const g = c.getContext('2d'); const img = g.createImageData(512, 512);
+  let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let i = 0; i < 512 * 512; i++) {
+    const v = 150 + (rnd() - 0.5) * 30;
+    img.data[i * 4] = v; img.data[i * 4 + 1] = v - 2; img.data[i * 4 + 2] = v - 6; img.data[i * 4 + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  g.strokeStyle = 'rgba(70,70,70,0.5)'; g.lineWidth = 2; g.strokeRect(0, 0, 512, 512); // 바닥 이음매
+  for (let k = 0; k < 40; k++) { g.fillStyle = `rgba(90,90,90,${0.05 + rnd() * 0.08})`;
+    g.beginPath(); g.arc(rnd() * 512, rnd() * 512, 10 + rnd() * 60, 0, 7); g.fill(); }
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t;
+}
+
+const color = rgba => new THREE.Color().setRGB(rgba[0], rgba[1], rgba[2], THREE.SRGBColorSpace);
+const geomObjs = [];
+const meshCache = {};
+for (const g of meta.geoms) {
+  const [sx, sy, sz] = g.size;
+  let geo;
+  switch (g.type) {
+    case 0: geo = new THREE.PlaneGeometry(2 * (sx || 6), 2 * (sy || 6)); break;
+    case 2: geo = new THREE.SphereGeometry(sx, 24, 16); break;
+    case 3: geo = new THREE.CapsuleGeometry(sx, 2 * sy, 8, 16).rotateX(Math.PI / 2); break;
+    case 4: geo = new THREE.SphereGeometry(1, 24, 16).scale(sx, sy, sz); break;
+    case 5: geo = new THREE.CylinderGeometry(sx, sx, 2 * sy, 32).rotateX(Math.PI / 2); break;
+    case 6: geo = new THREE.BoxGeometry(2 * sx, 2 * sy, 2 * sz); break;
+    case 7: {
+      if (!meshCache[g.mesh]) {
+        const m = meta.meshes[g.mesh];
+        const b = new THREE.BufferGeometry();
+        b.setAttribute('position', new THREE.BufferAttribute(dec(m.vert, Float32Array), 3));
+        b.setIndex(new THREE.BufferAttribute(dec(m.face, Uint32Array), 1));
+        meshCache[g.mesh] = b.toNonIndexed(); meshCache[g.mesh].computeVertexNormals();
+      }
+      geo = meshCache[g.mesh]; break;
+    }
+    default: continue;
+  }
+  const params = { color: color(g.rgba), roughness: 0.55, metalness: 0.15 };
+  if (g.rgba[3] < 1) { params.transparent = true; params.opacity = g.rgba[3]; params.depthWrite = false; }
+  if (g.type === 0) { params.map = concreteTexture(); params.map.repeat.set(6, 6); params.roughness = 0.9; params.metalness = 0; }
+  if (g.name === 'keep_out_zone') { params.roughness = 0.8; params.metalness = 0; }
+  const mat = new THREE.MeshStandardMaterial(params);
+  const obj = new THREE.Mesh(geo, mat);
+  obj.matrixAutoUpdate = false;
+  obj.castShadow = g.type !== 0 && !g.name.includes('zone') && !g.name.includes('marking');
+  obj.receiveShadow = true;
+  obj.userData.normal = mat;
+  scene.add(obj); geomObjs.push(obj);
+}
+
+// 작업자 skin: 프레임마다 MuJoCo가 계산한 정점 위치를 그대로 넣는다
+const loader = new THREE.TextureLoader();
+const skinObjs = [];
+for (const s of meta.skins) {
+  if (!s.render) continue;
+  const b = new THREE.BufferGeometry();
+  b.setAttribute('position', new THREE.BufferAttribute(new Float32Array(s.vertnum * 3), 3));
+  b.setAttribute('uv', new THREE.BufferAttribute(dec(s.uv, Float32Array), 2));
+  b.setIndex(new THREE.BufferAttribute(dec(s.face, Uint32Array), 1));
+  const tex = await loader.loadAsync('/data/' + s.texture);
+  tex.colorSpace = THREE.SRGBColorSpace; tex.flipY = false; tex.anisotropy = 8;
+  const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.85, metalness: 0, side: THREE.DoubleSide });
+  const obj = new THREE.Mesh(b, mat);
+  obj.castShadow = obj.receiveShadow = true; obj.frustumCulled = false;
+  obj.userData = { normal: mat, skin: s };
+  scene.add(obj); skinObjs.push(obj);
+}
+
+// 조명: MuJoCo 조명 2개를 그림자 있는 방향광으로, 천장 확산광은 반구광으로
+const hemi = new THREE.HemisphereLight(0xf4f6ff, 0x5a5550, 1.4); hemi.position.set(0, 0, 1); scene.add(hemi);
+meta.lights.forEach((l, i) => {
+  const d = new THREE.DirectionalLight(0xfff6ea, 2.2 * l.diffuse[0]);
+  d.position.set(...l.pos); d.target.position.set(l.pos[0] + l.dir[0], l.pos[1] + l.dir[1], l.pos[2] + l.dir[2]);
+  if (i === 0) {
+    d.castShadow = true; d.shadow.mapSize.set(2048, 2048);
+    Object.assign(d.shadow.camera, { left: -6, right: 6, top: 6, bottom: -6, near: 0.5, far: 15 });
+    d.shadow.bias = -0.0005; d.shadow.radius = 3;
+  }
+  scene.add(d, d.target);
+});
+
+const cams = {};
+for (const [name, c] of Object.entries(meta.cameras)) {
+  const cam = new THREE.PerspectiveCamera(c.fovy, c.width / c.height, 0.05, 40);
+  const R = c.mat, p = c.pos;
+  const m = new THREE.Matrix4().set(R[0], R[1], R[2], p[0], R[3], R[4], R[5], p[1], R[6], R[7], R[8], p[2], 0, 0, 0, 1);
+  m.decompose(cam.position, cam.quaternion, cam.scale);
+  cam.updateMatrixWorld(true);
+  cams[name] = cam;
+}
+
+const tmp = new THREE.Matrix4();
+function setFrame(f) {
+  const base = f * frameLen;
+  geomObjs.forEach((o, i) => {
+    const k = base + i * 12, p = frames.subarray(k, k + 3), R = frames.subarray(k + 3, k + 12);
+    o.matrix.set(R[0], R[1], R[2], p[0], R[3], R[4], R[5], p[1], R[6], R[7], R[8], p[2], 0, 0, 0, 1);
+    o.matrixWorldNeedsUpdate = true;
+  });
+  const sk = base + nGeom * 12;
+  for (const o of skinObjs) {
+    const s = o.userData.skin, pos = o.geometry.attributes.position;
+    pos.array.set(frames.subarray(sk + s.vertadr * 3, sk + (s.vertadr + s.vertnum) * 3));
+    pos.needsUpdate = true; o.geometry.computeVertexNormals(); o.geometry.computeBoundingSphere();
+  }
+}
+
+const black = new THREE.MeshBasicMaterial({ color: 0x000000 });
+const white = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
+window.renderFrame = (camName, f) => {
+  setFrame(f);
+  renderer.render(scene, cams[camName]);
+  const rgb = renderer.domElement.toDataURL('image/png');
+  // 분할 마스크: 작업자만 흰색, 나머지(가리는 물체 포함)는 검은색
+  const bg = scene.background; scene.background = new THREE.Color(0);
+  geomObjs.forEach(o => { o.material = black; });
+  skinObjs.forEach(o => { o.material = white; });
+  maskRenderer.render(scene, cams[camName]);
+  const mask = maskRenderer.domElement.toDataURL('image/png');
+  geomObjs.forEach(o => { o.material = o.userData.normal; });
+  skinObjs.forEach(o => { o.material = o.userData.normal; });
+  scene.background = bg;
+  return { rgb, mask };
+};
+window.meta = { frames: meta.frames, fps: meta.fps, cameras: meta.cameras };
+window.ready = true;
+</script>
+</body>
+</html>
