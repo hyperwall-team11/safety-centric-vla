@@ -456,7 +456,8 @@ def generate_action_proposal(
             )
 
         try:
-            proposal = planner.plan(task, robot, request)
+            destination_zone = store.zones.get(getattr(task.destination, "zone_id", None))
+            proposal = planner.plan(task, robot, request, destination_zone=destination_zone)
         except ActionPlanningError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 

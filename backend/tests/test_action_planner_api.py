@@ -106,6 +106,71 @@ class ActionPlannerApiTest(unittest.TestCase):
             {"x": 1.0, "y": 2.0, "z": 0.0},
         )
 
+    def test_auto_move_checks_safe_and_crossing_routes_with_keep_out(self) -> None:
+        keep_out = self.client.post("/zones", json={
+            "zone_id": "B구역",
+            "zone_type": "KEEP_OUT",
+            "frame_id": "map",
+            "geometry": {"type": "polygon", "points": [[1, -1], [2, -1], [2, 1], [1, 1]]},
+            "minimum_safety_distance": 1.2,
+        })
+        self.assertEqual(keep_out.status_code, 201, keep_out.text)
+
+        for zone_id, x, y, frame, expected in (
+            ("A구역", 0, 3, "map", "APPROVED"),
+            ("C구역", 3, 0, "map", "REJECTED"),
+            ("D구역", 0, 3, "odom", "REJECTED"),
+        ):
+            with self.subTest(zone_id=zone_id):
+                target = {"x": x, "y": y, "z": 0}
+                zone = self.client.post("/zones", json={
+                    "zone_id": zone_id,
+                    "zone_type": "WORK",
+                    "frame_id": frame,
+                    "geometry": {"navigation_target": target},
+                    "minimum_safety_distance": 1.2,
+                })
+                self.assertEqual(zone.status_code, 201, zone.text)
+                task = self.create_task(f"robot-01 로봇을 {zone_id}으로 이동해")
+                response = self.generate(task["task_id"])
+                self.assertEqual(response.status_code, 201, response.text)
+                proposal = response.json()
+                if frame == "map":
+                    self.assertEqual(proposal["trajectory"], [
+                        {"position": {"x": 0, "y": 0, "z": 0}},
+                        {"position": target},
+                    ])
+                else:
+                    self.assertIsNone(proposal["trajectory"])
+                result = self.client.post(f"/action-proposals/{proposal['proposal_id']}/evaluate")
+                self.assertEqual(result.status_code, 200, result.text)
+                self.assertEqual(result.json()["status"], expected)
+                rule = next(rule for rule in store.logs[-1].rule_results if rule.rule_id == "rule-keep-out")
+                self.assertEqual(rule.passed, expected == "APPROVED")
+                if expected == "APPROVED":
+                    hazard = self.client.post("/hazards", json={
+                        "hazard_type": "WORKER_INTRUSION",
+                        "severity": "CRITICAL",
+                        "source_observation_ids": ["obs-1"],
+                        "related_robot_ids": [],
+                        "related_worker_ids": [],
+                        "zone_id": zone_id,
+                        "confidence": 0.99,
+                    })
+                    self.assertEqual(hazard.status_code, 201, hazard.text)
+                    execution = self.client.post(f"/action-proposals/{proposal['proposal_id']}/execute")
+                    self.assertEqual(execution.status_code, 409, execution.text)
+                    self.assertIn(hazard.json()["hazard_id"], store.logs[-1].hazard_ids)
+
+    def test_same_frame_coordinate_move_generates_trajectory(self) -> None:
+        task = self.create_task("robot-01 로봇을 좌표 (1, 2, 0)로 이동해")
+        response = self.generate(task["task_id"])
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["trajectory"], [
+            {"position": {"x": 0, "y": 0, "z": 0}},
+            {"position": {"x": 1, "y": 2, "z": 0}},
+        ])
+
     def test_generates_contract_aligned_manipulate_proposal(self) -> None:
         task = self.create_task("robot-01 로봇으로 상자 3을 B 작업대로 옮겨")
         response = self.generate(task["task_id"], {"manipulation": "PLACE"})

@@ -205,6 +205,11 @@ MANIPULATE 예:
 
 `GET /task-orders/{task_id}/action-proposals`는 해당 TaskOrder의 Proposal만 배열로 반환한다.
 
+자동 생성한 `MOVE_TO`는 로봇의 현재 위치와 좌표 목적지 또는
+`Zone.geometry.navigation_target`을 잇는 직선 `trajectory`를 채운다.
+출발점과 목적지의 좌표계가 일치해야 한다. 목적지 좌표가 없거나 좌표계가
+다르면 경로는 `null`이며, 경로 검사가 필요한 경우 안전 게이트가 거절한다.
+
 ### 3.4 ActionProposal
 
 | 필드 | 타입 | 규칙 |
