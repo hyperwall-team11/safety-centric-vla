@@ -3,7 +3,8 @@
 This records detections for CV integration and does not publish safety Observations.
 Florence-2 <OD> has no confidence score; RT-DETR scores are checked against the WORKER
 threshold, and every returned label is recorded for miss analysis. With several
-``--topic`` options one detector serves the cameras in turn, newest frame per camera.
+``--topic`` options one detector serves the cameras in turn, newest frame per camera, or all
+cameras in one model call with ``--batch-cameras``.
 """
 
 import argparse
@@ -108,69 +109,86 @@ class CameraDetector(Node):
         self.saved_misses += 1
         return str(path)
 
+    def _take_frames(self):
+        """One frame in turn, or with ``--batch-cameras`` the latest frame of every camera that has one."""
+        buffers = [stats.frames for stats in self.topics]
+        if not self.args.batch_cameras:
+            index, frame = take_round_robin(buffers, self.next_index)
+            if frame is None:
+                return []
+            self.next_index = (index + 1) % len(self.topics)
+            return [(self.topics[index], frame)]
+        return [(stats, frame) for stats, frame in ((s, s.frames.take()) for s in self.topics)
+                if frame is not None]
+
     def _process_latest(self):
         if self.finished:
             return
         now = time.monotonic()
         if self._check_stop(now):
             return
-        index, frame = take_round_robin([stats.frames for stats in self.topics], self.next_index)
-        if frame is None:
-            return
-        self.next_index = (index + 1) % len(self.topics)
-        stats = self.topics[index]
-        age_ms = (time.monotonic() - frame.received_monotonic) * 1000
-        if age_ms > self.args.max_frame_age_ms:
-            stats.stale += 1
-            return
-        msg = frame.message
+        batch = []
         started = time.perf_counter()
-        try:
-            image = rgb_image(msg)
-        except ValueError as error:
-            self.get_logger().warning(f"Skipping camera frame from {stats.topic}: {error}")
-            stats.invalid += 1
+        for stats, frame in self._take_frames():
+            age_ms = (time.monotonic() - frame.received_monotonic) * 1000
+            if age_ms > self.args.max_frame_age_ms:
+                stats.stale += 1
+                continue
+            try:
+                image = rgb_image(frame.message)
+            except ValueError as error:
+                self.get_logger().warning(f"Skipping camera frame from {stats.topic}: {error}")
+                stats.invalid += 1
+                continue
+            batch.append((stats, frame, age_ms, image))
+        if not batch:
             return
-        detection, inference_ms = self.detector.detect(image)
-        people = person_detections(detection, msg.width, msg.height, WORKER_SCORE_THRESHOLD)
+        detections, inference_ms = self.detector.detect_batch([item[3] for item in batch])
+        people_list = [person_detections(detection, frame.message.width, frame.message.height,
+                                         WORKER_SCORE_THRESHOLD)
+                       for detection, (_, frame, _, _) in zip(detections, batch)]
+        # 묶음 처리에서는 처리 시간이 같은 묶음의 카메라 모두에 공통이다.
         processing_ms = (time.perf_counter() - started) * 1000
 
-        stamp = msg.header.stamp
-        sensor_id = msg.header.frame_id.removeprefix("camera_")
-        record = {
-            "topic": stats.topic,
-            "sensor_id": sensor_id,
-            "frame_id": msg.header.frame_id,
-            "stamp": {"sec": stamp.sec, "nanosec": stamp.nanosec},
-            "stamp_clock": "publisher_ros_clock",
-            "received_at_utc": frame.received_at_utc,
-            "processed_at_utc": datetime.now(timezone.utc).isoformat(),
-            "queue_age_ms": age_ms,
-            "image_size": [msg.width, msg.height],
-            "detector": self.detector.name,
-            "task": self.detector.task,
-            "people": people,
-            "pending_confidence": detection.get("scores") is None and bool(people),
-            # 모든 라벨을 남겨 미탐지가 '못 찾음'인지 '다른 라벨'인지 구분한다.
-            "all_detections": {"labels": detection["labels"], "bboxes": detection["bboxes"],
-                               "scores": detection.get("scores")},
-            "worker_score_threshold": WORKER_SCORE_THRESHOLD if detection.get("scores") is not None else None,
-            "generation_ms": inference_ms,
-            "processing_ms": processing_ms,
-            # 작업자를 못 찾은 실제 입력 영상. 저장 시간은 processing_ms에 넣지 않는다.
-            "saved_frame": None if people else self._save_miss(image, sensor_id, stamp),
-            "note": "Detection record only; not an approved safety Observation or HazardEvent.",
-        }
-        self.file.write(json.dumps(record, ensure_ascii=False) + "\n")
+        for (stats, frame, age_ms, image), detection, people in zip(batch, detections, people_list):
+            msg = frame.message
+            stamp = msg.header.stamp
+            sensor_id = msg.header.frame_id.removeprefix("camera_")
+            record = {
+                "topic": stats.topic,
+                "sensor_id": sensor_id,
+                "frame_id": msg.header.frame_id,
+                "stamp": {"sec": stamp.sec, "nanosec": stamp.nanosec},
+                "stamp_clock": "publisher_ros_clock",
+                "received_at_utc": frame.received_at_utc,
+                "processed_at_utc": datetime.now(timezone.utc).isoformat(),
+                "queue_age_ms": age_ms,
+                "image_size": [msg.width, msg.height],
+                "detector": self.detector.name,
+                "task": self.detector.task,
+                "batch_size": len(batch),
+                "people": people,
+                "pending_confidence": detection.get("scores") is None and bool(people),
+                # 모든 라벨을 남겨 미탐지가 '못 찾음'인지 '다른 라벨'인지 구분한다.
+                "all_detections": {"labels": detection["labels"], "bboxes": detection["bboxes"],
+                                   "scores": detection.get("scores")},
+                "worker_score_threshold": WORKER_SCORE_THRESHOLD if detection.get("scores") is not None else None,
+                "generation_ms": inference_ms,
+                "processing_ms": processing_ms,
+                # 작업자를 못 찾은 실제 입력 영상. 저장 시간은 processing_ms에 넣지 않는다.
+                "saved_frame": None if people else self._save_miss(image, sensor_id, stamp),
+                "note": "Detection record only; not an approved safety Observation or HazardEvent.",
+            }
+            self.file.write(json.dumps(record, ensure_ascii=False) + "\n")
+            for target in (stats, self):
+                target.processing_ms.append(processing_ms)
+                target.queue_age_ms.append(age_ms)
+                target.processed += 1
+            if self.processed == 1 or self.processed % 30 == 0:
+                received = sum(s.frames.snapshot()["received_callbacks"] for s in self.topics)
+                self.get_logger().info(
+                    f"processed={self.processed} received={received} people={len(people)} topic={stats.topic}")
         self.file.flush()
-        for target in (stats, self):
-            target.processing_ms.append(processing_ms)
-            target.queue_age_ms.append(age_ms)
-            target.processed += 1
-        if self.processed == 1 or self.processed % 30 == 0:
-            received = sum(s.frames.snapshot()["received_callbacks"] for s in self.topics)
-            self.get_logger().info(
-                f"processed={self.processed} received={received} people={len(people)} topic={stats.topic}")
         if self.args.max_frames is not None and self.processed >= self.args.max_frames:
             self.stop_reason, self.finished = "max_frames_reached", True
 
@@ -193,6 +211,7 @@ class CameraDetector(Node):
             "local_processing_hz": self.processed / elapsed if elapsed > 0 else 0.0,
             "p95_processing_ms": percentile(self.processing_ms, 0.95) if self.processing_ms else None,
             "p95_queue_age_ms": percentile(self.queue_age_ms, 0.95) if self.queue_age_ms else None,
+            "batch_cameras": self.args.batch_cameras, "num_beams": self.args.num_beams,
             "per_topic": per_topic,
             "saved_misses": self.saved_misses,
             "measurement_note": (
@@ -223,6 +242,9 @@ def main():
     parser.add_argument("--save-misses-dir", type=Path,
                         help="save input frames with no WORKER detection as PNG for miss analysis")
     parser.add_argument("--max-saved-misses", type=int, default=300)
+    parser.add_argument("--batch-cameras", action="store_true",
+                        help="run the latest frame of every camera in one model call")
+    parser.add_argument("--num-beams", type=int, default=3, help="Florence-2 beam search width")
     args = parser.parse_args()
     args.topic = args.topic or [DEFAULT_TOPIC]
     args.model = args.model or DEFAULT_MODELS[args.detector]
@@ -233,6 +255,10 @@ def main():
         parser.error("--topic values must be distinct")
     if args.max_frames is not None and args.max_frames <= 0:
         parser.error("--max-frames must be positive")
+    if args.num_beams <= 0:
+        parser.error("--num-beams must be positive")
+    if args.num_beams != 3 and args.detector != "florence2":
+        parser.error("--num-beams applies to florence2 only")
     if args.max_saved_misses <= 0:
         parser.error("--max-saved-misses must be positive")
     for name in ("duration_seconds", "idle_timeout_seconds", "max_frame_age_ms"):
@@ -245,7 +271,8 @@ def main():
     if args.save_misses_dir is not None:
         args.save_misses_dir.mkdir(parents=True, exist_ok=True)
     print(f"Loading {args.detector} {args.model} on {torch.cuda.get_device_name(0)}...", flush=True)
-    detector = DETECTORS[args.detector](args.model)
+    options = {"num_beams": args.num_beams} if args.detector == "florence2" else {}
+    detector = DETECTORS[args.detector](args.model, **options)
 
     rclpy.init()
     node = None

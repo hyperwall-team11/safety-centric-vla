@@ -2,6 +2,8 @@
 
 Each detector returns ``{"bboxes": [[x1, y1, x2, y2], ...], "labels": [...], "scores": [...] or None}``
 in pixel coordinates, plus the timed model call in milliseconds. Florence-2 ``<OD>`` has no scores.
+``detect_batch`` runs several images (e.g. one per camera) in one model call and returns one dict per
+image plus the shared call time.
 """
 
 import time
@@ -31,7 +33,7 @@ class FlorenceDetector:
     name = "florence2"
     task = "<OD>"
 
-    def __init__(self, model_id):
+    def __init__(self, model_id, num_beams=3):
         import torch
         from transformers import AutoModelForCausalLM, AutoProcessor
 
@@ -40,14 +42,33 @@ class FlorenceDetector:
             attn_implementation="eager",
         ).to("cuda").eval()
         self.processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
+        self.num_beams = num_beams
 
     def detect(self, image):
-        from florence_detect import detect_once
+        detections, inference_ms = self.detect_batch([image])
+        return detections[0], inference_ms
 
-        _, parsed, inference_ms = detect_once(self.model, self.processor, image, self.task)
-        detection = parsed.get(self.task, {})
-        return {"bboxes": detection.get("bboxes", []), "labels": detection.get("labels", []),
-                "scores": detection.get("scores")}, inference_ms
+    def detect_batch(self, images):
+        import torch
+
+        inputs = self.processor(text=[self.task] * len(images), images=images,
+                                return_tensors="pt").to("cuda", torch.float16)
+        torch.cuda.synchronize()
+        started = time.perf_counter()
+        with torch.inference_mode():
+            generated = self.model.generate(
+                input_ids=inputs["input_ids"], pixel_values=inputs["pixel_values"],
+                max_new_tokens=512, do_sample=False, num_beams=self.num_beams,
+            )
+        torch.cuda.synchronize()
+        inference_ms = (time.perf_counter() - started) * 1000
+        detections = []
+        for raw, image in zip(self.processor.batch_decode(generated, skip_special_tokens=False), images):
+            parsed = self.processor.post_process_generation(raw, task=self.task, image_size=image.size)
+            detection = parsed.get(self.task, {})
+            detections.append({"bboxes": detection.get("bboxes", []), "labels": detection.get("labels", []),
+                               "scores": detection.get("scores")})
+        return detections, inference_ms
 
 
 class RtDetrDetector:
@@ -62,18 +83,24 @@ class RtDetrDetector:
         self.record_threshold = record_threshold
 
     def detect(self, image):
+        detections, inference_ms = self.detect_batch([image])
+        return detections[0], inference_ms
+
+    def detect_batch(self, images):
         import torch
 
-        inputs = self.processor(images=image, return_tensors="pt").to("cuda")
+        inputs = self.processor(images=images, return_tensors="pt").to("cuda")
         torch.cuda.synchronize()
         started = time.perf_counter()
         with torch.inference_mode():
             outputs = self.model(**inputs)
         torch.cuda.synchronize()
         inference_ms = (time.perf_counter() - started) * 1000
-        result = self.processor.post_process_object_detection(
-            outputs, target_sizes=[(image.height, image.width)], threshold=self.record_threshold)[0]
-        return rtdetr_detection(result, self.model.config.id2label, image.width, image.height), inference_ms
+        results = self.processor.post_process_object_detection(
+            outputs, target_sizes=[(image.height, image.width) for image in images],
+            threshold=self.record_threshold)
+        return [rtdetr_detection(result, self.model.config.id2label, image.width, image.height)
+                for result, image in zip(results, images)], inference_ms
 
 
 DETECTORS = {"florence2": FlorenceDetector, "rtdetr": RtDetrDetector}

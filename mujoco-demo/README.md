@@ -102,6 +102,8 @@ python ros_camera_detect.py --topic /cctv_1/image_raw --topic /cctv_2/image_raw 
 - 탐지기 하나가 카메라마다 최신 프레임 하나를 보관하고 차례대로 처리합니다. 한 카메라의 프레임만 들어와 있으면 그 카메라를 처리합니다.
 - 요약의 `per_topic`에 카메라별 처리 건수·처리율·지연 p95가, 최상위에 전체 합계가 들어갑니다. 카메라별 처리율은 같은 탐지기를 나눠 쓴 값입니다.
 - 어느 한 카메라라도 `--idle-timeout-seconds` 동안 입력이 없으면 종료 코드 2로 끝납니다.
+- `--batch-cameras`를 주면 카메라마다 들어와 있는 최신 프레임을 모아 모델을 한 번만 호출합니다. 이때 `generation_ms`와 `processing_ms`는 묶음 전체 시간이며 기록의 `batch_size`에 묶음 크기가 남습니다.
+- `--num-beams`는 Florence-2 생성의 빔 수입니다(기본 3, 기존과 같음). 줄이면 빨라질 수 있지만 탐지 결과가 달라질 수 있어 정답 비교로 확인한 뒤 바꿉니다.
 - `--save-misses-dir`를 주면 작업자(`people`)가 없는 입력 프레임을 `<카메라>_<sec>_<nanosec>.png`로 저장하고 기록의 `saved_frame`에 경로를 남깁니다. 저장은 기본 300장까지(`--max-saved-misses`)이며 저장 시간은 `processing_ms`에 넣지 않지만 다음 프레임 처리를 늦출 수 있습니다. 처리율을 잴 때는 저장 없이 따로 실행하세요.
 
 ## 연속 추론 속도 측정 (CV-03)
