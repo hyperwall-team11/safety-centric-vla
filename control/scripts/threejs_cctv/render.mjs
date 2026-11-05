@@ -38,6 +38,11 @@ function findChromium() {
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png',
   '.jpg': 'image/jpeg', '.gltf': 'model/gltf+json', '.bin': 'application/octet-stream', '.hdr': 'application/octet-stream' };
 const server = http.createServer((req, res) => {
+  if (req.method === 'POST' && req.url.startsWith('/upload/')) {   // exportGLB 결과를 data 폴더에 저장
+    const chunks = []; req.on('data', c => chunks.push(c));
+    req.on('end', () => { fs.writeFileSync(path.join(dataDir, path.basename(req.url)), Buffer.concat(chunks)); res.writeHead(200).end(); });
+    return;
+  }
   const url = decodeURIComponent(req.url.split('?')[0]);
   const file = url.startsWith('/data/') ? path.join(dataDir, url.slice(6))
     : path.join(here, url === '/' ? 'render.html' : url);
@@ -56,11 +61,15 @@ if (!fs.existsSync(path.join(here, 'assets', 'manifest.json'))) {
 const browser = await chromium.launch({ executablePath: findChromium(),
   args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
 const page = await browser.newPage({ viewport: { width: 1300, height: 500 } });
-page.on('console', m => { if (m.type() === 'error') console.error('[page]', m.text()); });
+page.on('console', m => { if (m.type() === 'error' || process.argv.includes('--glb')) console.error('[page]', m.text()); });
 page.on('pageerror', e => console.error('[page]', e.message));
 await page.goto(`http://127.0.0.1:${port}/`);
 await page.waitForFunction(() => window.ready === true, null, { timeout: 300000 });
 const meta = await page.evaluate(() => window.meta);
+if (process.argv.includes('--glb')) {   // Blender Cycles용 정적 장면만 내보내고 끝낸다
+  console.log(await page.evaluate(() => window.exportGLB()));
+  await browser.close(); server.close(); process.exit(0);
+}
 const [f0, f1] = arg('frames', `0:${meta.frames}`).split(':').map(Number);
 
 for (const c of cams) for (const sub of [c, `${c}_mask`]) fs.mkdirSync(path.join(outDir, sub), { recursive: true });

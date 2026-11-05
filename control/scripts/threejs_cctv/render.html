@@ -20,6 +20,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { buildProp, floorTexture, backdrop, applyAssets, pbr, M } from './props.js';
 
 const W = 640, H = 480;
@@ -94,9 +95,11 @@ for (const g of meta.geoms) {
         mat = pbr('floor', sx / 2, sy / 2, { color: new THREE.Color(2.6, 2.55, 2.45) });   // 텍스처가 어두워 밝기를 올린다
         obj = new THREE.Group();
         const base = new THREE.Mesh(geo, mat); base.receiveShadow = true; obj.add(base);
-        const paint = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
+        const paintMat = new THREE.MeshStandardMaterial({
           map: floorTexture(sx, sy, meta.zone_rects), transparent: true, roughness: 0.75,
-          polygonOffset: true, polygonOffsetFactor: -2 }));
+          polygonOffset: true, polygonOffsetFactor: -2 });
+        paintMat.name = 'floor_paint'; window.floorPaint = paintMat.map;
+        const paint = new THREE.Mesh(geo, paintMat);
         paint.position.z = 0.002; paint.receiveShadow = true; obj.add(paint);
       } else {
         if (g.name.startsWith('table_')) mat = g.name.endsWith('top') ? M.galv : M.darkSteel;   // 철제 작업대
@@ -135,7 +138,7 @@ for (const [name, places] of DECOR) {
     o.rotation.set(Math.PI / 2, yaw, 0, 'XYZ');   // glTF y-위 → MuJoCo z-위
     o.position.set(x, y, name === 'power_box_01' ? 1.0 : (name === 'barrel_03' && i === 2 ? 0 : 0));
     o.traverse(m => { if (m.isMesh) { m.castShadow = m.receiveShadow = true; } });
-    scene.add(o); addMaskable(o);
+    o.userData.decor = true; scene.add(o); addMaskable(o);
   });
 }
 
@@ -165,8 +168,7 @@ for (let k = 0; k < nWorkers; k++) {
   const cap = new THREE.Mesh(new THREE.SphereGeometry(0.135, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2), hm);
   cap.scale.set(1.0, 1.12, 0.85);
   const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.165, 0.012, 32), hm); brim.scale.set(1, 1.2, 1); brim.position.y = 0.0;
-  const ridge = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.27, 0.03), hm); ridge.position.y = 0.115;
-  const inner = new THREE.Group(); inner.add(cap, brim, ridge);
+  const inner = new THREE.Group(); inner.add(cap, brim);
   inner.children.forEach(c => { c.castShadow = true; });
   helmet.add(inner); helmet.matrixAutoUpdate = false; scene.add(helmet);
   workers.push({ parts, helmet, inner, hm });
@@ -279,6 +281,35 @@ window.renderFrame = async (camName, f) => {
   c2d.putImageData(img, 0, 0);
   const mask = c2d.canvas.toDataURL('image/png');
   return { rgb, mask, boxes: boxes.map((b, k) => ({ worker_id: meta.workers[k].id, ...(b.pixels ? b : { pixels: 0 }) })) };
+};
+// Blender Cycles 렌더용: 작업자·조명을 뺀 정적 장면을 GLB로 내보낸다 (프레임 0 자세).
+// geom 객체 이름은 geom_<frames.bin 순서>. glTF는 y가 위이므로 루트를 x축 -90° 돌려 넣고, Blender 가져오기가 다시 z-위로 되돌린다.
+window.exportGLB = async () => {
+  setFrame(0);
+  const root = new THREE.Group(); root.rotation.x = -Math.PI / 2; root.updateMatrix();
+  const keep = [];
+  scene.children.slice().forEach(o => {
+    if (o.isLight || o.userData.decor || workers.some(w => w.helmet === o || w.parts.includes(o))) return;
+    keep.push(o); root.add(o);
+  });
+  geomObjs.forEach((o, i) => { if (!o) return; o.name = `geom_${i}`;
+    o.matrix.decompose(o.position, o.quaternion, o.scale); o.matrixAutoUpdate = true; });
+  // 파일 텍스처(PBR jpg)는 빼고 내보낸다: Blender가 assets/의 원본을 다시 붙인다. 캔버스 텍스처(도장·표지판)는 그대로 둔다.
+  const KEYS = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap'], stash = [];
+  root.traverse(o => { if (!o.isMesh) return; (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => {
+    KEYS.forEach(k => { const t = m[k]; if (t && !(t.image instanceof HTMLCanvasElement)) { stash.push([m, k, t]); m[k] = null; } }); }); });
+  console.log('export start');
+  const glb = await new GLTFExporter().parseAsync(root, { binary: true, maxTextureSize: 4096 });
+  console.log('export done', glb.byteLength);
+  stash.forEach(([m, k, t]) => { m[k] = t; });
+  keep.forEach(o => scene.add(o));
+  geomObjs.forEach(o => { if (o) o.matrixAutoUpdate = false; });
+  await fetch('/upload/scene.glb', { method: 'POST', body: glb });
+  // 바닥 도장은 투명도가 필요해 PNG로 따로 보낸다 (GLTFExporter는 큰 캔버스를 JPG로 바꾼다)
+  const png = await new Promise(r => window.floorPaint.image.toBlob(r, 'image/png'));
+  await fetch('/upload/floor_paint.png', { method: 'POST', body: png });
+  await fetch('/upload/decor.json', { method: 'POST', body: JSON.stringify(DECOR) });
+  return { bytes: glb.byteLength, stripped: stash.length };
 };
 window.meta = { frames: meta.frames, fps: meta.fps, cameras: meta.cameras, workers: meta.workers, zone_rects: meta.zone_rects };
 window.ready = true;

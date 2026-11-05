@@ -70,16 +70,25 @@ export async function applyAssets(manifest, base) {
   await set('floor', 1); await set('wall', 1); await set('building', 1);
   const metal = await set('metal', 2), rust = await set('rust', 2);
   // 금속: 판재 법선·거칠기 맵, 도장면: 녹슨 도장의 법선·거칠기 맵 (색은 유지)
-  for (const k of ['steel', 'galv', 'darkSteel', 'grey']) Object.assign(M[k], { normalMap: metal.normalMap, roughnessMap: metal.roughnessMap, normalScale: new THREE.Vector2(0.6, 0.6) });
-  for (const k of ['yellow', 'yellowPaint', 'red', 'green', 'blue']) Object.assign(M[k], { normalMap: rust.normalMap, roughnessMap: rust.roughnessMap, normalScale: new THREE.Vector2(0.4, 0.4) });
+  // Blender 렌더용 표시: 텍스처는 GLB에 넣지 않고 Blender가 원본 파일을 다시 붙인다
+  for (const [k, m] of Object.entries(M)) { m.name = `m_${k}`;
+    m.userData.pbr = ['steel', 'galv', 'darkSteel', 'grey'].includes(k) ? 'metal' : ['yellow', 'yellowPaint', 'red', 'green', 'blue'].includes(k) ? 'rust' : undefined;
+    if (m.userData.pbr) { m.userData.repeat = [2, 2]; m.userData.mapsOnly = 'detail'; } }
+  for (const k of ['steel', 'galv', 'darkSteel', 'grey']) Object.assign(M[k], { normalMap: metal.normalMap, roughnessMap: metal.roughnessMap, metalnessMap: metal.roughnessMap, normalScale: new THREE.Vector2(0.6, 0.6) });
+  for (const k of ['yellow', 'yellowPaint', 'red', 'green', 'blue']) Object.assign(M[k], { normalMap: rust.normalMap, roughnessMap: rust.roughnessMap, metalnessMap: rust.roughnessMap, normalScale: new THREE.Vector2(0.4, 0.4) });
   Object.values(M).forEach(m => { m.needsUpdate = true; });
 }
 const pbr = (role, rx, ry, extra = {}) => {
   if (!T[role]) return null;
   const maps = {};
   for (const [k, t] of Object.entries(T[role])) { const c = t.clone(); c.repeat.set(rx, ry); c.needsUpdate = true; maps[k] = c; }
-  delete maps.metalnessMap;
-  return new THREE.MeshStandardMaterial({ ...maps, roughness: 1, metalness: 0, ...extra });
+  maps.metalnessMap = maps.roughnessMap;   // Poly Haven ARM = glTF metallicRoughness 배치 (G 거칠기, B 금속)
+  const m = new THREE.MeshStandardMaterial({ ...maps, roughness: 1, metalness: 0, ...extra });
+  m.name = `pbr_${role}`;
+  m.userData.pbr = role; m.userData.repeat = [rx, ry];
+  // glTF는 기본색 1 초과를 허용하지 않으므로 밝기 배율을 extras로 넘긴다 (Blender 렌더에서 사용)
+  if (extra.color && extra.color.isColor) m.userData.brightness = Math.max(extra.color.r, extra.color.g, extra.color.b);
+  return m;
 };
 export { pbr };
 
