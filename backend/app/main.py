@@ -19,6 +19,7 @@ from .ctl_bridge import (
 )
 from .models import (
     ActionProposal,
+    ActionType,
     AdapterFailureCode,
     AdapterResultReport,
     AdapterResultStatus,
@@ -456,7 +457,8 @@ def generate_action_proposal(
             )
 
         try:
-            proposal = planner.plan(task, robot, request)
+            destination_zone = store.zones.get(getattr(task.destination, "zone_id", None))
+            proposal = planner.plan(task, robot, request, destination_zone=destination_zone)
         except ActionPlanningError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -625,14 +627,34 @@ def execute_action(proposal_id: str) -> ActionProposal:
         robot = store.robots[proposal.robot_id]
         task = store.tasks[proposal.task_id]
         rule_results, hazard_ids, estop_requested = evaluate_current_safety(proposal, task, robot)
-        evaluated_in_ms = (perf_counter() - started_at) * 1000
-        if not all(result.passed for result in rule_results):
-            proposal.status = ProposalStatus.HELD
-            perception_rules = {"rule-observation-gap", "rule-safety-distance"}
-            requires_estop = estop_requested or any(
-                not result.passed and result.rule_id not in perception_rules for result in rule_results
+        start_rule_id = "precondition-trajectory-start"
+        if (
+            proposal.action_type == ActionType.MOVE_TO
+            and proposal.model_name == planner.model_name
+            and proposal.trajectory
+        ):
+            start_matches = (
+                robot.pose.frame_id == proposal.frame_id
+                and robot.pose.position.model_dump(mode="json") == proposal.trajectory[0].get("position")
             )
-            task.status = TaskStatus.HELD
+            rule_results.append(RuleResult(
+                rule_id=start_rule_id,
+                passed=start_matches,
+                reason="경로 출발점 일치" if start_matches else "로봇 위치가 경로 출발점과 달라 재계획이 필요합니다.",
+            ))
+
+        evaluated_in_ms = (perf_counter() - started_at) * 1000
+        failed_rule_ids = {result.rule_id for result in rule_results if not result.passed}
+        if failed_rule_ids:
+            requires_replan = failed_rule_ids == {start_rule_id}
+            if requires_replan:
+                proposal.status = ProposalStatus.REJECTED
+                task.status = TaskStatus.PLANNING
+            else:
+                proposal.status = ProposalStatus.HELD
+                task.status = TaskStatus.HELD
+            reject_only_rules = {"rule-observation-gap", "rule-safety-distance", start_rule_id}
+            requires_estop = estop_requested or bool(failed_rule_ids - reject_only_rules)
             if requires_estop:
                 robot.status = RobotStatus.ESTOP
                 robot.updated_at = utc_now()
