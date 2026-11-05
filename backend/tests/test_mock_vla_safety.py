@@ -4,9 +4,6 @@
 실행 위치: backend/
 실행 명령:
     python3 -m pytest -v tests/test_mock_vla_safety.py
-
-KEEP_OUT 관련 테스트는 현재 미구현 기능을 드러내기 위해
-expectedFailure로 표시함.
 """
 
 import unittest
@@ -50,14 +47,14 @@ class MockVlaSafetyTests(unittest.TestCase):
             },
         })
 
-    def zone(self, zone_id, zone_type, max_speed=None):
+    def zone(self, zone_id, zone_type, max_speed=None, *, geometry=None):
         # 테스트용 사각형 영역:
         # x = 1~2, y = -1~1
         # geometry 표현 방식은 최종 표준 확정 전 예시임.
         return self.post("/zones", {
             "zone_id": zone_id,
             "zone_type": zone_type,
-            "geometry": {
+            "geometry": geometry if geometry is not None else {
                 "type": "Polygon",
                 "coordinates": [[
                     [1, -1], [2, -1], [2, 1],
@@ -185,8 +182,6 @@ class MockVlaSafetyTests(unittest.TestCase):
         self.assertTrue(self.speed_rule(log)["passed"])
 
     # 06. KEEP_OUT Zone을 목적지로 지정
-    # 현재 미구현이므로 예상 실패로 기록
-    # @unittest.expectedFailure
     def test_06_keep_out_destination_must_be_rejected(self):
         self.zone("B구역", "KEEP_OUT")
 
@@ -198,8 +193,6 @@ class MockVlaSafetyTests(unittest.TestCase):
         self.assertEqual(result["status"], "REJECTED")
 
     # 07. 경로가 KEEP_OUT Zone을 통과
-    # 현재 미구현이므로 예상 실패로 기록
-    # @unittest.expectedFailure
     def test_07_trajectory_crossing_keep_out_must_be_rejected(self):
         self.zone("B구역", "KEEP_OUT")
 
@@ -225,6 +218,25 @@ class MockVlaSafetyTests(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "REJECTED")
+
+    def test_ctl_polygon_distinguishes_crossing_and_safe_paths(self):
+        self.zone("B구역", "KEEP_OUT", geometry={
+            "type": "polygon",
+            "points": [[1, -1], [2, -1], [2, 1], [1, 1]],
+        })
+        for points, expected_status, passed in (
+            ([(0, 0), (3, 0)], "REJECTED", False),
+            ([(0, 0), (0, 2), (3, 2), (3, 0)], "APPROVED", True),
+        ):
+            with self.subTest(points=points):
+                result, log = self.propose(0.3, trajectory=[
+                    {"position": {"x": x, "y": y, "z": 0}} for x, y in points
+                ])
+                self.assertEqual(result["status"], expected_status)
+                rule = next(r for r in log["rule_results"] if r["rule_id"] == "rule-keep-out")
+                self.assertEqual(rule["passed"], passed)
+                if not passed:
+                    self.assertIn("B구역", rule["reason"])
 
 
 if __name__ == "__main__":
