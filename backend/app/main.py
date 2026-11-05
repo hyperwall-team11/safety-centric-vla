@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from hashlib import sha256
+from pathlib import Path
 from time import perf_counter
 from typing import Annotated, Literal
 
 from fastapi import FastAPI, Header, HTTPException, Query, Response, status
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .action_planner import ActionPlanningError, RuleBasedActionPlanner
@@ -48,6 +51,12 @@ app = FastAPI(
     title="Safety-Centric VLA Ontology API",
     version="0.2.0",
     description="TaskOrder 변환과 최소 Action 안전 검증을 제공하는 MVP API",
+)
+CONSOLE_DIR = Path(__file__).resolve().parent / "static" / "console"
+app.mount(
+    "/console/assets",
+    StaticFiles(directory=CONSOLE_DIR),
+    name="console-assets",
 )
 planner = RuleBasedActionPlanner()
 ACTIVE_PROPOSAL_STATUSES = {
@@ -103,6 +112,11 @@ seed_rules()
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/console", include_in_schema=False)
+def operator_console() -> FileResponse:
+    return FileResponse(CONSOLE_DIR / "index.html")
 
 
 @app.post("/robots", response_model=Robot, status_code=status.HTTP_201_CREATED)
