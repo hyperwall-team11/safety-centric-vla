@@ -30,8 +30,9 @@ from camera_frames import (LatestFrameBuffer, frame_file_name, person_detections
                            take_round_robin)
 from detectors import DETECTORS, WORKER_SCORE_THRESHOLD
 from florence_detect import percentile
-from hazard_reporter import (BackendClient, IntrusionTracker, build_hazard, camera_from_pose,
-                             keep_out_ring, observation_id, workers_in_zone)
+from camera_calib import load_calibration, normalize_camera, scene_calibration
+from hazard_reporter import (BackendClient, IntrusionTracker, build_hazard, keep_out_ring,
+                             observation_id, workers_in_zone)
 from perception_feed import (FEED_INTERVAL_SECONDS, LatestSender, WorkerFusion, parse_utc,
                              sensor_payload, utc_now)
 
@@ -41,27 +42,24 @@ DEFAULT_MODELS = {"florence2": "microsoft/Florence-2-base", "rtdetr": "PekingU/r
 DEFAULT_SCENE = Path(__file__).resolve().parents[1] / "control/mujoco/models/scenario_scene.xml"
 
 
-def fixed_cameras(scene_path, topics):
-    """World pose per topic of CCTVs attached to the world body, read once from the MuJoCo scene.
+def fixed_cameras(topics, calibration_path=None, scene_path=DEFAULT_SCENE):
+    """Calibration per topic, from ``--camera-calib`` or else the MuJoCo scene's fixed CCTVs.
 
-    ``/cctv_1/image_raw`` maps to the scene camera ``cctv_1``.
+    Without a file, ``/cctv_1/image_raw`` maps to the scene camera ``cctv_1`` at 640x480.
     """
-    import mujoco
-
-    model = mujoco.MjModel.from_xml_path(str(scene_path))
-    data = mujoco.MjData(model)
-    mujoco.mj_forward(model, data)
-    cameras = {}
-    for topic in topics:
-        sensor_id = topic.strip("/").split("/")[0]
-        cam = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, sensor_id)
-        if cam < 0:
-            raise SystemExit(f"Camera {sensor_id} is not in {scene_path}")
-        if model.cam_bodyid[cam] != 0:
-            raise SystemExit(f"Camera {sensor_id} moves with a body; hazard reporting needs fixed CCTVs")
-        cameras[topic] = camera_from_pose(data.cam_xpos[cam], data.cam_xmat[cam].reshape(3, 3),
-                                              model.cam_fovy[cam])
-    return cameras
+    try:
+        if calibration_path is not None:
+            cameras = load_calibration(calibration_path)
+        else:
+            sensor_ids = [topic.strip("/").split("/")[0] for topic in topics]
+            entries = scene_calibration(scene_path, sensor_ids, 640, 480)["cameras"]
+            cameras = {camera["topic"]: camera for camera in map(normalize_camera, entries)}
+    except (OSError, ValueError, KeyError) as exc:
+        raise SystemExit(f"Camera calibration error: {exc}") from exc
+    missing = [topic for topic in topics if topic not in cameras]
+    if missing:
+        raise SystemExit(f"No calibration for {', '.join(missing)}")
+    return {topic: cameras[topic] for topic in topics}
 
 
 class TopicStats:
@@ -71,6 +69,7 @@ class TopicStats:
         self.processed = 0
         self.stale = 0
         self.invalid = 0
+        self.calibration_mismatch = 0
         self.processing_ms = []
         self.queue_age_ms = []
 
@@ -81,7 +80,8 @@ class TopicStats:
         elapsed = 0.0 if first is None else now - first
         return {
             "processed": self.processed, **counters, "stale_pending": self.stale,
-            "invalid_frames": self.invalid, "local_window_seconds": elapsed,
+            "invalid_frames": self.invalid, "calibration_mismatch_frames": self.calibration_mismatch,
+            "local_window_seconds": elapsed,
             "local_processing_hz": self.processed / elapsed if elapsed > 0 else 0.0,
             "p95_processing_ms": percentile(self.processing_ms, 0.95) if self.processing_ms else None,
             "p95_queue_age_ms": percentile(self.queue_age_ms, 0.95) if self.queue_age_ms else None,
@@ -273,9 +273,20 @@ class CameraDetector(Node):
                 "saved_frame": None if people else self._save_miss(image, sensor_id, stamp),
                 "note": "Detection record only; not an approved safety Observation or HazardEvent.",
             }
-            if self.hazard is not None:
+            calibration = None if self.backend is None else self.backend["cameras"][stats.topic]
+            if calibration is not None and (msg.width, msg.height) != (calibration["width"],
+                                                                       calibration["height"]):
+                # 보정과 다른 크기의 영상은 투영하지 않는다. 작업자 없음으로 보고하지 않아
+                # 센서는 곧 DEGRADED가 되고 관측 공백 규칙이 실행을 막는다.
+                stats.calibration_mismatch += 1
+                if stats.calibration_mismatch == 1:
+                    self.get_logger().error(
+                        f"{stats.topic} is {msg.width}x{msg.height} but calibrated for "
+                        f"{calibration['width']}x{calibration['height']}; skipping backend reports")
+                calibration = None
+            if self.hazard is not None and calibration is not None:
                 record["hazard"] = self._report_hazard(stats.topic, sensor_id, stamp, people, msg.width, msg.height)
-            if self.backend is not None:
+            if calibration is not None:
                 positions = (record["hazard"]["ground_positions"] if self.hazard is not None else
                              workers_in_zone(people, msg.width, msg.height,
                                              self.backend["cameras"][stats.topic], None)[0])
@@ -362,8 +373,10 @@ def main():
     parser.add_argument("--hazard-zone-id", help="registered KEEP_OUT Zone to watch for HazardEvents")
     parser.add_argument("--robot-id", action="append", default=[],
                         help="robot blocked by the HazardEvent; repeat for several robots")
+    parser.add_argument("--camera-calib", type=Path,
+                        help="camera calibration JSON (see camera_calib.py); overrides --scene")
     parser.add_argument("--scene", type=Path, default=DEFAULT_SCENE,
-                        help="MuJoCo scene that defines the CCTV poses")
+                        help="MuJoCo scene that defines the CCTV poses when no --camera-calib is given")
     args = parser.parse_args()
     args.topic = args.topic or [DEFAULT_TOPIC]
     args.model = args.model or DEFAULT_MODELS[args.detector]
@@ -397,7 +410,7 @@ def main():
         if unknown:
             parser.error(f"--covered-zone-id not registered in the backend: {', '.join(unknown)}")
         args.backend = {"client": client, "zones": zones, "covered_zone_ids": args.covered_zone_id,
-                        "cameras": fixed_cameras(args.scene, args.topic)}
+                        "cameras": fixed_cameras(args.topic, args.camera_calib, args.scene)}
     if args.hazard_zone_id:
         args.hazard = {"client": client, "zone_id": args.hazard_zone_id, "robot_ids": args.robot_id,
                        "ring": keep_out_ring(client.zone(args.hazard_zone_id))}

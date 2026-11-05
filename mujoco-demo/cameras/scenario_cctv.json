@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "source": "control/mujoco/models/scenario_scene.xml",
+  "cameras": [
+    {
+      "sensor_id": "cctv_1",
+      "topic": "/cctv_1/image_raw",
+      "width": 640,
+      "height": 480,
+      "position_m": [
+        1.2,
+        -4.2,
+        3.2
+      ],
+      "rotation_cam_to_world": [
+        [
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.5681907170826419,
+          -0.8228969006024469
+        ],
+        [
+          -0.0,
+          0.8228969006024469,
+          0.5681907170826419
+        ]
+      ],
+      "rotation_convention": "mujoco_camera",
+      "world_frame": "mujoco_z_up",
+      "fovy_deg": 60.0,
+      "ground_plane_z_m": 0.0
+    },
+    {
+      "sensor_id": "cctv_2",
+      "topic": "/cctv_2/image_raw",
+      "width": 640,
+      "height": 480,
+      "position_m": [
+        4.6,
+        2.6,
+        3.0
+      ],
+      "rotation_cam_to_world": [
+        [
+          -0.6074501075707971,
+          -0.4238138618989768,
+          0.6718527943489571
+        ],
+        [
+          0.794357832977196,
+          -0.32409295321686465,
+          0.5137697839139085
+        ],
+        [
+          0.0,
+          0.8457810403038404,
+          0.5335301602182896
+        ]
+      ],
+      "rotation_convention": "mujoco_camera",
+      "world_frame": "mujoco_z_up",
+      "fovy_deg": 60.0,
+      "ground_plane_z_m": 0.0
+    }
+  ]
+}
