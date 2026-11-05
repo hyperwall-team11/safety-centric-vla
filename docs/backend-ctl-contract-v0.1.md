@@ -1,7 +1,8 @@
-# Backend–CTL ROS 2 연동 계약 v0.1
+# Backend–CTL ROS 2 연동 계약 v0.2
 
 - 상태: Draft (팀 승인 전)
 - 작성일: 2026-11-04
+- 개정: 2026-11-06 v0.2 — 가상 CCTV 영상 출력(3장)과 MuJoCo ② 사전 시뮬레이션 서비스(13장) 추가. 기존 1~12장 변경 없음. 파일명은 링크 유지를 위해 v0.1 그대로 둔다.
 - 적용 대상: `backend` 검증 서버, `control` ROS 2 제어 어댑터
 - 승인 필요: ONT 임성현, CTL 최민서
 - 관련 이슈: #28
@@ -47,6 +48,18 @@ Backend가 ROS 2 노드를 같은 프로세스에서 실행하지 않는 경우,
 | `/safety/estop` | Backend·운영자 → CTL | `std_msgs/String` JSON | Reliable, Transient Local, Keep Last 1 | E-Stop 전용 경로 |
 | `/safety/heartbeat` | Backend → CTL | `std_msgs/String` JSON | Reliable, Keep Last 1, 5 Hz | 검증 서버 생존 확인 |
 | `/adapter/{robot_topic_id}/state` | CTL → Backend | `std_msgs/String` JSON | Reliable, Keep Last 10, 10 Hz | 로봇 상태 관측(선택) |
+
+가상 CCTV 영상 [v0.2]:
+
+| 토픽 | 방향 | ROS 2 타입 | QoS | 용도 |
+|---|---|---|---|---|
+| `/cctv_{n}/image_raw` | CTL(MuJoCo ① + Three.js) → CV | `sensor_msgs/Image`, `rgb8`, 640×480 | Best Effort, Keep Last 1 | CV 입력 CCTV 영상. `frame_id=camera_cctv_{n}`, `header.stamp`는 시뮬레이션 시각 |
+
+- Three.js 렌더러는 장면 전체(로봇, 작업자, 장비, 바닥, 금지구역 표시)를 그리고, 카메라 위치·방향·화각(fovy 60°)은 `scenario_scene.xml`의 `cctv_1`, `cctv_2`와 같게 맞춘다.
+- 좌표 변환: MuJoCo(x 앞, y 왼쪽, z 위) → Three.js(y 위). MuJoCo `(x, y, z)`는 Three.js `(x, z, -y)`로 옮긴다.
+- 시연용 안내 문구는 CV 입력 영상에 넣지 않는다.
+- 작업자 정답 좌표(`/sim/worker_pose`)는 평가용이며 CV·MuJoCo ②·Backend 안전 판정에 쓰지 않는다.
+- 렌더러가 멈추면 프레임이 끊기고, Backend는 `OBSERVATION_GAP`(2초)으로 실행을 거부한다.
 
 `robot_topic_id`는 원본 `robot_id`의 영문·숫자·`_` 외 문자를 `_`로 바꾸고, 첫 문자가 숫자이면 `r_`를 붙인다.
 
@@ -310,4 +323,26 @@ Backend는 5 Hz로 발행한다. CTL이 마지막 정상 heartbeat 후 1초 동�
 | 멱등성 | Backend 결과 API만 멱등 | CTL `proposal_id` 중복 실행 방지 필요 |
 | Robot state | CTL 고유 축약 형식 | v0.1은 관측용, 후속 계약으로 분리 |
 
+| CCTV 영상 | MuJoCo 렌더링 | Three.js 렌더링 (v0.2, 계획) |
+| 사전 시뮬레이션 | 없음 | MuJoCo ② 서비스 (v0.2, 계획) |
+
 이 차이는 명세 승인 후 Backend·CTL 각각의 구현 PR로 분리한다. 이 문서 자체는 현재 구현 완료를 의미하지 않는다.
+
+## 13. MuJoCo ② 사전 시뮬레이션 서비스 [v0.2 초안]
+
+스키마 v1.1의 `COLLISION` 규칙을 판정하기 위해 Backend가 CTL의 MuJoCo ② 서비스를 호출한다. 판정과 감사 기록은 Backend(온톨로지)가 하고, MuJoCo ②는 시뮬레이션 결과만 돌려준다.
+
+- 전송: HTTP `POST /twin/simulate` (CTL 서비스, 기본 `http://127.0.0.1:8100`)
+- 요청: `proposal_id`, 후보 행동(`action_type`, `target`, `max_speed`), 온톨로지 상태 스냅샷(Robot, Worker 스냅샷, Zone), `snapshot_at`
+- 응답: `result`(`PASS` | `COLLISION` | `UNSAFE_DISTANCE` | `ERROR`), `min_worker_distance_m`, `first_contact_at_s`, `simulated_horizon_s`, `elapsed_ms`
+- MuJoCo ②는 요청에 담긴 상태만으로 장면을 만들고 MuJoCo ① 정답 좌표를 읽지 않는다.
+- 작업자 위치에는 CV 위치 오차(측정값 0.15~0.20 m) 이상의 여유 반경을 더한다.
+- Backend는 응답이 시간 제한 안에 오지 않거나 `ERROR`이면 거부한다(Fail-Closed). 시간 제한 값은 ONT·백엔드가 정한다.
+- 결과는 `ExecutionLog`에 규칙 판정 근거와 함께 기록한다.
+- 긴급 정지는 이 서비스를 기다리지 않는다. `/safety/estop`과 heartbeat 경로가 우선한다.
+
+| 항목 | Backend | ONT | CTL |
+|---|---|---|---|
+| 서비스 구현 | - | - | 구현 |
+| 호출·시간 초과 처리 | 구현 | 기준 승인 | - |
+| 판정 기준(`COLLISION`) | - | 정의 | 형식 검토 |

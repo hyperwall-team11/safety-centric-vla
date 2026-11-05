@@ -283,12 +283,12 @@ TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 
 | `hazard_id` | string | 생략 시 서버 생성, 중복 불가 |
 | `hazard_type` | enum | `WORKER_INTRUSION`, `COLLISION_RISK`, `FIRE`, `SMOKE`, `FALLING_OBJECT`, `UNKNOWN` |
 | `severity` | enum | `WARNING`, `CRITICAL` |
-| `source_observation_ids` | string[] | 필수 |
+| `source_observation_ids` | string[] | 필수. CV 직접 등록 경로는 빈 배열 허용(스키마 v1.1 HazardEvent 생성 경로) |
 | `related_robot_ids` | string[] | 필수. 빈 배열은 명시적인 로봇 연결이 없음을 의미 |
 | `related_worker_ids` | string[] | 필수 |
 | `zone_id` | string | 필수 |
 | `status` | enum | 기본 `OPEN`; `OPEN`, `ACKNOWLEDGED`, `RESOLVED` |
-| `confidence` | number | 0 이상 1 이하 |
+| `confidence` | number | 0 이상 1 이하. 점수 없는 탐지기는 탐지 지속 비율 |
 | `detected_at` | datetime | 생략 시 서버 생성 |
 | `resolved_at` | datetime 또는 null | 기본 null |
 | `last_observed_at` | datetime 또는 null | 마지막 관측 시각 |
@@ -350,6 +350,10 @@ ResumeTask 전이와 실제 ROS 2 어댑터 결과 토픽 연결은 아직 구�
 | 상태 구독 | WebSocket `/ws/state` | 미구현 |
 | 영속 저장 | Redis 또는 ROS 2 상태 연동 | 인메모리 |
 | 판정 시간 | `evaluated_in_ms` 기록 | 평가·실행 직전 재평가 로그에 구현 |
+| Observation 등록 | CV가 Observation을 제출하고 ONT가 병합해 HazardEvent 생성 | 미구현. CV가 `PUT /sensors/{sensor_id}`, `PUT /workers/snapshot`, `POST /hazards`로 직접 갱신 |
+| HazardEvent 즉시 정지 | `CRITICAL` 등록 시 실행 중 로봇 `TriggerEStop` | 미구현. 이후 평가와 실행 직전 재검증만 차단 |
+| 사전 시뮬레이션(`COLLISION`) | 규칙 통과 후보를 MuJoCo ② 서비스로 검증, 시간 초과·미가동 시 거부 | 미구현. CTL 서비스 인터페이스는 [제어 계약 v0.2](backend-ctl-contract-v0.1.md) 13장 초안 |
+| 토크·관절 속도 검사 | 스키마 미결 | 미구현 |
 | 스키마 v1.1 선택 필드 | 모델에서 선택적으로 허용 | Robot, Sensor, Observation, Worker, Zone, SafetyRule, HazardEvent, ExecutionLog에 반영 |
 
 이 차이는 스키마 v1.1의 객체 정의를 변경할 사유가 아니라 구현 진척도 차이로 관리한다. 필수 필드나 열거값을 변경해야 할 때만 팀 변경 절차에 따라 스키마 버전을 올린다.

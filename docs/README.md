@@ -8,16 +8,19 @@
 |---|---|---|
 | [개발계획서_v1.0_실행판.md](개발계획서_v1.0_실행판.md) | v1.0 (실행판) | 개발 목표·범위, 모듈 명세, 안전 규칙 SR-01~06, 요구사항, KPI, 16주 일정, 위험 대응, 인터페이스 초안 |
 | [ontology-schema-v1.1.md](ontology-schema-v1.1.md) | v1.1 | 온톨로지 객체·필드·관계·Action, 승인 규칙, 이벤트 통합 규칙, E-Stop 경로 원칙 |
+| [platform-architecture-v1.0.md](platform-architecture-v1.0.md) | v1.0 (2026-11-06) | 가상 CCTV(MuJoCo ① + Three.js)·디지털 트윈(MuJoCo ②)·온톨로지 Safety Gate 플랫폼 구조, 구현 상태, 미결 사항 |
 | [사용자정의서_시스템구조도_v0.1.md](사용자정의서_시스템구조도_v0.1.md) | v0.1 초안 | 사용자 분류·권한, 유스케이스, 사용자 요구사항, 시스템 구조도·상태 전이·배포 구성 |
 
-문서 간 우선순위: 객체명·열거값·규칙 수치는 스키마 v1.1이 기준이며, 개발계획서와 사용자 정의서는 스키마를 따릅니다.
+문서 간 우선순위: 객체명·열거값·규칙 수치는 스키마 v1.1이 기준이며, 개발계획서·사용자 정의서·플랫폼 구조 문서는 스키마를 따릅니다.
+
+전체 구조와 구현 상태는 [플랫폼 구조 v1.0](platform-architecture-v1.0.md)이 최신입니다(2026-11-06). 개발계획서·사용자 정의서의 시스템 구성은 이 문서로 확장됐습니다.
 
 ## 구현 명세
 
 | 문서 | 버전 | 내용 |
 |---|---|---|
 | [backend-api-spec-v0.2.md](backend-api-spec-v0.2.md) | v0.2 (As-Built) | 현재 FastAPI 17개 path·20개 operation의 요청·응답·상태 전이·오류와 목표 인터페이스 대비 미구현 범위 |
-| [backend-ctl-contract-v0.1.md](backend-ctl-contract-v0.1.md) | v0.1 Draft | 승인 Action ROS 2 전송, ACK·RESULT, E-Stop·Heartbeat, 상태 전이의 Backend–CTL 연동 계약 |
+| [backend-ctl-contract-v0.1.md](backend-ctl-contract-v0.1.md) | v0.2 Draft | 승인 Action ROS 2 전송, ACK·RESULT, E-Stop·Heartbeat, 상태 전이, 가상 CCTV 영상 출력, MuJoCo ② 사전 시뮬레이션 서비스 |
 
 기준 문서의 `/api/v1/...` 표는 목표 인터페이스이며, 현재 호출 가능한 경로는 구현 명세와 FastAPI `/openapi.json`을 기준으로 합니다.
 
