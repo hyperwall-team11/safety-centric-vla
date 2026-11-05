@@ -63,9 +63,16 @@ const browser = await chromium.launch({ executablePath: findChromium(),
 const page = await browser.newPage({ viewport: { width: 1300, height: 500 } });
 page.on('console', m => { if (m.type() === 'error' || process.argv.includes('--glb')) console.error('[page]', m.text()); });
 page.on('pageerror', e => console.error('[page]', e.message));
-await page.goto(`http://127.0.0.1:${port}/`);
+await page.goto(`http://127.0.0.1:${port}/` + (process.argv.includes('--glb') ? '?nobake' : ''));
 await page.waitForFunction(() => window.ready === true, null, { timeout: 300000 });
 const meta = await page.evaluate(() => window.meta);
+if (process.argv.includes('--live-test')) {   // 실시간 재생 속도 측정 (5초)
+  await page.goto(`http://127.0.0.1:${port}/?live&cam=${cams[0]}`);
+  await page.waitForFunction(() => window.ready === true, null, { timeout: 300000 });
+  await new Promise(r => setTimeout(r, 6000));
+  console.log(await page.evaluate(() => document.body.lastElementChild.textContent || document.querySelector('div')?.textContent));
+  await browser.close(); server.close(); process.exit(0);
+}
 if (process.argv.includes('--glb')) {   // Blender Cycles용 정적 장면만 내보내고 끝낸다
   console.log(await page.evaluate(() => window.exportGLB()));
   await browser.close(); server.close(); process.exit(0);

@@ -56,6 +56,16 @@ scene.fog = new THREE.Fog(0xc4c9cc, 30, 70);
 
 await applyAssets(assets, '/assets/');
 
+// Cycles로 구운 바닥 라이트맵 (blender_render.py --bake). 있으면 바닥은 구운 모습 + 움직이는 물체의 실시간 그림자만 쓴다.
+const bakeTex = location.search.includes('nobake') ? null
+  : await new THREE.TextureLoader().loadAsync('/data/floor_bake.png').catch(() => null);
+if (bakeTex) { bakeTex.colorSpace = THREE.SRGBColorSpace; bakeTex.flipY = false; bakeTex.anisotropy = 16; }
+// 움직이는 geom(로봇): 프레임 사이 자세가 바뀌는 것
+const movingGeom = new Set();
+for (let i = 0; i < nGeom; i++) for (let f = 1; f < meta.frames; f += 10) {
+  let d = 0; for (let k = 0; k < 12; k++) d = Math.max(d, Math.abs(frames[f * frameLen + i * 12 + k] - frames[i * 12 + k]));
+  if (d > 1e-5) { movingGeom.add(i); break; } }
+
 const maskable = [];
 const addMaskable = obj => obj.traverse(o => { if (o.isMesh) { o.userData.normal = o.material; maskable.push(o); } });
 
@@ -94,13 +104,18 @@ for (const g of meta.geoms) {
         floorSize = [sx, sy];
         mat = pbr('floor', sx / 2, sy / 2, { color: new THREE.Color(2.6, 2.55, 2.45) });   // 텍스처가 어두워 밝기를 올린다
         obj = new THREE.Group();
-        const base = new THREE.Mesh(geo, mat); base.receiveShadow = true; obj.add(base);
+        if (bakeTex) mat = new THREE.MeshBasicMaterial({ map: bakeTex });
+        const base = new THREE.Mesh(geo, mat); base.receiveShadow = !bakeTex; obj.add(base);
+        if (bakeTex) {   // 로봇·작업자 그림자만 받는 투명 판
+          const sh = new THREE.Mesh(geo, new THREE.ShadowMaterial({ opacity: 0.5, polygonOffset: true, polygonOffsetFactor: -4 }));
+          sh.position.z = 0.004; sh.receiveShadow = true; obj.add(sh);
+        }
         const paintMat = new THREE.MeshStandardMaterial({
           map: floorTexture(sx, sy, meta.zone_rects), transparent: true, roughness: 0.75,
           polygonOffset: true, polygonOffsetFactor: -2 });
         paintMat.name = 'floor_paint'; window.floorPaint = paintMat.map;
         const paint = new THREE.Mesh(geo, paintMat);
-        paint.position.z = 0.002; paint.receiveShadow = true; obj.add(paint);
+        paint.position.z = 0.002; paint.receiveShadow = true; paint.visible = !bakeTex; obj.add(paint);
       } else {
         if (g.name.startsWith('table_')) mat = g.name.endsWith('top') ? M.galv : M.darkSteel;   // 철제 작업대
         else mat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(...g.rgba.slice(0, 3), THREE.SRGBColorSpace), roughness: 0.4, metalness: 0.15 });
@@ -108,11 +123,14 @@ for (const g of meta.geoms) {
       }
     }
   }
-  if (obj) { obj.matrixAutoUpdate = false; scene.add(obj); addMaskable(obj); }
+  if (obj) { obj.matrixAutoUpdate = false; scene.add(obj); addMaskable(obj);
+    // 구운 바닥을 쓰면 정적 물체의 그림자는 이미 바닥에 있으므로 실시간 그림자는 움직이는 물체만 드리운다
+    if (bakeTex && !movingGeom.has(geomObjs.length)) obj.traverse(o => { if (o.isMesh) o.castShadow = false; }); }
   geomObjs.push(obj);
 }
 
 const bd = backdrop(...floorSize); scene.add(bd); addMaskable(bd);
+if (bakeTex) bd.traverse(o => { if (o.isMesh) o.castShadow = false; });
 
 // glTF 소품 (작업자 이동 범위 밖 가장자리에만 둔다: MuJoCo에 없는 물체가 작업자를 가리면 안 되므로)
 const gltf = new GLTFLoader();
@@ -137,7 +155,7 @@ for (const [name, places] of DECOR) {
     const o = src.clone(true);
     o.rotation.set(Math.PI / 2, yaw, 0, 'XYZ');   // glTF y-위 → MuJoCo z-위
     o.position.set(x, y, name === 'power_box_01' ? 1.0 : (name === 'barrel_03' && i === 2 ? 0 : 0));
-    o.traverse(m => { if (m.isMesh) { m.castShadow = m.receiveShadow = true; } });
+    o.traverse(m => { if (m.isMesh) { m.castShadow = !bakeTex; m.receiveShadow = true; } });
     o.userData.decor = true; scene.add(o); addMaskable(o);
   });
 }
@@ -208,7 +226,9 @@ for (const [name, c] of Object.entries(meta.cameras)) {
   new THREE.Matrix4().set(R[0], R[1], R[2], p[0], R[3], R[4], R[5], p[1], R[6], R[7], R[8], p[2], 0, 0, 0, 1)
     .decompose(cam.position, cam.quaternion, cam.scale);
   cam.updateMatrixWorld(true); cams[name] = cam;
-  const comp = new EffectComposer(renderer); comp.setSize(W, H);
+  // 다중 샘플 렌더 타깃: 후처리를 거쳐도 안티에일리어싱 유지
+  const comp = new EffectComposer(renderer, new THREE.WebGLRenderTarget(W, H, { samples: 4, type: THREE.HalfFloatType }));
+  comp.setSize(W, H);
   comp.addPass(new RenderPass(scene, cam));
   const ao = new GTAOPass(scene, cam, W, H); ao.blendIntensity = 0.9;
   ao.updateGtaoMaterial({ radius: 0.5, distanceFallOff: 1.0, thickness: 1.0, scale: 1.0 });
@@ -312,6 +332,21 @@ window.exportGLB = async () => {
   return { bytes: glb.byteLength, stripped: stash.length };
 };
 window.meta = { frames: meta.frames, fps: meta.fps, cameras: meta.cameras, workers: meta.workers, zone_rects: meta.zone_rects };
+// 실시간 재생: render.html?live&cam=cctv_1 → 시뮬레이션 시각에 맞춰 계속 렌더하고 FPS를 표시한다
+if (location.search.includes('live')) {
+  const camName = new URLSearchParams(location.search).get('cam') || 'cctv_1';
+  maskRenderer.domElement.style.display = 'none';
+  const hud = Object.assign(document.createElement('div'), { style: 'position:fixed;left:8px;top:490px;color:#0f0;font:14px monospace' });
+  document.body.appendChild(hud);
+  let t0 = performance.now(), n = 0, last = performance.now();
+  const loop = () => {
+    const now = performance.now(), f = Math.floor(((now - t0) / 1000) * meta.fps) % meta.frames;
+    setFrame(f); cctvPasses[camName].uniforms.seed.value = (now * 0.01) % 100; composers[camName].render();
+    if (++n % 30 === 0) { hud.textContent = `${camName} frame ${f}  ${(30000 / (now - last)).toFixed(1)} FPS`; last = now; }
+    requestAnimationFrame(loop);
+  };
+  loop();
+}
 window.ready = true;
 </script>
 </body>

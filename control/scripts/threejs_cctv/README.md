@@ -17,6 +17,19 @@ node render.mjs --data ../../outputs/threejs_cctv/data --out ../../outputs/three
 
 300프레임 × 카메라 2대 렌더는 Apple M3에서 약 70초 걸린다.
 
+### 실시간 재생 (Cycles로 구운 바닥 + Three.js)
+
+바닥(화면의 대부분)은 Cycles로 조명·그림자·반사광·도장을 한 번 구워(`floor_bake.png`) 쓰고, 로봇·작업자만 실시간 그림자를 드리운다.
+구운 파일이 `data/`에 있으면 `render.html`이 자동으로 쓴다(`?nobake`로 끌 수 있음).
+
+```bash
+blender -b -P blender_render.py -- --data ../../outputs/threejs_cctv/data --out /tmp --bake ../../outputs/threejs_cctv/data/floor_bake.png --bake-ppm 128 --samples 512
+node render.mjs --live-test              # 실시간 재생 FPS 측정 (Apple M3: 약 58 FPS)
+```
+
+브라우저로 보려면 `node render.mjs`가 띄우는 것과 같은 정적 서버에서 `render.html?live&cam=cctv_1`을 연다.
+굽기는 A6000에서 30초, Apple M3에서 수 분 걸린다. 장면(설비 배치·조명)을 바꾸면 다시 굽는다.
+
 ### 실사 렌더 (Blender Cycles 광선추적, 권장)
 
 Three.js 렌더는 마스크·박스·빠른 확인용이고, CV 입력용 최종 영상은 같은 장면을 Blender Cycles로 렌더한다.
@@ -30,7 +43,7 @@ python cctv_post.py --dir ../../outputs/threejs_cctv   # raw_*.png → CCTV 효�
 
 - `blender_render.py`는 GLB를 불러와 Poly Haven 원본 텍스처·소품을 다시 붙이고, 작업자 3명의 skin 정점과 안전모를 프레임마다 넣는다. GPU는 OPTIX → CUDA → HIP → METAL 순으로 찾고 없으면 CPU를 쓴다.
 - 속도(640×480, 카메라 2대, 128 샘플): RTX A6000(CUDA) 약 7초/프레임, Apple M3(Metal, 48 샘플) 약 27초/프레임.
-- SLURM 서버 예: `sbatch --array=0-3 job.sh`로 GPU 4개에 프레임을 나눠 렌더한다(300프레임 약 10분). Blender는 공식 리눅스 tar를 홈 폴더에 풀어 쓰면 된다(관리자 권한 불필요).
+- SLURM 서버 예: `sbatch --array=0-3 slurm_render.sh`로 GPU 4개에 프레임을 나눠 렌더한다(300프레임 약 10분). Blender는 공식 리눅스 tar를 홈 폴더에 풀어 쓰면 된다(관리자 권한 불필요).
 
 ## 출력 (`control/outputs/threejs_cctv/`)
 

@@ -31,6 +31,9 @@ p.add_argument("--frames", default=None)
 p.add_argument("--cameras", default="cctv_1,cctv_2")
 p.add_argument("--samples", type=int, default=96)
 p.add_argument("--device", default="auto", help="auto | cpu")
+p.add_argument("--bake", type=Path, default=None,
+               help="바닥 조명 굽기만 하고 끝낸다: 정적 설비의 그림자·반사광·도장을 포함한 바닥 텍스처 PNG 경로")
+p.add_argument("--bake-ppm", type=int, default=128, help="굽기 해상도 (픽셀/m)")
 args = p.parse_args(argv)
 
 meta = json.loads((args.data / "scene.json").read_text())
@@ -285,6 +288,53 @@ scene.view_settings.look = "AgX - Medium High Contrast"
 scene.view_settings.exposure = 0.0
 
 import time
+
+if args.bake:
+    # 실시간 Three.js용 바닥 라이트맵: 움직이는 것(로봇·작업자)은 숨기고, 바닥 콘크리트+도장을 한 재질로 합쳐
+    # 직접광·간접광·색을 모두 구운 최종 바닥 모습을 텍스처로 저장한다.
+    floor_idx = next(i for i, g in enumerate(meta["geoms"]) if g["type"] == 0)
+    floor = geom_obj[floor_idx]
+    meshes = [c for c in floor.children_recursive if c.type == "MESH"] or [floor]
+    base = next(m for m in meshes if not any(ms.material and ms.material.name.startswith("floor_paint") for ms in m.material_slots))
+    paint = next((m for m in meshes if m is not base), None)
+    for i in dynamic:
+        o = geom_obj[i]
+        for c in [o, *o.children_recursive]:
+            c.hide_render = True
+    for w in workers:
+        for ob, _ in w["parts"]:
+            ob.hide_render = True
+        w["helmet"].hide_render = True
+    sx, sy = meta["geoms"][floor_idx]["size"][:2]
+    W, H = int(2 * sx * args.bake_ppm), int(2 * sy * args.bake_ppm)
+    img = bpy.data.images.new("floor_bake", W, H, alpha=False)
+    mat = base.material_slots[0].material
+    nt = mat.node_tree; bsdf = next(n for n in nt.nodes if n.type == "BSDF_PRINCIPLED")
+    if paint is not None:   # 도장을 콘크리트 위에 섞는다
+        pm = paint.material_slots[0].material.node_tree
+        ptex = next(n for n in pm.nodes if n.type == "TEX_IMAGE")
+        pt = nt.nodes.new("ShaderNodeTexImage"); pt.image = ptex.image
+        uvn = nt.nodes.new("ShaderNodeTexCoord"); fl = nt.nodes.new("ShaderNodeMapping")
+        fl.inputs["Scale"].default_value = (1, -1, 1); fl.inputs["Location"].default_value = (0, 1, 0)
+        nt.links.new(uvn.outputs["UV"], fl.inputs["Vector"]); nt.links.new(fl.outputs["Vector"], pt.inputs["Vector"])
+        src = bsdf.inputs["Base Color"].links[0].from_socket
+        mix = nt.nodes.new("ShaderNodeMix"); mix.data_type = "RGBA"
+        nt.links.new(pt.outputs["Alpha"], mix.inputs["Factor"])
+        nt.links.new(src, mix.inputs[6]); nt.links.new(pt.outputs["Color"], mix.inputs[7])
+        nt.links.new(mix.outputs[2], bsdf.inputs["Base Color"])
+        paint.hide_render = True
+    target = nt.nodes.new("ShaderNodeTexImage"); target.image = img
+    nt.nodes.active = target
+    bpy.ops.object.select_all(action="DESELECT")
+    base.select_set(True); bpy.context.view_layer.objects.active = base
+    cy.samples = max(args.samples, 256)
+    scene.render.bake.use_pass_direct = scene.render.bake.use_pass_indirect = scene.render.bake.use_pass_color = True
+    scene.render.bake.margin = 4
+    t = time.time()
+    bpy.ops.object.bake(type="DIFFUSE")
+    img.filepath_raw = str(args.bake); img.file_format = "PNG"; img.save()
+    print(f"바닥 굽기 {W}x{H} → {args.bake} ({time.time() - t:.0f}s)", flush=True)
+    sys.exit(0)
 for f in range(f0, f1):
     t = time.time()
     set_frame(f)
