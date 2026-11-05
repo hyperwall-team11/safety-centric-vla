@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -170,6 +171,32 @@ class ActionPlannerApiTest(unittest.TestCase):
             {"position": {"x": 0, "y": 0, "z": 0}},
             {"position": {"x": 1, "y": 2, "z": 0}},
         ])
+
+    def test_robot_position_change_blocks_dispatch_and_allows_replanning(self) -> None:
+        task = self.create_task("robot-01 로봇을 좌표 (1, 2, 0)로 이동해")
+        created = self.generate(task["task_id"])
+        self.assertEqual(created.status_code, 201, created.text)
+        proposal_id = created.json()["proposal_id"]
+        evaluated = self.client.post(f"/action-proposals/{proposal_id}/evaluate")
+        self.assertEqual(evaluated.json()["status"], "APPROVED")
+
+        with store.lock:
+            store.robots["robot-01"].pose.position.x = 1.5
+        with patch("app.main.action_dispatcher.dispatch") as dispatch:
+            executed = self.client.post(f"/action-proposals/{proposal_id}/execute")
+            self.assertEqual(executed.status_code, 409, executed.text)
+            dispatch.assert_not_called()
+
+        self.assertEqual(store.proposals[proposal_id].status, "REJECTED")
+        self.assertEqual(store.tasks[task["task_id"]].status, "PLANNING")
+        self.assertEqual(store.logs[-1].decision, "REJECT")
+        self.assertTrue(any(
+            result.rule_id == "precondition-trajectory-start" and not result.passed
+            for result in store.logs[-1].rule_results
+        ))
+        regenerated = self.generate(task["task_id"])
+        self.assertEqual(regenerated.status_code, 201, regenerated.text)
+        self.assertEqual(regenerated.json()["trajectory"][0]["position"]["x"], 1.5)
 
     def test_generates_contract_aligned_manipulate_proposal(self) -> None:
         task = self.create_task("robot-01 로봇으로 상자 3을 B 작업대로 옮겨")
