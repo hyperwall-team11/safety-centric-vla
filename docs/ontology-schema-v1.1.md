@@ -15,6 +15,7 @@
 | v1 | 2026-09-23 | 최초 기준선 확정 | - |
 | v1.1 | 2026-09-28 | 선택 필드 12건·열거값 2건 추가, 승인 규칙 8번 추가, 통합 규칙 수치화, E-Stop 경로 원칙 추가 | 개발계획서 v1.0(실행판) 정합 및 SR-06·KPI 측정 구현 가능화 |
 | v1.1 (적용 범위 수정) | 2026-10-11 | 적용 범위의 시뮬레이터를 Isaac Sim → MuJoCo로 변경. 객체·필드·열거값·규칙 변경 없음 | 팀 시뮬레이터 변경 결정 |
+| v1.1 (가상 CCTV·디지털 트윈 반영) | 2026-11-06 | CV 직접 등록 HazardEvent의 `source_observation_ids` 빈 배열 허용, 점수 없는 탐지기의 `confidence` 정의, `COLLISION` 규칙을 MuJoCo ② 사전 시뮬레이션 판정으로 정의, 토크·관절 속도 규칙 미결 명시. 객체명·필수 필드·열거값 변경 없음 | [플랫폼 구조 v1.0](platform-architecture-v1.0.md), PR #41 팀 결정 |
 | v1.1 (연결 의미 명확화) | 2026-10-30 | 빈 `related_robot_ids`는 전역 위험이 아니라 명시적 로봇 연결 없음으로 해석하고, 작업 목적지 Zone 연결 판정 기준을 명시 | 승인 규칙 6의 백엔드 구현 모호성 제거 |
 
 변경 절차 [v1.1]: 스키마 변경은 GitHub 이슈로 제안 → 영향 모듈 담당 전원 승인 → 버전 태그 후 반영한다. 필수 필드 변경·삭제, 열거값 삭제는 v2 제안으로만 다룬다.
@@ -196,6 +197,8 @@ Action 승인 여부를 판단하는 규칙을 표현한다.
 
 - `rule_type`에 `OBSERVATION_GAP` 추가(하위 호환) — 작업 구역을 커버하는 `ONLINE` 센서가 없으면 위반. "보이지 않으면 움직이지 않는다"(Fail-Closed).
 - `parameters`: 조건식이 참조하는 임계값(예: `{"warning_distance": 1.2, "estop_distance": 0.6}`). Zone·Robot 속성이 있으면 그것이 우선하고, 본 필드는 기본값이다.
+- [2026-11-06] `COLLISION`: MuJoCo ② 디지털 트윈에서 후보 행동을 사전 시뮬레이션해 경로 충돌·물리 위험을 판정한다. 규칙 검사를 모두 통과한 후보에만 마지막으로 적용한다. 시뮬레이션이 시간 안에 끝나지 않거나 MuJoCo ②를 사용할 수 없으면 위반으로 본다(Fail-Closed). MuJoCo ②는 온톨로지 상태만으로 구성하고 시뮬레이터 정답 좌표를 읽지 않는다. 작업자 이동은 예측 또는 CV 위치 오차만큼의 여유 반경으로 반영한다. 시간 제한 값은 ONT·백엔드가 정한다.
+- [2026-11-06] 토크·관절 속도 제한: 현재 확정 규칙이 아니다. 검사 범위·안전 한계·CTL 제공값을 ONT·CTL이 합의한 뒤 `SPEED` 확장 또는 새 열거값으로 반영한다.
 - `on_violation`: `REJECT` | `ESTOP`. 미지정 시 `severity=CRITICAL`이면 `ESTOP`, 그 외 `REJECT`로 동작한다. (예: 안전거리 규칙은 1.2m 미만 REJECT, 0.6m 미만 ESTOP의 2단 규칙으로 등록)
 
 ### HazardEvent
@@ -222,6 +225,13 @@ Action 승인 여부를 판단하는 규칙을 표현한다.
 - `resolved_by`: `SENSOR_AUTO` | `OPERATOR` | `null`. 해제 주체를 감사 이력에 남긴다. `CRITICAL`은 `SENSOR_AUTO` 해제를 허용하지 않는다.
 
 연결 판정 명확화 [v1.1]: 빈 `related_robot_ids`는 모든 로봇을 뜻하지 않는다. 열린 `CRITICAL` 이벤트는 대상 로봇 ID가 `related_robot_ids`에 있거나, 이벤트의 `zone_id`가 TaskOrder의 `ZONE` 목적지와 같을 때 해당 ActionProposal을 차단한다. 좌표 목적지는 Zone 매핑 정보가 없으므로 명시적인 로봇 연결만 적용한다.
+
+생성 경로 [2026-11-06]:
+
+- 현재(PR #41 팀 결정): CV가 `POST /hazards`로 직접 등록한다. 카메라 1대라도 연속 2프레임에서 `KEEP_OUT` 구역 안 작업자를 탐지하면 `CRITICAL` `WORKER_INTRUSION`을 등록한다. 이 경로는 Observation 객체를 만들지 않으므로 `source_observation_ids`는 빈 배열을 허용한다.
+- `confidence`: 모델 점수가 있으면 그 점수를 쓴다. 점수가 없는 탐지기(예: Florence-2 `<OD>`)는 해당 카메라 최근 5프레임 중 작업자를 탐지한 비율(탐지 지속 비율)을 쓴다.
+- 6장 병합 규칙은 Observation 등록 경로가 생긴 뒤 적용한다. 그 전까지 병합 대신 CV 쪽 연속 탐지 조건이 오탐을 줄인다.
+- 탐지 실패나 신뢰도 부재를 위험 해제의 근거로 쓰지 않는다. 관측 공백은 `OBSERVATION_GAP` 규칙이 판정한다.
 
 용어 정합 [v1.1]: 심각도는 본 스키마의 2등급(`WARNING`/`CRITICAL`) 체계를 표준으로 하며, 개발계획서 v1.0도 이를 그대로 사용한다. E-Stop 트리거는 `CRITICAL`만 해당한다. (구 계획서 v0.2의 3등급 표기는 Low·Medium → `WARNING`, High → `CRITICAL`로 사상되어 폐기됨)
 
@@ -295,17 +305,19 @@ Action은 다음 조건을 모두 만족해야 승인한다.
 
 1. 대상 로봇과 TaskOrder가 존재한다.
 2. 로봇 상태가 `IDLE` 또는 재계획 가능한 `HOLD` 상태이다.
-3. 제안 속도가 로봇의 `motion_limits`와 `speed_limit`을 넘지 않는다. [v1.1] 구역에 `max_speed`가 있으면 그 값도 상한에 포함한다.
+3. 제안 속도가 로봇의 `motion_limits`와 `speed_limit`을 넘지 않는다. [v1.1] 구역에 `max_speed`가 있으면 그 값도 상한에 포함한다. [2026-11-06] 이 조건은 이동 속도(m/s)에 적용한다. 관절 속도·토크는 미결이다(SafetyRule 참고).
 4. 예상 경로가 `KEEP_OUT` 구역과 교차하지 않는다.
 5. 예상 경로와 작업자 사이의 거리가 구역별 최소 안전거리 이상이다. [v1.1] `estop_distance` 미만이면 거부가 아니라 즉시 `TriggerEStop`을 호출한다.
 6. 대상 로봇이나 작업구역에 연결된 열린 `CRITICAL` HazardEvent가 없다.
 7. 로봇 종류에 맞는 `control_adapter`가 존재한다.
-8. [v1.1] 작업 대상 구역을 `COVERS`하는 센서 중 `ONLINE` 상태가 1개 이상 존재한다. 없으면 Fail-Closed 원칙에 따라 거부한다.
+8. [v1.1] 작업 대상 구역을 `COVERS`하는 센서 중 `ONLINE` 상태가 1개 이상 존재한다. 없으면 Fail-Closed 원칙에 따라 거부한다. [2026-11-06] 마지막 프레임이 2초보다 오래된 센서는 `ONLINE`으로 보지 않는다.
+9. [2026-11-06] 1~8번을 통과한 후보는 MuJoCo ② 사전 시뮬레이션(`COLLISION`)을 통과해야 한다. 미구현 기간에는 이 조건을 적용하지 않으며, 구현 후에는 시간 초과·트윈 미가동을 위반으로 본다.
 
 조건 하나라도 실패하면 제안을 `REJECTED`로 변경한다. 실행 중 4~6, 8번 조건을 위반하면 `TriggerEStop`을 호출한다.
 
 ## 6. 이벤트 통합 규칙
 
+- [2026-11-06] 이 장의 병합 규칙은 Observation 경유 HazardEvent에 적용한다. CV 직접 등록 경로는 2장 HazardEvent "생성 경로"를 따른다.
 - 같은 시간 구간에 동일한 종류의 위험을 가까운 위치에서 탐지하면 하나의 HazardEvent로 병합한다. [v1.1] 기준 수치: 발생 시각 차 1.0초 이내이고, 두 관측이 모두 `position_source=WORLD`이면 거리 1.5m 이내, 그 외에는 동일 `zone_id`일 때 병합한다.
 - 병합된 이벤트에는 모든 `source_observation_ids`를 저장한다. [v1.1] `confidence`는 관측값의 최대치를 사용하고, 서로 다른 센서 2개 이상이 확인한 이벤트는 심각도 상향을 검토한다.
 - 여러 센서의 판단이 충돌하면 더 높은 위험 등급을 우선한다. (Fail-Closed)
