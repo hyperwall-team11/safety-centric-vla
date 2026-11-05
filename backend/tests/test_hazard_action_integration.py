@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app, seed_rules
 from app.store import store
+from tests.zone_fixtures import register_work_zones
 
 
 class HazardActionIntegrationTests(unittest.TestCase):
@@ -22,6 +23,7 @@ class HazardActionIntegrationTests(unittest.TestCase):
         store.reset()
         seed_rules()
         self.client = TestClient(app)
+        register_work_zones(self.client, "A구역", "B구역")
 
         for robot_id in ("robot-01", "robot-02"):
             self._create("/robots", {
