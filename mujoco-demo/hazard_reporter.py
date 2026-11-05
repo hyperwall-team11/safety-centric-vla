@@ -9,16 +9,18 @@ import json
 import math
 from datetime import datetime, timezone
 from urllib import error, request
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from observation_export import ROTATION_CONVENTION, ground_position
 
 
 # 팀 결정(2026-11-05): 카메라 1대라도 연속 2프레임에서 금지구역 안 작업자를 보면 위험으로 본다.
 REQUIRED_CONSECUTIVE_FRAMES = 2
-# 모든 카메라에서 이 시간 동안 금지구역 안 작업자가 없으면 한 번의 진입이 끝난 것으로 본다.
+# 모든 카메라가 계속 관측하면서 이 시간 동안 금지구역 안 작업자를 못 보면 한 번의 진입이 끝난 것으로 본다.
+# 카메라가 끊기거나 결과가 늦으면 작업자 부재로 보지 않고 진입을 유지한다.
 EPISODE_CLEAR_SECONDS = 2.0
-# Florence-2 <OD>는 점수가 없어, 신뢰도 대신 트리거 카메라 최근 프레임 중 금지구역 탐지 비율을 쓴다.
+# Florence-2 <OD>는 점수가 없어, 모델 confidence 대신 트리거 카메라 최근 프레임 중 금지구역 탐지 비율
+# (탐지 지속 비율)을 쓴다. 모델 점수가 아니므로 해석은 ONT와 정한다(PR #41).
 CONFIDENCE_WINDOW_FRAMES = 5
 
 
@@ -82,25 +84,39 @@ def observation_id(sensor_id, sec, nanosec, index):
 
 
 class IntrusionTracker:
-    """Open one HazardEvent per entry; any camera reaching the consecutive-frame rule triggers it."""
+    """Open one HazardEvent per entry; any camera reaching the consecutive-frame rule triggers it.
 
-    def __init__(self, required=REQUIRED_CONSECUTIVE_FRAMES, clear_seconds=EPISODE_CLEAR_SECONDS,
-                 window=CONFIDENCE_WINDOW_FRAMES):
+    An entry ends only when every camera in ``sensor_ids`` has processed frames after the last
+    in-zone sighting for ``clear_seconds``; a stalled camera keeps the entry open. Each entry has
+    a fixed ``hazard_id`` so a retried POST cannot register the same entry twice.
+    """
+
+    def __init__(self, sensor_ids=(), required=REQUIRED_CONSECUTIVE_FRAMES,
+                 clear_seconds=EPISODE_CLEAR_SECONDS, window=CONFIDENCE_WINDOW_FRAMES):
+        self.sensor_ids = set(sensor_ids)
         self.required = required
         self.clear_seconds = clear_seconds
         self.window = window
         self.streaks = {}
         self.history = {}
         self.observations = {}
+        self.last_frame = {}
         self.active = False
         self.reported = False
         self.last_seen = None
+        self.hazard_id = None
+
+    def _entry_over(self, now):
+        observed_since = all(self.last_frame.get(s, float("-inf")) > self.last_seen
+                             for s in self.sensor_ids | set(self.last_frame))
+        return observed_since and now - self.last_seen >= self.clear_seconds
 
     def update(self, sensor_id, in_zone, now, observation_ids=()):
         """Record one processed frame; return trigger details when an event should be opened."""
         history = self.history.setdefault(sensor_id, [])
         history.append(bool(in_zone))
         del history[:-self.window]
+        self.last_frame[sensor_id] = now
         if in_zone:
             self.streaks[sensor_id] = self.streaks.get(sensor_id, 0) + 1
             pending = self.observations.setdefault(sensor_id, [])
@@ -110,13 +126,16 @@ class IntrusionTracker:
         else:
             self.streaks[sensor_id] = 0
             self.observations[sensor_id] = []
-            if self.active and now - self.last_seen >= self.clear_seconds:
+            if self.active and self._entry_over(now):
                 self.active = self.reported = False
-        if in_zone and self.streaks[sensor_id] >= self.required:
+                self.hazard_id = None
+        if in_zone and self.streaks[sensor_id] >= self.required and not self.active:
             self.active = True
+            self.hazard_id = f"hazard-{uuid4()}"
         if not self.active or self.reported:
             return None
-        return {"sensor_id": sensor_id, "confidence": sum(history) / len(history),
+        return {"hazard_id": self.hazard_id, "sensor_id": sensor_id,
+                "confidence": sum(history) / len(history),
                 "observation_ids": list(self.observations[sensor_id])}
 
     def mark_reported(self):
@@ -125,6 +144,7 @@ class IntrusionTracker:
 
 def build_hazard(zone_id, robot_ids, trigger, detected_at=None):
     return {
+        "hazard_id": trigger["hazard_id"],
         "hazard_type": "WORKER_INTRUSION",
         "severity": "CRITICAL",
         "source_observation_ids": trigger["observation_ids"],
@@ -134,6 +154,12 @@ def build_hazard(zone_id, robot_ids, trigger, detected_at=None):
         "confidence": round(trigger["confidence"], 3),
         "detected_at": (detected_at or datetime.now(timezone.utc)).isoformat(),
     }
+
+
+class BackendHTTPError(RuntimeError):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
 
 
 class BackendClient:
@@ -150,7 +176,7 @@ class BackendClient:
                 return json.loads(response.read().decode("utf-8"))
         except error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")
-            raise RuntimeError(f"{method} {path} failed with HTTP {exc.code}: {detail}") from exc
+            raise BackendHTTPError(exc.code, f"{method} {path} failed with HTTP {exc.code}: {detail}") from exc
 
     def zone(self, zone_id):
         for zone in self._call("GET", "/zones"):
@@ -159,4 +185,10 @@ class BackendClient:
         raise ValueError(f"Zone {zone_id} is not registered in the backend")
 
     def post_hazard(self, hazard):
-        return self._call("POST", "/hazards", hazard)
+        """Create the event; a 409 for the same fixed ``hazard_id`` means an earlier try already did."""
+        try:
+            return self._call("POST", "/hazards", hazard)
+        except BackendHTTPError as exc:
+            if exc.code == 409:
+                return {"hazard_id": hazard["hazard_id"], "already_registered": True}
+            raise

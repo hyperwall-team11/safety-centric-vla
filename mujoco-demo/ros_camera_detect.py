@@ -100,7 +100,7 @@ class CameraDetector(Node):
         self.processing_ms = []
         self.queue_age_ms = []
         self.hazard = getattr(args, "hazard", None)
-        self.tracker = IntrusionTracker()
+        self.tracker = IntrusionTracker(topic.strip("/").split("/")[0] for topic in args.topic)
         self.hazard_ids = []
         self.hazard_failures = 0
         self.file = self.output.open("w", encoding="utf-8")
@@ -148,7 +148,9 @@ class CameraDetector(Node):
         ids = [observation_id(sensor_id, stamp.sec, stamp.nanosec, index)
                for index, point in enumerate(positions) if point["in_zone"]]
         trigger = self.tracker.update(sensor_id, in_zone, time.monotonic(), ids)
-        result = {"ground_positions": positions, "in_keep_out": in_zone, "hazard_id": None}
+        # observation_ids는 이 기록(sensor_id, stamp)과 같은 키로 만들어 HazardEvent에서 JSONL로 추적된다.
+        result = {"ground_positions": positions, "in_keep_out": in_zone, "observation_ids": ids,
+                  "hazard_id": None}
         if trigger is None:
             return result
         hazard = build_hazard(self.hazard["zone_id"], self.hazard["robot_ids"], trigger)

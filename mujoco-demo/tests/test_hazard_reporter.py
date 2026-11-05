@@ -61,27 +61,49 @@ class HazardReporterTests(unittest.TestCase):
         self.assertIsNotNone(tracker.update("cctv_1", True, 0.3, ["b"]))
 
     def test_one_event_per_entry_until_zone_is_clear(self):
-        tracker = IntrusionTracker()
+        tracker = IntrusionTracker(["cctv_1"])
         tracker.update("cctv_1", True, 0.0)
-        self.assertIsNotNone(tracker.update("cctv_1", True, 0.1))
+        first = tracker.update("cctv_1", True, 0.1)
         tracker.mark_reported()
         self.assertIsNone(tracker.update("cctv_1", True, 0.2))
         self.assertIsNone(tracker.update("cctv_1", False, 1.0))  # 2초가 지나지 않음
         self.assertIsNone(tracker.update("cctv_1", True, 1.5))
         self.assertIsNone(tracker.update("cctv_1", False, 3.6))  # 1.5초 이후 2초 넘게 비어 진입 종료
         tracker.update("cctv_1", True, 4.0)
-        self.assertIsNotNone(tracker.update("cctv_1", True, 4.1))
+        second = tracker.update("cctv_1", True, 4.1)
+        self.assertNotEqual(first["hazard_id"], second["hazard_id"])
 
-    def test_failed_report_is_retried_on_next_frame(self):
-        tracker = IntrusionTracker()
+    def test_failed_report_is_retried_with_the_same_hazard_id(self):
+        tracker = IntrusionTracker(["cctv_1"])
         tracker.update("cctv_1", True, 0.0)
-        self.assertIsNotNone(tracker.update("cctv_1", True, 0.1))
-        self.assertIsNotNone(tracker.update("cctv_1", True, 0.2))
+        first = tracker.update("cctv_1", True, 0.1)
+        retry = tracker.update("cctv_1", True, 0.2)
+        self.assertTrue(first["hazard_id"].startswith("hazard-"))
+        self.assertEqual(first["hazard_id"], retry["hazard_id"])
+
+    def test_stalled_camera_does_not_end_the_entry(self):
+        tracker = IntrusionTracker(["cctv_1", "cctv_2"])
+        tracker.update("cctv_1", True, 0.0)
+        first = tracker.update("cctv_1", True, 0.1)
+        tracker.mark_reported()
+        # cctv_2는 한 번도 결과를 내지 않음: cctv_1이 계속 비어 있어도 관측 불가로 보고 진입을 유지
+        self.assertIsNone(tracker.update("cctv_1", False, 5.0))
+        tracker.update("cctv_1", True, 5.1)
+        self.assertIsNone(tracker.update("cctv_1", True, 5.2))
+        # cctv_2가 마지막 목격 뒤 프레임을 내고 2초가 지나야 진입이 끝남
+        tracker.update("cctv_2", False, 5.3)
+        self.assertIsNone(tracker.update("cctv_1", False, 7.0))
+        tracker.update("cctv_1", False, 7.2)
+        tracker.update("cctv_1", True, 7.3)
+        second = tracker.update("cctv_1", True, 7.4)
+        self.assertNotEqual(first["hazard_id"], second["hazard_id"])
 
     def test_hazard_payload_matches_team_decision(self):
-        trigger = {"sensor_id": "cctv_1", "confidence": 0.6666, "observation_ids": ["o1"]}
+        trigger = {"hazard_id": "hazard-fixed", "sensor_id": "cctv_1", "confidence": 0.6666,
+                   "observation_ids": ["o1"]}
         at = datetime(2026, 11, 5, tzinfo=timezone.utc)
         hazard = build_hazard("keep-out", ["robot-01"], trigger, at)
+        self.assertEqual(hazard["hazard_id"], "hazard-fixed")
         self.assertEqual(hazard["hazard_type"], "WORKER_INTRUSION")
         self.assertEqual(hazard["severity"], "CRITICAL")
         self.assertEqual(hazard["related_robot_ids"], ["robot-01"])
