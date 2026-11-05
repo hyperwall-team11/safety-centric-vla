@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from math import isfinite
+from collections.abc import Sequence
+from datetime import datetime, timedelta, timezone
+from math import hypot, isfinite
+from typing import Any
 
 from .models import (
     ActionProposal,
@@ -14,8 +17,11 @@ from .models import (
     RuleSeverity,
     RuleType,
     SafetyRule,
+    Sensor,
+    SensorStatus,
     TaskOrder,
     ViolationAction,
+    Worker,
     Zone,
     ZoneType,
 )
@@ -115,7 +121,10 @@ def _keep_out_result(proposal, task, zones):
         return False, f"검증 불가능한 경로 또는 geometry: {exc}"
     return True, "KEEP_OUT 구역과 경로 교차 없음"
 
-def default_rules() -> list[SafetyRule]:
+WORKER_SNAPSHOT_MAX_AGE_SECONDS = 2.0  # ONT MVP 정책
+
+
+def default_rules(*, perception_enabled: bool = False) -> list[SafetyRule]:
     return [
         SafetyRule(
             rule_id="rule-speed-limit",
@@ -142,6 +151,24 @@ def default_rules() -> list[SafetyRule]:
             severity=RuleSeverity.CRITICAL,
             on_violation=ViolationAction.REJECT,
         ),
+        SafetyRule(
+            rule_id="rule-observation-gap",
+            rule_type=RuleType.OBSERVATION_GAP,
+            target_robot_type="ALL",
+            condition={},
+            severity=RuleSeverity.CRITICAL,
+            enabled=perception_enabled,
+            on_violation=ViolationAction.REJECT,
+        ),
+        SafetyRule(
+            rule_id="rule-safety-distance",
+            rule_type=RuleType.SAFETY_DISTANCE,
+            target_robot_type="ALL",
+            condition={},
+            severity=RuleSeverity.CRITICAL,
+            enabled=perception_enabled,
+            on_violation=ViolationAction.REJECT,
+        ),
     ]
 
 
@@ -152,7 +179,11 @@ def evaluate_proposal(
     hazards: list[HazardEvent],
     rules: list[SafetyRule],
     zones: list[Zone],
-) -> tuple[list[RuleResult], list[str]]:
+    *,
+    sensors: list[Sensor] | None = None,
+    workers: list[Worker] | None = None,
+    now: datetime | None = None,
+) -> tuple[list[RuleResult], list[str], bool]:
     results = [
         RuleResult(
             rule_id="precondition-robot-state",
@@ -175,6 +206,9 @@ def evaluate_proposal(
         (zone for zone in zones if zone.zone_id == destination_zone_id),
         None,
     )
+    estop_requested = False
+    target = proposal.parameters.get("target_pose") or {}
+    target_zone = destination_zone if target.get("zone_id") == destination_zone_id else None
     for rule in rules:
         if not rule.enabled:
             continue
@@ -226,15 +260,18 @@ def evaluate_proposal(
         elif rule.rule_type == RuleType.KEEP_OUT:
             passed, reason = _keep_out_result(proposal, task, zones)
             results.append(RuleResult(rule_id=rule.rule_id, passed=passed, reason=reason))
-    return results, list(dict.fromkeys(blocked_hazard_ids))
-
-from datetime import datetime, timedelta, timezone
-
-from .models import (
-    RuleResult,
-    Sensor,
-    SensorStatus,
-)
+        elif rule.rule_type == RuleType.OBSERVATION_GAP and proposal.action_type != ActionType.STOP:
+            result = evaluate_observation_gap(
+                target_zone.zone_id if target_zone else None, sensors or [], now
+            )
+            results.append(result.model_copy(update={"rule_id": rule.rule_id}))
+        elif rule.rule_type == RuleType.SAFETY_DISTANCE:
+            result, action = evaluate_safety_distance(
+                proposal, robot, target_zone, workers, now=now, rule_id=rule.rule_id
+            )
+            results.append(result)
+            estop_requested |= action == ViolationAction.ESTOP
+    return results, list(dict.fromkeys(blocked_hazard_ids)), estop_requested
 
 # ontology-schema-v1.1.md
 # Sensor.last_frame_at: 2초 무수신 시 DEGRADED
@@ -284,7 +321,7 @@ def evaluate_observation_gap(
         if not (
             timedelta(0)
             <= frame_age
-            <= SENSOR_FRAME_TIMEOUT
+            < SENSOR_FRAME_TIMEOUT
         ):
             continue
 
@@ -301,14 +338,6 @@ def evaluate_observation_gap(
             else f"{destination_zone_id} 관측 가능한 ONLINE 센서 없음"
         ),
     )
-
-
-from collections.abc import Sequence
-from datetime import datetime, timezone
-from math import hypot, isfinite
-from typing import Any
-
-from .models import Worker, ViolationAction
 
 
 def _xy(value: Any) -> tuple[float, float] | None:
@@ -370,7 +399,7 @@ def evaluate_safety_distance(
     workers: Sequence[Worker] | None,
     *,
     now: datetime | None = None,
-    max_worker_age_seconds: float = 2.0,
+    max_worker_age_seconds: float = WORKER_SNAPSHOT_MAX_AGE_SECONDS,
     rule_id: str = "rule-safety-distance",
 ) -> tuple[RuleResult, ViolationAction | None]:
     """예상 경로와 작업자 사이의 안전거리 판정.
@@ -455,6 +484,8 @@ def evaluate_safety_distance(
     for waypoint in proposal.trajectory:
         if not isinstance(waypoint, dict):
             return reject("예상 경로 형식 오류")
+        if waypoint.get("frame_id", proposal.frame_id) != proposal.frame_id:
+            return reject("예상 경로 좌표계 불일치")
 
         point = _xy(waypoint.get("position"))
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from threading import RLock
 
 from .models import (
@@ -9,7 +10,9 @@ from .models import (
     HazardEvent,
     Robot,
     SafetyRule,
+    Sensor,
     TaskOrder,
+    Worker,
     Zone,
 )
 
@@ -24,6 +27,9 @@ class InMemoryStore:
     def reset(self) -> None:
         with self._lock:
             self.robots: dict[str, Robot] = {}
+            self.sensors: dict[str, Sensor] = {}
+            self.workers: list[Worker] | None = None
+            self.workers_observed_at: datetime | None = None
             self.zones: dict[str, Zone] = {}
             self.tasks: dict[str, TaskOrder] = {}
             self.task_idempotency: dict[str, tuple[str, str]] = {}
