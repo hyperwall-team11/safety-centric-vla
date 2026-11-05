@@ -122,3 +122,79 @@ def evaluate_proposal(
                 )
             )
     return results, list(dict.fromkeys(blocked_hazard_ids))
+
+
+from datetime import datetime, timedelta, timezone
+
+from .models import (
+    RuleResult,
+    Sensor,
+    SensorStatus,
+)
+
+# ontology-schema-v1.1.md
+# Sensor.last_frame_at: 2초 무수신 시 DEGRADED
+SENSOR_FRAME_TIMEOUT = timedelta(seconds=2)
+
+
+def evaluate_observation_gap(
+    destination_zone_id: str | None,
+    sensors: list[Sensor],
+    now: datetime | None = None,
+) -> RuleResult:
+    """Sensor COVERS Zone과 관측 공백 안전 규칙 평가."""
+
+    now = now or datetime.now(timezone.utc)
+
+    if destination_zone_id is None:
+        return RuleResult(
+            rule_id="rule-observation-gap",
+            passed=False,
+            reason="대상 Zone을 확인할 수 없어 센서 커버리지 검증 불가",
+        )
+
+    valid_sensors = []
+
+    for sensor in sensors:
+        # 1. 대상 Zone을 감시하는 센서인가?
+        if destination_zone_id not in sensor.covered_zone_ids:
+            continue
+
+        # 2. 센서 상태가 ONLINE인가?
+        if sensor.status != SensorStatus.ONLINE:
+            continue
+
+        # 3. 마지막 프레임 수신 기록이 있는가?
+        if sensor.last_frame_at is None:
+            continue
+
+        frame_time = sensor.last_frame_at
+
+        # 4. 시각 정보가 유효한가?
+        if frame_time.tzinfo is None:
+            continue
+
+        frame_age = now - frame_time
+
+        # 5. 마지막 프레임이 2초 이내인가?
+        if not (
+            timedelta(0)
+            <= frame_age
+            <= SENSOR_FRAME_TIMEOUT
+        ):
+            continue
+
+        valid_sensors.append(sensor.sensor_id)
+
+    passed = len(valid_sensors) > 0
+
+    return RuleResult(
+        rule_id="rule-observation-gap",
+        passed=passed,
+        reason=(
+            f"유효한 ONLINE 센서 {len(valid_sensors)}개 존재"
+            if passed
+            else f"{destination_zone_id} 관측 가능한 ONLINE 센서 없음"
+        ),
+    )
+
