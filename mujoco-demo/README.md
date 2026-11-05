@@ -106,6 +106,22 @@ python ros_camera_detect.py --topic /cctv_1/image_raw --topic /cctv_2/image_raw 
 - `--num-beams`는 Florence-2 생성의 빔 수입니다(기본 3, 기존과 같음). 줄이면 빨라질 수 있지만 탐지 결과가 달라질 수 있어 정답 비교로 확인한 뒤 바꿉니다.
 - `--save-misses-dir`를 주면 작업자(`people`)가 없는 입력 프레임을 `<카메라>_<sec>_<nanosec>.png`로 저장하고 기록의 `saved_frame`에 경로를 남깁니다. 저장은 기본 300장까지(`--max-saved-misses`)이며 저장 시간은 `processing_ms`에 넣지 않지만 다음 프레임 처리를 늦출 수 있습니다. 처리율을 잴 때는 저장 없이 따로 실행하세요.
 
+### 금지구역 작업자 → HazardEvent 등록
+
+```bash
+python ros_camera_detect.py --topic /cctv_1/image_raw --topic /cctv_2/image_raw \
+  --model /path/to/florence-2-base --batch-cameras --num-beams 1 \
+  --backend-url http://127.0.0.1:8000 --hazard-zone-id <KEEP_OUT 구역 ID> --robot-id robot-01
+```
+
+- 시작할 때 백엔드 `GET /zones`에서 `--hazard-zone-id` 구역을 읽습니다. `KEEP_OUT`, `frame_id=world`, 고리 하나짜리 GeoJSON `Polygon`이어야 합니다. CCTV 위치·방향은 `--scene`(기본 `control/mujoco/models/scenario_scene.xml`)에서 읽으므로 `mujoco` 패키지가 필요하고, 월드에 고정된 카메라만 쓸 수 있습니다.
+- 사람 상자의 아래 중앙을 바닥(z=0)에 투영해 금지구역 안인지 판정합니다. **카메라 1대라도 연속 2프레임**에서 금지구역 안 작업자를 보면 `CRITICAL` `WORKER_INTRUSION` HazardEvent를 `POST /hazards`로 한 번 등록합니다(팀 결정 2026-11-05). 진입은 **모든 카메라가 마지막 목격 뒤에도 계속 결과를 내면서** 2초 동안 금지구역 안 작업자를 못 볼 때만 끝난 것으로 봅니다. 카메라가 끊기거나 결과가 늦으면 작업자 부재로 보지 않고 진입을 유지합니다. 진입이 끝난 뒤 다시 들어오면 새 이벤트를 등록합니다(이전 이벤트가 아직 OPEN이면 같은 구역에 여러 건이 쌓일 수 있으며, 이벤트 재사용은 백엔드 조회 API가 필요해 PR #41에서 논의 중입니다).
+- `related_robot_ids`에 `--robot-id`를 넣습니다. 스키마 v1.1에 따라 빈 목록은 모든 로봇을 뜻하지 않으므로 막을 로봇을 꼭 지정합니다.
+- `CRITICAL`은 센서가 해제할 수 없어서, 작업자가 나가도 운영자가 `POST /hazards/{hazard_id}/resolve`로 해제해야 합니다. 이 노드는 이벤트를 열기만 하고 해제하거나 로봇에 직접 명령하지 않습니다.
+- Florence-2 `<OD>`는 점수가 없어 `confidence`에 모델 점수 대신 트리거한 카메라의 최근 5프레임 중 금지구역 안 탐지 비율(탐지 지속 비율)을 넣습니다. 모델 confidence와 의미가 다르므로 해석은 ONT와 정합니다. `source_observation_ids`는 이 프레임들의 결정적 ID이며, 같은 ID가 JSONL 기록의 `hazard.observation_ids`에 남아 원본 탐지로 추적할 수 있습니다. Observation 객체는 아직 백엔드에 등록하지 않습니다.
+- 진입마다 고정 `hazard_id`를 정해 보내므로, 응답 타임아웃 뒤 다시 보내도 같은 진입이 두 번 등록되지 않습니다(백엔드의 `409` 중복 ID 응답을 등록 완료로 처리). 등록에 실패하면 로그를 남기고 다음 프레임에서 다시 시도합니다. 기록의 `hazard`에 투영 위치·금지구역 판정·등록된 `hazard_id`가, 요약에 `hazard_ids`·`hazard_post_failures`가 남습니다.
+- 미구현: 실행 중 로봇의 즉시 정지. 지금 백엔드는 열린 `CRITICAL` 이벤트로 이후 평가와 실행 직전 재검증을 막지만, 이벤트 등록만으로 이미 실행 중인 행동을 멈추지는 않습니다.
+
 ## 연속 추론 속도 측정 (CV-03)
 
 GPU 할당을 받은 터미널에서 아래처럼 실행하면 모델 로드와 워밍업 3회를 제외하고 두 정지 이미지를 순서대로 **60초 이상 반복 추론**합니다. 출력은 `vlm_results/benchmark.json`에 저장됩니다.
