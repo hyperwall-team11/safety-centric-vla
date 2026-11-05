@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
+from os import getenv
 from pathlib import Path
 from time import perf_counter
 from typing import Annotated, Literal
@@ -8,7 +9,7 @@ from typing import Annotated, Literal
 from fastapi import FastAPI, Header, HTTPException, Query, Response, status
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import AwareDatetime, BaseModel
 
 from .action_planner import ActionPlanningError, RuleBasedActionPlanner
 from .ctl_bridge import (
@@ -34,7 +35,9 @@ from .models import (
     RequestValidationErrorResponse,
     Robot,
     RobotStatus,
+    RuleResult,
     SafetyRule,
+    Sensor,
     TaskOrder,
     TaskOrderPreview,
     TaskOrderPreviewBatchItem,
@@ -44,10 +47,11 @@ from .models import (
     TaskParseErrorResponse,
     TaskStatus,
     TriggerSource,
+    Worker,
     Zone,
     utc_now,
 )
-from .safety import default_rules, evaluate_proposal
+from .safety import WORKER_SNAPSHOT_MAX_AGE_SECONDS, default_rules, evaluate_proposal
 from .store import store
 from .task_parser import TaskParseError, parse_task_order, parse_task_order_preview
 
@@ -108,7 +112,8 @@ def make_request_fingerprint(request: BaseModel) -> str:
 
 def seed_rules() -> None:
     if not store.rules:
-        store.rules.update({rule.rule_id: rule for rule in default_rules()})
+        rules = default_rules(perception_enabled=getenv("BACKEND_PERCEPTION_SAFETY_ENABLED") == "1")
+        store.rules.update({rule.rule_id: rule for rule in rules})
 
 
 seed_rules()
@@ -517,6 +522,61 @@ def create_proposal(proposal: ActionProposal) -> ActionProposal:
         return proposal
 
 
+@app.put("/sensors/{sensor_id}", response_model=Sensor)
+def update_sensor(sensor_id: str, sensor: Sensor) -> Sensor:
+    if sensor_id != sensor.sensor_id:
+        raise HTTPException(status_code=422, detail="경로와 본문의 sensor_id가 다릅니다.")
+    with store.lock:
+        store.sensors[sensor_id] = sensor
+    return sensor
+
+
+class WorkerSnapshot(BaseModel):
+    observed_at: AwareDatetime
+    workers: list[Worker]
+
+
+@app.put("/workers/snapshot", response_model=WorkerSnapshot)
+def replace_worker_snapshot(snapshot: WorkerSnapshot) -> WorkerSnapshot:
+    workers = snapshot.workers
+    if len({worker.worker_id for worker in workers}) != len(workers):
+        raise HTTPException(status_code=422, detail="worker_id가 중복되었습니다.")
+    with store.lock:
+        if snapshot.observed_at > utc_now():
+            raise HTTPException(status_code=422, detail="미래 시각의 Worker 스냅샷입니다.")
+        previous_at = store.workers_observed_at
+        if previous_at is not None and snapshot.observed_at <= previous_at:
+            if snapshot.observed_at == previous_at and workers == store.workers:
+                return snapshot
+            raise HTTPException(status_code=409, detail="이미 저장된 스냅샷보다 최신이어야 합니다.")
+        store.workers = workers
+        store.workers_observed_at = snapshot.observed_at
+    return snapshot
+
+
+def evaluate_current_safety(
+    proposal: ActionProposal, task: TaskOrder, robot: Robot
+) -> tuple[list[RuleResult], list[str], bool]:
+    now = utc_now()
+    observed_at = store.workers_observed_at
+    workers = None
+    if observed_at is not None and (
+        0 <= (now - observed_at).total_seconds() < WORKER_SNAPSHOT_MAX_AGE_SECONDS
+    ):
+        workers = store.workers
+    return evaluate_proposal(
+        proposal,
+        task,
+        robot,
+        list(store.hazards.values()),
+        list(store.rules.values()),
+        list(store.zones.values()),
+        sensors=list(store.sensors.values()),
+        workers=workers,
+        now=now,
+    )
+
+
 @app.post("/action-proposals/{proposal_id}/evaluate", response_model=ActionProposal)
 def evaluate_action(proposal_id: str) -> ActionProposal:
     started_at = perf_counter()
@@ -529,19 +589,19 @@ def evaluate_action(proposal_id: str) -> ActionProposal:
 
         robot = store.robots[proposal.robot_id]
         task = store.tasks[proposal.task_id]
-        rule_results, hazard_ids = evaluate_proposal(
-            proposal,
-            task,
-            robot,
-            list(store.hazards.values()),
-            list(store.rules.values()),
-            list(store.zones.values()),
-        )
+        rule_results, hazard_ids, estop_requested = evaluate_current_safety(proposal, task, robot)
         approved = all(result.passed for result in rule_results)
         proposal.status = ProposalStatus.APPROVED if approved else ProposalStatus.REJECTED
+        decision = Decision.APPROVE if approved else Decision.REJECT
+        if estop_requested:
+            decision = Decision.ESTOP
+            task.status = TaskStatus.HELD
+            robot.status = RobotStatus.ESTOP
+            robot.updated_at = utc_now()
         log = ExecutionLog(
             proposal_id=proposal.proposal_id,
-            decision=Decision.APPROVE if approved else Decision.REJECT,
+            decision=decision,
+            triggered_by=TriggerSource.RULE_ENGINE if estop_requested else None,
             rule_results=rule_results,
             hazard_ids=hazard_ids,
             robot_id=proposal.robot_id,
@@ -564,24 +624,22 @@ def execute_action(proposal_id: str) -> ActionProposal:
 
         robot = store.robots[proposal.robot_id]
         task = store.tasks[proposal.task_id]
-        rule_results, hazard_ids = evaluate_proposal(
-            proposal,
-            task,
-            robot,
-            list(store.hazards.values()),
-            list(store.rules.values()),
-            list(store.zones.values()),
-        )
+        rule_results, hazard_ids, estop_requested = evaluate_current_safety(proposal, task, robot)
         evaluated_in_ms = (perf_counter() - started_at) * 1000
         if not all(result.passed for result in rule_results):
             proposal.status = ProposalStatus.HELD
+            perception_rules = {"rule-observation-gap", "rule-safety-distance"}
+            requires_estop = estop_requested or any(
+                not result.passed and result.rule_id not in perception_rules for result in rule_results
+            )
             task.status = TaskStatus.HELD
-            robot.status = RobotStatus.ESTOP
-            robot.updated_at = utc_now()
+            if requires_estop:
+                robot.status = RobotStatus.ESTOP
+                robot.updated_at = utc_now()
             store.logs.append(
                 ExecutionLog(
                     proposal_id=proposal.proposal_id,
-                    decision=Decision.ESTOP,
+                    decision=Decision.ESTOP if requires_estop else Decision.REJECT,
                     rule_results=rule_results,
                     hazard_ids=hazard_ids,
                     robot_id=proposal.robot_id,
