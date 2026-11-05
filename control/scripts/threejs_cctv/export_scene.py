@@ -1,12 +1,15 @@
-"""MuJoCo ① 시나리오 장면을 Three.js 렌더러용 데이터로 내보낸다.
+"""MuJoCo ① 공장 장면을 Three.js 렌더러용 데이터로 내보낸다.
 
-    python export_scene.py --out ../../outputs/threejs_cctv --duration 30 --fps 10
+    python export_scene.py --out ../../outputs/threejs_cctv/data --duration 30 --fps 10 [--scene plant_scene.xml]
 
 출력:
-    scene.json   정적 정보 (geom 형상·색, 메시, 작업자 skin 면·UV·텍스처, CCTV 카메라)
-    frames.bin   프레임별 float32 [geom 위치(3)·회전행렬(9) × ngeom, skin 정점(3) × nskinvert]
-    truth.csv    프레임별 시뮬레이션 시각, 작업자 실제 위치, 금지구역 안 여부, 로봇 위치
+    scene.json   정적 정보 (geom 형상·색, 메시, 작업자 skin 면·UV·텍스처·복장, CCTV 카메라, 구역)
+    frames.bin   프레임별 float32
+                 [geom 위치(3)·회전행렬(9) × ngeom] + 작업자마다 [skin 정점(3) × nskinvert, 머리 위치(3)·쿼터니언(4)]
+    truth.csv    프레임·작업자별 시뮬레이션 시각, 실제 위치, 금지구역 안 여부, 로봇과의 거리
 
+작업자 1은 MuJoCo skin(mjv_updateScene)을 그대로 쓰고, 작업자 2·3은 같은 skin 데이터로
+MuJoCo와 같은 선형 블렌드 스키닝을 계산한다(작업자 1로 일치 여부를 검증).
 작업자 정답 좌표는 평가용이다. CV·MuJoCo ② 안전 판정 입력으로 쓰지 않는다.
 """
 from __future__ import annotations
@@ -15,29 +18,43 @@ import argparse
 import base64
 import csv
 import json
-import shutil
+import math
 import sys
 from pathlib import Path
 
 import mujoco
 import numpy as np
+from PIL import Image
 
 MUJOCO_DIR = Path(__file__).resolve().parents[2] / "mujoco"
 sys.path.insert(0, str(MUJOCO_DIR))
 
-from scenario import CAMERAS, WORKER_DIR, WorkerScript, in_zone  # noqa: E402
+from scenario import CAMERAS, WORKER_DIR, WORKER_PARTS, WorkerPoser, WorkerScript, in_zone  # noqa: E402
 from simulation import DiffDriveSim  # noqa: E402
 
-# 30초 동안 금지구역 밖·안, 탁자 가림 장면이 모두 나오는 경로 (x, y, 머무는 시간 s)
-#   B: cctv_2에서 보면 탁자 A 뒤 (금지구역 밖)
-#   C: cctv_1에서 보면 탁자 B 뒤 (금지구역 안, 다리가 가려짐)
-TEST_WAYPOINTS = [
-    (3.4, 1.8, 1.0),    # A 금지구역 밖
-    (0.75, 0.85, 1.5),  # B 탁자 A 뒤
-    (1.2, -0.5, 2.5),   # C 금지구역 안, 탁자 B 뒤
-    (1.6, 0.2, 1.5),    # D 금지구역 안, 가림 없음
-    (3.4, -1.8, 1.0),   # E 금지구역 밖
+# 작업자별 경로 (x, y, 머무는 시간 s), 속도 m/s, 복장
+WORKERS = [
+    {   # 작업자 1: 금지구역 밖·안, 탁자 가림 장면
+        "waypoints": [
+            (3.4, 1.8, 1.0),    # 금지구역 밖
+            (0.75, 0.85, 1.5),  # cctv_2에서 탁자 A·로봇 뒤
+            (1.2, -0.5, 2.5),   # 금지구역 안, cctv_1에서 탁자 B에 다리가 가려짐
+            (1.6, 0.2, 1.5),    # 금지구역 안, 가림 없음
+            (3.4, -1.8, 1.0),   # 금지구역 밖
+            (2.4, -3.6, 1.0),   # 맨홀·지게차 옆
+        ],
+        "speed": 0.6, "vest": "lime", "pants": "navy", "helmet": "white",
+    },
+    {   # 작업자 2: 로봇 셀 조작반 앞에서 작업, 잠깐 이동
+        "waypoints": [(-1.15, 1.55, 9.0), (0.4, 2.7, 3.0)],
+        "speed": 0.5, "vest": "orange", "pants": "jeans", "helmet": "yellow",
+    },
+    {   # 작업자 3: 지게차 옆 통로를 따라 이동
+        "waypoints": [(6.6, 0.0, 2.0), (-0.8, -2.3, 1.5), (5.5, -1.0, 0.0)],
+        "speed": 0.7, "vest": "lime", "pants": "jeans", "helmet": "orange",
+    },
 ]
+VEST = {"lime": (196, 236, 40), "orange": (255, 120, 20)}
 # 알파 채널이 없는 속눈썹·눈썹 skin은 렌더하지 않는다 (CCTV 거리에서 보이지 않음)
 SKIP_SKINS = {"worker_eyebrow001", "worker_eyelashes01"}
 
@@ -51,6 +68,68 @@ def geom_color(m, g):
     if mat >= 0:
         return m.mat_rgba[mat].tolist(), int(m.mat_texid[mat][1]), m.mat_texrepeat[mat].tolist()
     return m.geom_rgba[g].tolist(), -1, [1, 1]
+
+
+def outfit_texture(out: Path, vest: str, pants: str) -> str:
+    """MakeHuman 셔츠·청바지 텍스처를 안전조끼(형광 + 반사띠)와 작업복 바지로 바꾼다.
+
+    텍스처 위쪽(행 < 410, 열 < 735)이 몸통 앞·뒤 판, 오른쪽 위가 소매, 아래쪽 절반이 바지다.
+    """
+    name = f"suit_{vest}_{pants}.png"
+    if (out / name).exists():
+        return name
+    img = np.asarray(Image.open(WORKER_DIR / "male_casualsuit04.png").convert("RGB")).astype(np.float32)
+    r, g, b = img[..., 0], img[..., 1], img[..., 2]
+    cloth = (b - r) > 75
+    rows, cols = np.mgrid[:img.shape[0], :img.shape[1]]
+    lum = 0.3 * r + 0.59 * g + 0.11 * b
+    torso = cloth & (rows < 410) & (cols < 735)
+    shade = np.clip(lum / np.median(lum[torso]), 0.6, 1.3)[..., None]
+    img[torso] = (np.array(VEST[vest]) * shade[torso])
+    stripes = torso & (((rows > 250) & (rows < 278)) | ((rows > 318) & (rows < 346)))
+    img[stripes] = np.array([205, 208, 210]) * shade[stripes]
+    sleeves = cloth & (rows < 410) & (cols >= 735)
+    img[sleeves] = np.array([45, 50, 58]) * shade[sleeves]
+    if pants == "navy":
+        legs = cloth & (rows >= 410)
+        legshade = np.clip(lum / np.median(lum[legs]), 0.6, 1.4)[..., None]
+        img[legs] = np.array([38, 44, 66]) * legshade[legs]
+    Image.fromarray(np.clip(img, 0, 255).astype(np.uint8)).save(out / name)
+    return name
+
+
+class Skinner:
+    """MuJoCo mjv_updateSkin과 같은 선형 블렌드 스키닝 (inflate는 1 mm라 무시)."""
+
+    def __init__(self, m):
+        part_of = {f"worker_{p}": i for i, p in enumerate(WORKER_PARTS)}
+        self.bones = []
+        for s in range(m.nskin):
+            va = m.skin_vertadr[s]
+            for b in range(m.skin_boneadr[s], m.skin_boneadr[s] + m.skin_bonenum[s]):
+                body = m.body(m.skin_bonebodyid[b]).name
+                ia, n = m.skin_bonevertadr[b], m.skin_bonevertnum[b]
+                ids = m.skin_bonevertid[ia:ia + n] + va
+                w = m.skin_bonevertweight[ia:ia + n]
+                inv = np.zeros(4)
+                mujoco.mju_negQuat(inv, m.skin_bonebindquat[b])
+                rest = np.zeros((n, 3))
+                for k, vid in enumerate(ids):
+                    tmp = np.zeros(3)
+                    mujoco.mju_rotVecQuat(tmp, m.skin_vert[vid] - m.skin_bonebindpos[b], inv)
+                    rest[k] = tmp
+                self.bones.append((part_of[body], ids, w[:, None], rest))
+        self.n = m.nskinvert
+
+    def __call__(self, pos, quat):
+        out = np.zeros((self.n, 3))
+        mats = np.zeros((len(pos), 9))
+        for i, q in enumerate(quat):
+            mujoco.mju_quat2Mat(mats[i], q)
+        mats = mats.reshape(-1, 3, 3)
+        for part, ids, w, rest in self.bones:
+            np.add.at(out, ids, w * (rest @ mats[part].T + pos[part]))
+        return out
 
 
 def export_static(m, d, out: Path):
@@ -72,35 +151,21 @@ def export_static(m, d, out: Path):
                                "face": b64(m.mesh_face[fa:fa + fn], "<u4")}
         geoms.append(item)
 
-    textures = {}
-    for g in geoms:
-        t = g["tex"]
-        if t >= 0 and t not in textures and not m.tex(t).name.startswith("worker_"):
-            from PIL import Image
-            w, h, c = m.tex_width[t], m.tex_height[t], m.tex_nchannel[t]
-            a = m.tex_adr[t]
-            img = m.tex_data[a:a + w * h * c].reshape(h, w, c)
-            name = f"tex_{m.tex(t).name}.png"
-            Image.fromarray(img).save(out / name)
-            textures[t] = name
-
     skins = []
     for s in range(m.nskin):
-        name = m.skin(s).name or m.mat(m.skin_matid[s]).name
-        mat = m.skin_matid[s]
-        mat_name = m.mat(mat).name
+        mat_name = m.mat(m.skin_matid[s]).name
         va, vn = m.skin_vertadr[s], m.skin_vertnum[s]
         fa, fn = m.skin_faceadr[s], m.skin_facenum[s]
         tex_file = WORKER_DIR / f"{mat_name.removeprefix('worker_')}.png"
+        if mat_name not in SKIP_SKINS:
+            Image.open(tex_file).save(out / tex_file.name)
         skins.append({
             "name": mat_name, "render": mat_name not in SKIP_SKINS,
             "vertadr": int(va), "vertnum": int(vn),
             "face": b64(m.skin_face[fa:fa + fn], "<u4"),
-            "uv": b64(m.skin_texcoord[m.skin_texcoordadr[s]:m.skin_texcoordadr[s] + vn], "<f4")
-            if m.skin_texcoordadr[s] >= 0 else None,
+            "uv": b64(m.skin_texcoord[m.skin_texcoordadr[s]:m.skin_texcoordadr[s] + vn], "<f4"),
             "texture": tex_file.name,
         })
-        shutil.copy(tex_file, out / tex_file.name)
 
     cams = {}
     for sensor in ("cctv_1", "cctv_2"):
@@ -109,13 +174,18 @@ def export_static(m, d, out: Path):
                         "fovy": float(m.cam_fovy[cid]), "width": 640, "height": 480,
                         "frame_id": f"camera_{sensor}"}
 
-    lights = [{"pos": m.light_pos[i].tolist(), "dir": m.light_dir[i].tolist(),
-               "diffuse": m.light_diffuse[i].tolist()} for i in range(m.nlight)]
-    zone = m.geom("keep_out_zone")
-    return {"geoms": geoms, "meshes": {str(k): v for k, v in meshes.items()},
-            "textures": {str(k): v for k, v in textures.items()}, "skins": skins,
-            "nskinvert": int(m.nskinvert), "cameras": cams, "lights": lights,
-            "keep_out_zone": {"pos": zone.pos.tolist(), "size": zone.size.tolist()}}
+    rects = {}
+    for key, name in (("keep_out", "keep_out_zone"), ("a", "zone_a_marking"), ("b", "zone_b_marking")):
+        try:
+            g = m.geom(name)
+        except KeyError:
+            continue
+        rects[key] = [float(d.geom_xpos[g.id][0]), float(d.geom_xpos[g.id][1]), float(g.size[0]), float(g.size[1])]
+
+    workers = [{"id": f"worker-{i + 1:02d}", "suit": outfit_texture(out, w["vest"], w["pants"]),
+                "helmet": w["helmet"]} for i, w in enumerate(WORKERS)]
+    return {"geoms": geoms, "meshes": {str(k): v for k, v in meshes.items()}, "skins": skins,
+            "nskinvert": int(m.nskinvert), "cameras": cams, "zone_rects": rects, "workers": workers}
 
 
 def main():
@@ -123,47 +193,82 @@ def main():
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--duration", type=float, default=30.0)
     p.add_argument("--fps", type=float, default=10.0)
+    p.add_argument("--scene", default="plant_scene.xml",
+                   help="mujoco/models 안의 장면 파일 (prop_* geom은 Three.js가 설비 모델로 덮어 그린다)")
     args = p.parse_args()
 
-    sim = DiffDriveSim("scenario")
+    sim = DiffDriveSim("scenario", model_path=MUJOCO_DIR / "models" / args.scene)
     m, d = sim.model, sim.data
-    worker = WorkerScript(waypoints=TEST_WAYPOINTS)
-    worker.apply(m, d)
+    names = {m.body(i).name for i in range(m.nbody)}
+    scripts = [WorkerScript(waypoints=w["waypoints"], speed=w["speed"]) for w in WORKERS]
+    extra = [i for i in range(1, len(WORKERS)) if f"worker_{i + 1}" in names]
+    scripts[0].apply(m, d)
     mujoco.mj_forward(m, d)
 
     meta = export_static(m, d, args.out)
+    meta["workers"] = [meta["workers"][0]] + [meta["workers"][i] for i in extra]
     gids = [g["id"] for g in meta["geoms"]]
     opt, cam = mujoco.MjvOption(), mujoco.MjvCamera()
     scn = mujoco.MjvScene(m, maxgeom=2000)
+    skinner = Skinner(m)
+    poser = WorkerPoser()
+    head = m.body("worker_head").id
+    part_ids = [m.body(f"worker_{b}").id for b in WORKER_PARTS]
+    head_part = WORKER_PARTS.index("head")
+
+    # 안전모 위치: 정수리 정점을 머리 바디 좌표로 옮긴 값
+    mujoco.mjv_updateScene(m, d, opt, None, cam, mujoco.mjtCatBit.mjCAT_ALL, scn)
+    body_skin = next(s for s in meta["skins"] if s["name"] == "worker_body")
+    verts = np.asarray(scn.skinvert).reshape(-1, 3)
+    vb = verts[body_skin["vertadr"]:body_skin["vertadr"] + body_skin["vertnum"]]
+    top = vb[np.argmax(vb[:, 2])]
+    rot = d.xmat[head].reshape(3, 3)
+    meta["helmet_offset"] = (rot.T @ (top - d.xpos[head])).tolist()
+    # 스키닝 검증: 작업자 1의 MuJoCo 결과와 비교
+    err = np.abs(skinner(d.xpos[part_ids], d.xquat[part_ids]) - verts).max()
+    print(f"스키닝 최대 오차 {err * 1000:.2f} mm")
+    assert err < 0.005, "스키닝 결과가 MuJoCo와 다릅니다"
 
     n = int(round(args.duration * args.fps))
     dt = 1.0 / args.fps
     with open(args.out / "frames.bin", "wb") as fb, open(args.out / "truth.csv", "w", newline="") as fc:
         w = csv.writer(fc)
-        w.writerow(["frame", "sim_time", "worker_x", "worker_y", "worker_yaw", "in_keep_out",
-                    "robot_x", "robot_y"])
-        # 로봇은 처음 1.2초 동안 제자리 회전한 뒤 멈춘다 (scenario.snapshot과 같은 동작)
-        sim.set_velocity(0.0, 0.4)
+        w.writerow(["frame", "sim_time", "worker_id", "x", "y", "yaw", "in_keep_out",
+                    "dist_to_robot", "robot_x", "robot_y"])
+        sim.set_velocity(0.0, 0.4)  # 로봇은 처음 1.2초 제자리 회전 후 정지
         for f in range(n):
             target = f * dt
             while sim.time < target - 1e-9:
-                worker.apply(m, d)
+                scripts[0].apply(m, d)
                 sim.step(min(0.02, target - sim.time))
                 if sim.time > 1.2:
                     sim.stop()
-            x, y, yaw = worker.apply(m, d)
+            states = [scripts[0].apply(m, d)]
+            for i in extra:
+                x, y, yaw = scripts[i].position(sim.time)
+                d.mocap_pos[m.body_mocapid[m.body(f"worker_{i + 1}").id]] = [x, y, 0.0]
+                states.append((x, y, yaw))
             mujoco.mj_forward(m, d)
             mujoco.mjv_updateScene(m, d, opt, None, cam, mujoco.mjtCatBit.mjCAT_ALL, scn)
             pose = np.concatenate([d.geom_xpos[gids], d.geom_xmat[gids]], axis=1)
             fb.write(pose.astype("<f4").tobytes())
             fb.write(np.asarray(scn.skinvert, dtype="<f4").tobytes())
+            fb.write(np.concatenate([d.xpos[head], d.xquat[head]]).astype("<f4").tobytes())
+            for k, i in enumerate(extra):
+                x, y, yaw = states[k + 1]
+                pos, quat = poser.pose(x, y, yaw, *scripts[i].gait_state(sim.time))
+                pos, quat = pos.copy(), quat.copy()
+                fb.write(skinner(pos, quat).astype("<f4").tobytes())
+                fb.write(np.concatenate([pos[head_part], quat[head_part]]).astype("<f4").tobytes())
             rx, ry, _ = sim.pose()
-            w.writerow([f, f"{sim.time:.3f}", f"{x:.4f}", f"{y:.4f}", f"{yaw:.4f}",
-                        int(in_zone(m, "keep_out_zone", x, y)), f"{rx:.4f}", f"{ry:.4f}"])
+            for k, (x, y, yaw) in enumerate(states):
+                w.writerow([f, f"{sim.time:.3f}", meta["workers"][k]["id"], f"{x:.4f}", f"{y:.4f}", f"{yaw:.4f}",
+                            int(in_zone(m, "keep_out_zone", x, y)), f"{math.hypot(x - rx, y - ry):.3f}",
+                            f"{rx:.4f}", f"{ry:.4f}"])
 
     meta.update({"frames": n, "fps": args.fps, "ngeom_export": len(gids)})
     (args.out / "scene.json").write_text(json.dumps(meta))
-    print(f"{n} 프레임 → {args.out}")
+    print(f"{n} 프레임, 작업자 {len(meta['workers'])}명 → {args.out}")
 
 
 if __name__ == "__main__":
