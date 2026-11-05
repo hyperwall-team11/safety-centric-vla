@@ -196,3 +196,249 @@ def evaluate_observation_gap(
             else f"{destination_zone_id} 관측 가능한 ONLINE 센서 없음"
         ),
     )
+
+
+from collections.abc import Sequence
+from datetime import datetime, timezone
+from math import hypot, isfinite
+from typing import Any
+
+from .models import Worker, ViolationAction
+
+
+def _xy(value: Any) -> tuple[float, float] | None:
+    """Vector3 또는 딕셔너리에서 XY 좌표 추출."""
+    if isinstance(value, dict):
+        x, y = value.get("x"), value.get("y")
+    else:
+        x = getattr(value, "x", None)
+        y = getattr(value, "y", None)
+
+    if any(
+        isinstance(n, bool) or not isinstance(n, (int, float))
+        for n in (x, y)
+    ):
+        return None
+
+    if not (isfinite(x) and isfinite(y)):
+        return None
+
+    return float(x), float(y)
+
+
+def _point_to_segment_distance_xy(
+    point: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> float:
+    """점과 선분 사이 최단거리(m)."""
+    vx = end[0] - start[0]
+    vy = end[1] - start[1]
+    length_sq = vx * vx + vy * vy
+
+    if length_sq == 0:
+        return hypot(
+            point[0] - start[0],
+            point[1] - start[1],
+        )
+
+    ratio = (
+        (point[0] - start[0]) * vx
+        + (point[1] - start[1]) * vy
+    ) / length_sq
+
+    ratio = max(0.0, min(1.0, ratio))
+
+    nearest_x = start[0] + ratio * vx
+    nearest_y = start[1] + ratio * vy
+
+    return hypot(
+        point[0] - nearest_x,
+        point[1] - nearest_y,
+    )
+
+
+def evaluate_safety_distance(
+    proposal: ActionProposal,
+    robot: Robot,
+    zone: Zone | None,
+    workers: Sequence[Worker] | None,
+    *,
+    now: datetime | None = None,
+    max_worker_age_seconds: float = 2.0,
+    rule_id: str = "rule-safety-distance",
+) -> tuple[RuleResult, ViolationAction | None]:
+    """예상 경로와 작업자 사이의 안전거리 판정.
+
+    반환:
+        (RuleResult, 필요한 조치)
+
+    조치는 REJECT / ESTOP / None이다.
+    실제 로봇의 상태 변경이나 E-Stop 발행은 하지 않는다.
+    """
+
+    def reject(reason: str):
+        return (
+            RuleResult(
+                rule_id=rule_id,
+                passed=False,
+                reason=reason,
+            ),
+            ViolationAction.REJECT,
+        )
+
+    # 정지 행동은 이 거리 규칙으로 차단하지 않음
+    if proposal.action_type == "STOP":
+        return (
+            RuleResult(
+                rule_id=rule_id,
+                passed=True,
+                reason="정지 명령: 이동 거리 검사 제외",
+            ),
+            None,
+        )
+
+    # 현재 MVP에서는 모바일 로봇 이동만 지원
+    if proposal.action_type != "MOVE_TO":
+        return reject("지원하지 않는 행동 유형")
+
+    if robot.robot_type != "MOBILE":
+        return reject("MOBILE 로봇 XY 경로만 지원")
+
+    if zone is None:
+        return reject("Zone 정보 없음")
+
+    if workers is None:
+        return reject("Worker 스냅샷 누락")
+
+    warning_distance = zone.minimum_safety_distance
+    estop_distance = zone.estop_distance
+
+    if estop_distance > warning_distance:
+        return reject("Zone 안전거리 설정 오류")
+
+    # 좌표계가 다르면 거리를 계산할 수 없음
+    if (
+        proposal.frame_id not in ("map", "world")
+        or robot.pose.frame_id != proposal.frame_id
+        or zone.frame_id != proposal.frame_id
+    ):
+        return reject("로봇/Zone/경로 좌표계 불일치")
+
+    if (
+        not isfinite(max_worker_age_seconds)
+        or max_worker_age_seconds <= 0
+    ):
+        return reject("Worker 최신성 기준값 오류")
+
+    current_time = now or datetime.now(timezone.utc)
+
+    if (
+        current_time.tzinfo is None
+        or current_time.utcoffset() is None
+    ):
+        return reject("비교 시각에 시간대 정보 없음")
+
+    # 로봇 현재 위치부터 예상 경로를 검사
+    start = _xy(robot.pose.position)
+
+    if start is None or not proposal.trajectory:
+        return reject("로봇 위치 또는 예상 경로 누락")
+
+    path = [start]
+
+    for waypoint in proposal.trajectory:
+        if not isinstance(waypoint, dict):
+            return reject("예상 경로 형식 오류")
+
+        point = _xy(waypoint.get("position"))
+
+        if point is None:
+            return reject("예상 경로 좌표 오류")
+
+        path.append(point)
+
+    closest = None
+
+    # 모든 작업자에 대해 경로의 최단거리 계산
+    for worker in workers:
+        if worker.pose.frame_id != proposal.frame_id:
+            return reject("Worker 좌표계 불일치")
+
+        observed_at = worker.last_seen_at
+
+        if (
+            observed_at.tzinfo is None
+            or observed_at.utcoffset() is None
+        ):
+            return reject("Worker 관측 시각 오류")
+
+        age = (
+            current_time - observed_at
+        ).total_seconds()
+
+        if not (0 <= age < max_worker_age_seconds):
+            return reject("Worker 위치 정보가 오래됨")
+
+        worker_xy = _xy(worker.pose.position)
+
+        if worker_xy is None:
+            return reject("Worker 좌표 오류")
+
+        distance = min(
+            _point_to_segment_distance_xy(
+                worker_xy, left, right
+            )
+            for left, right in zip(path, path[1:])
+        )
+
+        if closest is None or distance < closest[0]:
+            closest = (distance, worker.worker_id)
+
+    # Worker 스냅샷은 정상적으로 전달됐지만 작업자 없음
+    if closest is None:
+        return (
+            RuleResult(
+                rule_id=rule_id,
+                passed=True,
+                reason="감지된 작업자 없음",
+            ),
+            None,
+        )
+
+    distance, worker_id = closest
+
+    if distance < estop_distance:
+        return (
+            RuleResult(
+                rule_id=rule_id,
+                passed=False,
+                reason=(
+                    f"{worker_id}: {distance:.3f}m, "
+                    "E-Stop 거리 위반"
+                ),
+            ),
+            ViolationAction.ESTOP,
+        )
+
+    if distance < warning_distance:
+        return (
+            RuleResult(
+                rule_id=rule_id,
+                passed=False,
+                reason=(
+                    f"{worker_id}: {distance:.3f}m, "
+                    "최소 안전거리 위반"
+                ),
+            ),
+            ViolationAction.REJECT,
+        )
+
+    return (
+        RuleResult(
+            rule_id=rule_id,
+            passed=True,
+            reason=f"최단거리 {distance:.3f}m: 안전",
+        ),
+        None,
+    )
