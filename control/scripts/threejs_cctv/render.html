@@ -1,0 +1,353 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Three.js CCTV</title>
+<style>html,body{margin:0;background:#000}canvas{display:block}</style>
+<script type="importmap">{"imports":{"three":"/node_modules/three/build/three.module.js","three/addons/":"/node_modules/three/examples/jsm/"}}</script>
+</head>
+<body>
+<script type="module">
+// MuJoCo ① 장면을 그대로 그린다. 좌표는 MuJoCo 월드(z 위)를 변환 없이 쓰고,
+// 카메라 자세만 MuJoCo cam_xmat에서 가져온다(MuJoCo·Three.js 카메라 모두 -z를 보고 +y가 위).
+// prop_<종류> geom은 props.js의 설비 모델로, 바닥·구역 표시는 PBR 콘크리트 + 도장 텍스처로 그린다.
+// CV 입력 영상에는 안내 문구·박스를 넣지 않는다 (시연용 HUD는 viewer.html에서만 그린다).
+import * as THREE from 'three';
+import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import { buildProp, floorTexture, backdrop, applyAssets, pbr, M } from './props.js';
+
+const W = 640, H = 480;
+const meta = await (await fetch('/data/scene.json')).json();
+const frames = new Float32Array(await (await fetch('/data/frames.bin')).arrayBuffer());
+const assets = await (await fetch('/assets/manifest.json')).json();
+const nGeom = meta.ngeom_export, nWorkers = meta.workers.length;
+const workerLen = meta.nskinvert * 3 + 7;
+const frameLen = nGeom * 12 + nWorkers * workerLen;
+
+const dec = (b64, T) => { const s = atob(b64); const u = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return new T(u.buffer); };
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1); renderer.setSize(W, H); document.body.appendChild(renderer.domElement);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+const maskRenderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true });
+maskRenderer.setPixelRatio(1); maskRenderer.setSize(W, H); document.body.appendChild(maskRenderer.domElement);
+maskRenderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+
+const scene = new THREE.Scene();
+// HDRI: 하늘 배경 + 반사·확산 조명. HDRI는 y가 위이므로 MuJoCo z-위 세계에 맞게 돌린다.
+const hdr = await new RGBELoader().loadAsync('/assets/' + assets.hdri);
+hdr.mapping = THREE.EquirectangularReflectionMapping;
+scene.background = hdr; scene.environment = hdr;
+if (!location.search.includes("norot")) { scene.backgroundRotation.set(-Math.PI / 2, 0, 0); scene.environmentRotation.set(-Math.PI / 2, 0, 0); }
+if (location.search.includes("nofog")) scene.fog = null;
+scene.backgroundIntensity = 1.0; scene.environmentIntensity = 1.1;
+scene.fog = new THREE.Fog(0xc4c9cc, 30, 70);
+
+await applyAssets(assets, '/assets/');
+
+// Cycles로 구운 바닥 라이트맵 (blender_render.py --bake). 있으면 바닥은 구운 모습 + 움직이는 물체의 실시간 그림자만 쓴다.
+const bakeTex = location.search.includes('nobake') ? null
+  : await new THREE.TextureLoader().loadAsync('/data/floor_bake.png').catch(() => null);
+if (bakeTex) { bakeTex.colorSpace = THREE.SRGBColorSpace; bakeTex.flipY = false; bakeTex.anisotropy = 16; }
+// 움직이는 geom(로봇): 프레임 사이 자세가 바뀌는 것
+const movingGeom = new Set();
+for (let i = 0; i < nGeom; i++) for (let f = 1; f < meta.frames; f += 10) {
+  let d = 0; for (let k = 0; k < 12; k++) d = Math.max(d, Math.abs(frames[f * frameLen + i * 12 + k] - frames[i * 12 + k]));
+  if (d > 1e-5) { movingGeom.add(i); break; } }
+
+const maskable = [];
+const addMaskable = obj => obj.traverse(o => { if (o.isMesh) { o.userData.normal = o.material; maskable.push(o); } });
+
+const zonesAt = new Set(['keep_out_zone', 'zone_a_marking', 'zone_b_marking']);
+const geomObjs = [];
+const meshCache = {};
+let propIndex = 0, floorSize = [6, 6];
+for (const g of meta.geoms) {
+  const [sx, sy, sz] = g.size;
+  let obj = null;
+  if (g.name.startsWith('prop_')) {
+    obj = buildProp(g.name, g.size, propIndex++);
+  } else if (!zonesAt.has(g.name)) {
+    let geo;
+    switch (g.type) {
+      case 0: geo = new THREE.PlaneGeometry(2 * sx, 2 * sy); break;
+      case 2: geo = new THREE.SphereGeometry(sx, 24, 16); break;
+      case 3: geo = new THREE.CapsuleGeometry(sx, 2 * sy, 8, 16).rotateX(Math.PI / 2); break;
+      case 4: geo = new THREE.SphereGeometry(1, 24, 16).scale(sx, sy, sz); break;
+      case 5: geo = new THREE.CylinderGeometry(sx, sx, 2 * sy, 32).rotateX(Math.PI / 2); break;
+      case 6: geo = new THREE.BoxGeometry(2 * sx, 2 * sy, 2 * sz); break;
+      case 7: {
+        if (!meshCache[g.mesh]) {
+          const m = meta.meshes[g.mesh];
+          const b = new THREE.BufferGeometry();
+          b.setAttribute('position', new THREE.BufferAttribute(dec(m.vert, Float32Array), 3));
+          b.setIndex(new THREE.BufferAttribute(dec(m.face, Uint32Array), 1));
+          meshCache[g.mesh] = b.toNonIndexed(); meshCache[g.mesh].computeVertexNormals();
+        }
+        geo = meshCache[g.mesh]; break;
+      }
+    }
+    if (geo) {
+      let mat;
+      if (g.type === 0) {
+        floorSize = [sx, sy];
+        mat = pbr('floor', sx / 2, sy / 2, { color: new THREE.Color(2.6, 2.55, 2.45) });   // 텍스처가 어두워 밝기를 올린다
+        obj = new THREE.Group();
+        if (bakeTex) mat = new THREE.MeshBasicMaterial({ map: bakeTex });
+        const base = new THREE.Mesh(geo, mat); base.receiveShadow = !bakeTex; obj.add(base);
+        if (bakeTex) {   // 로봇·작업자 그림자만 받는 투명 판
+          const sh = new THREE.Mesh(geo, new THREE.ShadowMaterial({ opacity: 0.5, polygonOffset: true, polygonOffsetFactor: -4 }));
+          sh.position.z = 0.004; sh.receiveShadow = true; obj.add(sh);
+        }
+        const paintMat = new THREE.MeshStandardMaterial({
+          map: floorTexture(sx, sy, meta.zone_rects), transparent: true, roughness: 0.75,
+          polygonOffset: true, polygonOffsetFactor: -2 });
+        paintMat.name = 'floor_paint'; window.floorPaint = paintMat.map;
+        const paint = new THREE.Mesh(geo, paintMat);
+        paint.position.z = 0.002; paint.receiveShadow = true; paint.visible = !bakeTex; obj.add(paint);
+      } else {
+        if (g.name.startsWith('table_')) mat = g.name.endsWith('top') ? M.galv : M.darkSteel;   // 철제 작업대
+        else mat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(...g.rgba.slice(0, 3), THREE.SRGBColorSpace), roughness: 0.4, metalness: 0.15 });
+        obj = new THREE.Mesh(geo, mat); obj.castShadow = true; obj.receiveShadow = true;
+      }
+    }
+  }
+  if (obj) { obj.matrixAutoUpdate = false; scene.add(obj); addMaskable(obj);
+    // 구운 바닥을 쓰면 정적 물체의 그림자는 이미 바닥에 있으므로 실시간 그림자는 움직이는 물체만 드리운다
+    if (bakeTex && !movingGeom.has(geomObjs.length)) obj.traverse(o => { if (o.isMesh) o.castShadow = false; }); }
+  geomObjs.push(obj);
+}
+
+const bd = backdrop(...floorSize); scene.add(bd); addMaskable(bd);
+if (bakeTex) bd.traverse(o => { if (o.isMesh) o.castShadow = false; });
+
+// glTF 소품 (작업자 이동 범위 밖 가장자리에만 둔다: MuJoCo에 없는 물체가 작업자를 가리면 안 되므로)
+const gltf = new GLTFLoader();
+const DECOR = [
+  ['barrel_03', [[-5.6, -2.9, 0], [-6.3, -3.3, 0.6], [-5.9, -3.9, 1.4]]],
+  ['propane_tank', [[-6.8, -4.6, 0], [-7.2, -4.2, 0.4]]],
+  ['wooden_crate_02', [[-3.6, 6.4, 0], [-2.7, 6.5, 0.3], [-3.2, 6.6, 0]]],
+  ['cardboard_box_01', [[4.2, 6.6, 0], [4.7, 6.7, 0.5]]],
+  ['concrete_road_barrier', [[4.6, -6.6, 0], [6.2, -6.6, 0], [7.8, -6.6, 0]]],
+  ['korean_fire_extinguisher_01', [[7.25, -4.3, -1.57]]],
+  ['power_box_01', [[7.38, -3.7, -1.57]]],
+  ['tool_cart', [[-1.1, 4.4, 0.3]]],
+  ['portable_welding_cart', [[6.0, 4.4, 2.0]]],
+  ['worn_metal_rack', [[11.0, 3.6, -1.57], [11.0, 1.6, -1.57]]],
+  ['plastic_crate_01', [[10.2, 5.0, 0], [10.2, 5.0, 0.2]]],
+  ['metal_trash_can', [[6.3, -5.7, 0]]],
+];
+for (const [name, places] of DECOR) {
+  if (!assets.models[name]) continue;
+  const src = (await gltf.loadAsync('/assets/' + assets.models[name])).scene;
+  places.forEach(([x, y, yaw], i) => {
+    const o = src.clone(true);
+    o.rotation.set(Math.PI / 2, yaw, 0, 'XYZ');   // glTF y-위 → MuJoCo z-위
+    o.position.set(x, y, name === 'power_box_01' ? 1.0 : (name === 'barrel_03' && i === 2 ? 0 : 0));
+    o.traverse(m => { if (m.isMesh) { m.castShadow = !bakeTex; m.receiveShadow = true; } });
+    o.userData.decor = true; scene.add(o); addMaskable(o);
+  });
+}
+
+// 작업자: skin 메시(작업자마다 정점 버퍼만 따로) + 안전조끼 텍스처 + 안전모
+const tl = new THREE.TextureLoader();
+const texCache = {};
+const tex = async f => texCache[f] ??= await tl.loadAsync('/data/' + f).then(t => { t.colorSpace = THREE.SRGBColorSpace; t.flipY = false; t.anisotropy = 8; return t; });
+const HELMET = { white: 0xf2f2ee, yellow: 0xf5c518, orange: 0xf26b1d };
+const workers = [];
+for (let k = 0; k < nWorkers; k++) {
+  const wk = meta.workers[k], parts = [];
+  for (const s of meta.skins) {
+    if (!s.render) continue;
+    const b = new THREE.BufferGeometry();
+    b.setAttribute('position', new THREE.BufferAttribute(new Float32Array(s.vertnum * 3), 3));
+    b.setAttribute('uv', new THREE.BufferAttribute(dec(s.uv, Float32Array), 2));
+    b.setIndex(new THREE.BufferAttribute(dec(s.face, Uint32Array), 1));
+    const file = s.name === 'worker_male_casualsuit04' ? wk.suit : s.texture;
+    const mat = new THREE.MeshStandardMaterial({ map: await tex(file), roughness: 0.85, metalness: 0, side: THREE.DoubleSide });
+    if (s.name === 'worker_male_casualsuit04') mat.roughness = 0.7;
+    const o = new THREE.Mesh(b, mat); o.castShadow = o.receiveShadow = true; o.frustumCulled = false;
+    o.userData = { normal: mat, skin: s }; scene.add(o); parts.push(o);
+  }
+  // 안전모: 반구 + 챙. 머리 바디 좌표의 정수리 위치에 붙인다.
+  const helmet = new THREE.Group();
+  const hm = new THREE.MeshStandardMaterial({ color: HELMET[wk.helmet] || 0xffffff, roughness: 0.35, metalness: 0 });
+  const cap = new THREE.Mesh(new THREE.SphereGeometry(0.135, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2), hm);
+  cap.scale.set(1.0, 1.12, 0.85);
+  const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.165, 0.012, 32), hm); brim.scale.set(1, 1.2, 1); brim.position.y = 0.0;
+  const inner = new THREE.Group(); inner.add(cap, brim);
+  inner.children.forEach(c => { c.castShadow = true; });
+  helmet.add(inner); helmet.matrixAutoUpdate = false; scene.add(helmet);
+  workers.push({ parts, helmet, inner, hm });
+}
+
+// 햇빛(그림자). HDRI가 하늘·확산광을 맡는다.
+const sun = new THREE.DirectionalLight(0xfff0d8, 3.0);
+sun.position.set(-9, -12, 18); sun.target.position.set(1, 0, 0);
+sun.castShadow = true; sun.shadow.mapSize.set(4096, 4096);
+Object.assign(sun.shadow.camera, { left: -20, right: 20, top: 20, bottom: -20, near: 1, far: 50 });
+sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.02; sun.shadow.radius = 2;
+scene.add(sun, sun.target);
+
+// 후처리: GTAO(구석 그림자) → 톤매핑 → CCTV 효과(노이즈·비네팅·약한 색 바램). 이후 JPEG 압축을 한 번 거친다.
+const CCTV = {
+  uniforms: { tDiffuse: { value: null }, seed: { value: 0 }, res: { value: new THREE.Vector2(W, H) } },
+  vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
+  fragmentShader: `uniform sampler2D tDiffuse; uniform float seed; uniform vec2 res; varying vec2 vUv;
+    float h(vec2 p){ return fract(sin(dot(p, vec2(12.9898,78.233)) + seed) * 43758.5453); }
+    void main(){
+      vec2 px = 1.0 / res;
+      vec3 c = texture2D(tDiffuse, vUv).rgb;
+      vec3 b = (texture2D(tDiffuse, vUv + vec2(px.x,0.)).rgb + texture2D(tDiffuse, vUv - vec2(px.x,0.)).rgb
+              + texture2D(tDiffuse, vUv + vec2(0.,px.y)).rgb + texture2D(tDiffuse, vUv - vec2(0.,px.y)).rgb) * 0.25;
+      c = mix(c, b, 0.35);                                        // 저가 렌즈의 약한 흐림
+      float l = dot(c, vec3(0.299,0.587,0.114));
+      c = mix(vec3(l), c, 0.85) * vec3(1.0, 1.0, 1.03);           // 채도 감소·약한 푸른 기
+      vec2 d = vUv - 0.5; c *= 1.0 - 0.35 * dot(d, d) * 2.0;      // 비네팅
+      c += (h(vUv * res) - 0.5) * 0.045;                          // 센서 노이즈
+      gl_FragColor = vec4(c, 1.0);
+    }`,
+};
+const cams = {}, composers = {}, cctvPasses = {};
+for (const [name, c] of Object.entries(meta.cameras)) {
+  const cam = new THREE.PerspectiveCamera(c.fovy, c.width / c.height, 0.1, 120);
+  const R = c.mat, p = c.pos;
+  new THREE.Matrix4().set(R[0], R[1], R[2], p[0], R[3], R[4], R[5], p[1], R[6], R[7], R[8], p[2], 0, 0, 0, 1)
+    .decompose(cam.position, cam.quaternion, cam.scale);
+  cam.updateMatrixWorld(true); cams[name] = cam;
+  // 다중 샘플 렌더 타깃: 후처리를 거쳐도 안티에일리어싱 유지
+  const comp = new EffectComposer(renderer, new THREE.WebGLRenderTarget(W, H, { samples: 4, type: THREE.HalfFloatType }));
+  comp.setSize(W, H);
+  comp.addPass(new RenderPass(scene, cam));
+  const ao = new GTAOPass(scene, cam, W, H); ao.blendIntensity = 0.9;
+  ao.updateGtaoMaterial({ radius: 0.5, distanceFallOff: 1.0, thickness: 1.0, scale: 1.0 });
+  if (!location.search.includes("noao")) comp.addPass(ao);
+  comp.addPass(new OutputPass());
+  const cp = new ShaderPass(CCTV); comp.addPass(cp);
+  composers[name] = comp; cctvPasses[name] = cp;
+}
+
+const q = new THREE.Quaternion(), v = new THREE.Vector3(), up = new THREE.Vector3();
+const hOff = new THREE.Vector3(...meta.helmet_offset);
+function setFrame(f) {
+  const base = f * frameLen, t = f / meta.fps;
+  geomObjs.forEach((o, i) => {
+    if (!o) return;
+    const k = base + i * 12, p = frames.subarray(k, k + 3), R = frames.subarray(k + 3, k + 12);
+    o.matrix.set(R[0], R[1], R[2], p[0], R[3], R[4], R[5], p[1], R[6], R[7], R[8], p[2], 0, 0, 0, 1);
+    o.matrixWorldNeedsUpdate = true;
+    if (o.userData.update) o.userData.update(t);
+  });
+  workers.forEach((w, k) => {
+    const wb = base + nGeom * 12 + k * workerLen;
+    for (const o of w.parts) {
+      const s = o.userData.skin, pos = o.geometry.attributes.position;
+      pos.array.set(frames.subarray(wb + s.vertadr * 3, wb + (s.vertadr + s.vertnum) * 3));
+      pos.needsUpdate = true; o.geometry.computeVertexNormals();
+    }
+    const hp = frames.subarray(wb + meta.nskinvert * 3, wb + workerLen);
+    q.set(hp[4], hp[5], hp[6], hp[3]);
+    // 안전모: 머리 좌표에서 정수리 지점, 머리의 위쪽(세계 z를 머리 좌표로 옮긴 방향)을 안전모 y축으로
+    if (!w.upLocal) w.upLocal = new THREE.Vector3(0, 0, 1).applyQuaternion(q.clone().invert()).normalize();
+    v.copy(hOff).addScaledVector(w.upLocal, -0.075).applyQuaternion(q).add(new THREE.Vector3(hp[0], hp[1], hp[2]));
+    const qa = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), w.upLocal);
+    w.helmet.matrix.compose(v, q.clone().multiply(qa), new THREE.Vector3(1, 1, 1));
+    w.helmet.matrixWorldNeedsUpdate = true;
+  });
+}
+
+const black = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide });
+const ids = Array.from({ length: nWorkers }, (_, k) => new THREE.MeshBasicMaterial({ color: new THREE.Color(k + 1, 0, 0).multiplyScalar(1 / 255), side: THREE.DoubleSide }));
+const c2d = Object.assign(document.createElement('canvas'), { width: W, height: H }).getContext('2d', { willReadFrequently: true });
+
+const jpegRound = (canvas, quality) => new Promise(res => {
+  const img = new Image(); img.onload = () => { c2d.drawImage(img, 0, 0); res(c2d.canvas.toDataURL('image/png')); };
+  img.src = canvas.toDataURL('image/jpeg', quality);
+});
+
+window.renderFrame = async (camName, f) => {
+  setFrame(f);
+  cctvPasses[camName].uniforms.seed.value = (f * 7.13 + camName.length) % 100;
+  composers[camName].render();
+  const rgb = await jpegRound(renderer.domElement, 0.72);
+  // 인스턴스 마스크: 작업자 k(안전모 포함)는 R=k, 나머지는 검정 → 이진 마스크 + 작업자별 보이는 영역 상자
+  const bg = scene.background, fog = scene.fog; scene.background = new THREE.Color(0); scene.fog = null;
+  maskable.forEach(o => { o.material = black; });
+  workers.forEach((w, k) => { w.parts.forEach(o => { o.material = ids[k]; }); w.inner.children.forEach(c => { c.material = ids[k]; }); });
+  maskRenderer.render(scene, cams[camName]);
+  maskable.forEach(o => { o.material = o.userData.normal; });
+  workers.forEach(w => { w.parts.forEach(o => { o.material = o.userData.normal; }); w.inner.children.forEach(c => { c.material = w.hm; }); });
+  scene.background = bg; scene.fog = fog;
+  c2d.drawImage(maskRenderer.domElement, 0, 0);
+  const img = c2d.getImageData(0, 0, W, H), d = img.data;
+  const boxes = workers.map(() => ({ x0: W, y0: H, x1: -1, y1: -1, pixels: 0 }));
+  for (let i = 0; i < W * H; i++) {
+    const id = d[i * 4];
+    if (id > 0 && id <= nWorkers) { const b = boxes[id - 1], x = i % W, y = (i / W) | 0;
+      b.pixels++; if (x < b.x0) b.x0 = x; if (x > b.x1) b.x1 = x; if (y < b.y0) b.y0 = y; if (y > b.y1) b.y1 = y; }
+    const on = id > 0 ? 255 : 0; d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = on; d[i * 4 + 3] = 255;
+  }
+  c2d.putImageData(img, 0, 0);
+  const mask = c2d.canvas.toDataURL('image/png');
+  return { rgb, mask, boxes: boxes.map((b, k) => ({ worker_id: meta.workers[k].id, ...(b.pixels ? b : { pixels: 0 }) })) };
+};
+// Blender Cycles 렌더용: 작업자·조명을 뺀 정적 장면을 GLB로 내보낸다 (프레임 0 자세).
+// geom 객체 이름은 geom_<frames.bin 순서>. glTF는 y가 위이므로 루트를 x축 -90° 돌려 넣고, Blender 가져오기가 다시 z-위로 되돌린다.
+window.exportGLB = async () => {
+  setFrame(0);
+  const root = new THREE.Group(); root.rotation.x = -Math.PI / 2; root.updateMatrix();
+  const keep = [];
+  scene.children.slice().forEach(o => {
+    if (o.isLight || o.userData.decor || workers.some(w => w.helmet === o || w.parts.includes(o))) return;
+    keep.push(o); root.add(o);
+  });
+  geomObjs.forEach((o, i) => { if (!o) return; o.name = `geom_${i}`;
+    o.matrix.decompose(o.position, o.quaternion, o.scale); o.matrixAutoUpdate = true; });
+  // 파일 텍스처(PBR jpg)는 빼고 내보낸다: Blender가 assets/의 원본을 다시 붙인다. 캔버스 텍스처(도장·표지판)는 그대로 둔다.
+  const KEYS = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap'], stash = [];
+  root.traverse(o => { if (!o.isMesh) return; (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => {
+    KEYS.forEach(k => { const t = m[k]; if (t && !(t.image instanceof HTMLCanvasElement)) { stash.push([m, k, t]); m[k] = null; } }); }); });
+  console.log('export start');
+  const glb = await new GLTFExporter().parseAsync(root, { binary: true, maxTextureSize: 4096 });
+  console.log('export done', glb.byteLength);
+  stash.forEach(([m, k, t]) => { m[k] = t; });
+  keep.forEach(o => scene.add(o));
+  geomObjs.forEach(o => { if (o) o.matrixAutoUpdate = false; });
+  await fetch('/upload/scene.glb', { method: 'POST', body: glb });
+  // 바닥 도장은 투명도가 필요해 PNG로 따로 보낸다 (GLTFExporter는 큰 캔버스를 JPG로 바꾼다)
+  const png = await new Promise(r => window.floorPaint.image.toBlob(r, 'image/png'));
+  await fetch('/upload/floor_paint.png', { method: 'POST', body: png });
+  await fetch('/upload/decor.json', { method: 'POST', body: JSON.stringify(DECOR) });
+  return { bytes: glb.byteLength, stripped: stash.length };
+};
+window.meta = { frames: meta.frames, fps: meta.fps, cameras: meta.cameras, workers: meta.workers, zone_rects: meta.zone_rects };
+// 실시간 재생: render.html?live&cam=cctv_1 → 시뮬레이션 시각에 맞춰 계속 렌더하고 FPS를 표시한다
+if (location.search.includes('live')) {
+  const camName = new URLSearchParams(location.search).get('cam') || 'cctv_1';
+  maskRenderer.domElement.style.display = 'none';
+  const hud = Object.assign(document.createElement('div'), { style: 'position:fixed;left:8px;top:490px;color:#0f0;font:14px monospace' });
+  document.body.appendChild(hud);
+  let t0 = performance.now(), n = 0, last = performance.now();
+  const loop = () => {
+    const now = performance.now(), f = Math.floor(((now - t0) / 1000) * meta.fps) % meta.frames;
+    setFrame(f); cctvPasses[camName].uniforms.seed.value = (now * 0.01) % 100; composers[camName].render();
+    if (++n % 30 === 0) { hud.textContent = `${camName} frame ${f}  ${(30000 / (now - last)).toFixed(1)} FPS`; last = now; }
+    requestAnimationFrame(loop);
+  };
+  loop();
+}
+window.ready = true;
+</script>
+</body>
+</html>
