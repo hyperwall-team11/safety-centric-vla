@@ -17,6 +17,7 @@
 | 문서 | 버전 | 내용 |
 |---|---|---|
 | [backend-api-spec-v0.2.md](backend-api-spec-v0.2.md) | v0.2 (As-Built) | 현재 FastAPI 17개 path·20개 operation의 요청·응답·상태 전이·오류와 목표 인터페이스 대비 미구현 범위 |
+| [backend-ctl-contract-v0.1.md](backend-ctl-contract-v0.1.md) | v0.1 Draft | 승인 Action ROS 2 전송, ACK·RESULT, E-Stop·Heartbeat, 상태 전이의 Backend–CTL 연동 계약 |
 
 기준 문서의 `/api/v1/...` 표는 목표 인터페이스이며, 현재 호출 가능한 경로는 구현 명세와 FastAPI `/openapi.json`을 기준으로 합니다.
 
