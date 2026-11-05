@@ -46,6 +46,66 @@ python observation_export.py \
 
 현재 Florence-2 `<OD>` 출력에는 신뢰도 점수가 없습니다. 따라서 실제 출력은 `pending_confidence`에 보류되고, 필수 `confidence`가 없는 값을 완전한 `Observation`이나 안전 판단 입력으로 사용하지 않습니다. 향후 **검증된 탐지기**가 `<OD>` 결과에 상자별 `scores` 배열을 제공하면 `observations`에 스키마 v1.1의 필수 필드를 갖춘 레코드가 나옵니다. 임의의 점수나 고정값을 넣지 마세요. 현재 백엔드 `Observation` 모델은 v1.1의 선택 필드(`bbox`, `position_source`, `ingested_at`)를 받지 않고 등록 API도 없으므로, 서버 연결은 ONT 담당과 인터페이스를 정한 뒤 진행합니다.
 
+## 민서님 MuJoCo 카메라 토픽 연결
+
+`ros_camera_detect.py`는 CTL 브리지의 `/cctv_1/image_raw`를 구독해 최신 RGB 프레임을 Florence-2 `<OD>`에 입력합니다. 결과는 프레임 시각·카메라 ID·작업자 바운딩 박스가 담긴 JSONL로 저장합니다. 모델 추론이 카메라보다 느리면 오래된 프레임을 쌓지 않고 최신 프레임으로 넘어갑니다.
+
+CTL #7·#15가 병합된 `develop`(`bd2a543`)을 CV 브랜치에 반영했습니다. 이 체크아웃의 `control/`에서 브리지를, `mujoco-demo/`에서 CV 노드를 서로 다른 터미널로 실행할 수 있습니다. 카메라 영상이 필요할 때는 뷰어가 아닌 `pixi run bridge`를 사용합니다.
+
+```bash
+cd control
+pixi run bridge
+```
+
+같은 ROS 2 네트워크의 다른 터미널에서, **ROS 2 Humble의 `rclpy`·`sensor_msgs`와 CUDA PyTorch·Transformers가 같은 Python 환경에 있는 상태**로 실행합니다. CTL의 RoboStack 환경은 Python 3.12이고 기존 Florence 서버 기록은 Python 3.13이므로, 두 환경을 그대로 함께 source하면 호환된다고 가정할 수 없습니다. GPU 서버에서 사용할 공통 Python·ROS 환경과 토픽 접근을 먼저 확인합니다.
+
+```bash
+cd mujoco-demo
+python check_camera_env.py
+python ros_camera_detect.py \
+  --topic /cctv_1/image_raw \
+  --model /path/to/florence-2-base \
+  --output vlm_results/ros_camera.jsonl \
+  --max-frames 30
+```
+
+환경 점검은 모듈 import와 CUDA만 확인합니다. 별도로 `ros2 topic info /cctv_1/image_raw -v`와 `ros2 topic hz /cctv_1/image_raw`로 메시지 타입·발행자·주기를 확인하세요. Mac 브리지는 `ROS_LOCALHOST_ONLY=1`이므로 학교 GPU 서버로의 전송은 [#16](https://github.com/hyperwall-team11/safety-centric-vla/issues/16)에서 실행 위치·연결 방식을 확정해야 합니다.
+
+수신과 추론은 별도 callback group 및 두 executor 스레드에서 실행합니다. 최신 프레임 하나만 보관하며 수신 후 로컬 대기가 500ms를 넘으면 버립니다. 15초 동안 입력이 없으면 요약을 쓰고 종료 코드 2로 끝납니다. 이 기준은 `--max-frame-age-ms`, `--idle-timeout-seconds`로 바꿀 수 있습니다.
+
+30프레임 확인 후 `--max-frames 30` 대신 `--duration-seconds 60`으로 실행하면 첫 수신부터 최소 60초 구간을 확인할 수 있습니다. 결과 JSONL과 함께 `ros_camera.summary.json` 같은 요약 파일에 처리 건수, 로컬 처리율, 처리 지연 p95, 대기 지연 p95, 교체·폐기 건수가 기록됩니다. `received_callbacks`는 Python 콜백에 도착한 건수여서 DDS에서 이미 버린 프레임까지 세지는 못합니다. 원래 ROS 시각은 `stamp`에, 수신 UTC는 `received_at_utc`에 별도 기록합니다. 두 시계가 같다고 가정하지 않으며 로컬 대기 시간은 네트워크·촬영부터의 전체 지연이 아닙니다.
+
+다른 영상 토픽은 `/cctv_2/image_raw`, `/robot/head_camera/image_raw`입니다. 각 카메라의 `.../camera_info`와 TF, 정답 비교용 `/sim/worker_pose`·`/sim/worker_in_keep_out`도 CTL 브리지가 발행합니다. `--topic`을 여러 번 주면 여러 카메라를 한 탐지기로 번갈아 처리합니다(아래 "여러 카메라와 미탐지 프레임 저장"). Florence-2 `<OD>`가 신뢰도 점수를 내지 않으면 `pending_confidence=true`로 표시하며, 안전 판정용 `Observation`·`HazardEvent`를 발행하지 않습니다. ROS 2 카메라 입력부터 모델 출력까지의 실제 동작·처리율은 아직 측정하지 않았습니다.
+
+### 탐지기 선택
+
+`--detector rtdetr`로 RT-DETR(`PekingU/rtdetr_r50vd`, COCO 학습)을 쓸 수 있습니다. 기본값은 기존과 같은 `florence2`입니다. 2026-11-02 측정에서 Florence-2의 1분 처리율이 7 Hz 미만이었으므로, 개발계획서 5-2의 경량 탐지기 전환 규칙에 따라 추가했습니다. YOLO 계열 대신 RT-DETR을 고른 이유는 Apache-2.0 라이선스이고, 현재 환경의 Transformers로 추가 설치 없이 쓸 수 있기 때문입니다. 모델 가중치의 라이선스와 사용 조건은 모델 카드에서 따로 확인하세요.
+
+```bash
+python ros_camera_detect.py --detector rtdetr --model /path/to/rtdetr_r50vd \
+  --topic /cctv_1/image_raw --output vlm_results/ros_camera_rtdetr.jsonl --duration-seconds 60
+```
+
+- RT-DETR은 상자별 점수를 줍니다. `person`이면서 점수가 0.5(계획서의 WORKER 임계) 이상인 상자만 `people`에 넣고 `confidence`를 채웁니다.
+- 두 탐지기 모두 모델이 낸 라벨 전체를 `all_detections`에 기록합니다. RT-DETR은 점수 0.3 이상만 남깁니다. 미탐지가 "못 찾음"인지 "다른 라벨"인지 구분하는 분석용이며 작업자 판정에는 쓰지 않습니다.
+- `generation_ms`는 Florence-2에서는 생성 시간, RT-DETR에서는 모델 순전파 시간입니다. 둘 다 전처리·후처리를 제외합니다.
+- 2026-11-03 서버 측정에서 RT-DETR은 13.71 Hz였지만 현재 CTL 마네킹을 작업자로 한 번도 잡지 못했습니다(0%). 상세는 `benchmarks/2026-11-02-dis01-ros-camera.md`에 있습니다.
+
+### 여러 카메라와 미탐지 프레임 저장
+
+```bash
+python ros_camera_detect.py --topic /cctv_1/image_raw --topic /cctv_2/image_raw \
+  --model /path/to/florence-2-base --output vlm_results/ros_camera_2cam.jsonl \
+  --duration-seconds 60 --save-misses-dir vlm_results/misses_2cam
+```
+
+- 탐지기 하나가 카메라마다 최신 프레임 하나를 보관하고 차례대로 처리합니다. 한 카메라의 프레임만 들어와 있으면 그 카메라를 처리합니다.
+- 요약의 `per_topic`에 카메라별 처리 건수·처리율·지연 p95가, 최상위에 전체 합계가 들어갑니다. 카메라별 처리율은 같은 탐지기를 나눠 쓴 값입니다.
+- 어느 한 카메라라도 `--idle-timeout-seconds` 동안 입력이 없으면 종료 코드 2로 끝납니다.
+- `--batch-cameras`를 주면 카메라마다 들어와 있는 최신 프레임을 모아 모델을 한 번만 호출합니다. 이때 `generation_ms`와 `processing_ms`는 묶음 전체 시간이며 기록의 `batch_size`에 묶음 크기가 남습니다.
+- `--num-beams`는 Florence-2 생성의 빔 수입니다(기본 3, 기존과 같음). 줄이면 빨라질 수 있지만 탐지 결과가 달라질 수 있어 정답 비교로 확인한 뒤 바꿉니다.
+- `--save-misses-dir`를 주면 작업자(`people`)가 없는 입력 프레임을 `<카메라>_<sec>_<nanosec>.png`로 저장하고 기록의 `saved_frame`에 경로를 남깁니다. 저장은 기본 300장까지(`--max-saved-misses`)이며 저장 시간은 `processing_ms`에 넣지 않지만 다음 프레임 처리를 늦출 수 있습니다. 처리율을 잴 때는 저장 없이 따로 실행하세요.
+
 ## 연속 추론 속도 측정 (CV-03)
 
 GPU 할당을 받은 터미널에서 아래처럼 실행하면 모델 로드와 워밍업 3회를 제외하고 두 정지 이미지를 순서대로 **60초 이상 반복 추론**합니다. 출력은 `vlm_results/benchmark.json`에 저장됩니다.
