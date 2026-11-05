@@ -49,6 +49,25 @@ class LatestFrameBuffer:
                     "last_received_monotonic": self.last_received}
 
 
+def take_round_robin(buffers, start):
+    """Take a pending frame, checking buffers from ``start`` so every camera gets a turn.
+
+    Returns ``(index, frame)`` or ``(None, None)`` when no buffer has a frame.
+    """
+    for offset in range(len(buffers)):
+        index = (start + offset) % len(buffers)
+        frame = buffers[index].take()
+        if frame is not None:
+            return index, frame
+    return None, None
+
+
+def frame_file_name(sensor_id, sec, nanosec):
+    """Stable PNG name from the camera and its publisher stamp."""
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in sensor_id) or "camera"
+    return f"{safe}_{sec}_{nanosec:09d}.png"
+
+
 def rgb_image(msg):
     """Convert rgb8 data, including padded rows, without importing ROS 2."""
     if msg.encoding != "rgb8":

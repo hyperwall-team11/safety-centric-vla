@@ -7,7 +7,8 @@ from threading import Event, Thread
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from camera_frames import LatestFrameBuffer, person_detections, rgb_image
+from camera_frames import (LatestFrameBuffer, frame_file_name, person_detections, rgb_image,
+                           take_round_robin)
 
 
 class CameraFrameTests(unittest.TestCase):
@@ -61,6 +62,28 @@ class CameraFrameTests(unittest.TestCase):
         frames = LatestFrameBuffer()
         frames.put("frame")
         self.assertTrue(frames.take().received_at_utc.endswith("+00:00"))
+
+    def test_round_robin_gives_each_camera_a_turn(self):
+        first, second = LatestFrameBuffer(), LatestFrameBuffer()
+        buffers = [first, second]
+        self.assertEqual(take_round_robin(buffers, 0), (None, None))
+        first.put("a1")
+        second.put("b1")
+        index, frame = take_round_robin(buffers, 0)
+        self.assertEqual((index, frame.message), (0, "a1"))
+        first.put("a2")
+        index, frame = take_round_robin(buffers, index + 1)
+        self.assertEqual((index, frame.message), (1, "b1"))
+        index, frame = take_round_robin(buffers, (index + 1) % 2)
+        self.assertEqual((index, frame.message), (0, "a2"))
+        second.put("b2")
+        index, frame = take_round_robin(buffers, 0)
+        self.assertEqual((index, frame.message), (1, "b2"))
+
+    def test_frame_file_name_is_safe_and_stamp_ordered(self):
+        self.assertEqual(frame_file_name("cctv_1", 12, 5), "cctv_1_12_000000005.png")
+        self.assertEqual(frame_file_name("../x y", 1, 0), "___x_y_1_000000000.png")
+        self.assertEqual(frame_file_name("", 1, 0), "camera_1_000000000.png")
 
     def test_unscored_person_preserves_missing_confidence(self):
         result = person_detections({"bboxes": [[0, 0, 10, 10], [1, 1, 2, 2]],

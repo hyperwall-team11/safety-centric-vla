@@ -75,7 +75,7 @@ python ros_camera_detect.py \
 
 30프레임 확인 후 `--max-frames 30` 대신 `--duration-seconds 60`으로 실행하면 첫 수신부터 최소 60초 구간을 확인할 수 있습니다. 결과 JSONL과 함께 `ros_camera.summary.json` 같은 요약 파일에 처리 건수, 로컬 처리율, 처리 지연 p95, 대기 지연 p95, 교체·폐기 건수가 기록됩니다. `received_callbacks`는 Python 콜백에 도착한 건수여서 DDS에서 이미 버린 프레임까지 세지는 못합니다. 원래 ROS 시각은 `stamp`에, 수신 UTC는 `received_at_utc`에 별도 기록합니다. 두 시계가 같다고 가정하지 않으며 로컬 대기 시간은 네트워크·촬영부터의 전체 지연이 아닙니다.
 
-다른 영상 토픽은 `/cctv_2/image_raw`, `/robot/head_camera/image_raw`입니다. 각 카메라의 `.../camera_info`와 TF, 정답 비교용 `/sim/worker_pose`·`/sim/worker_in_keep_out`도 CTL 브리지가 발행합니다. 이 노드는 우선 한 카메라의 탐지 기록만 만듭니다. Florence-2 `<OD>`가 신뢰도 점수를 내지 않으면 `pending_confidence=true`로 표시하며, 안전 판정용 `Observation`·`HazardEvent`를 발행하지 않습니다. ROS 2 카메라 입력부터 모델 출력까지의 실제 동작·처리율은 아직 측정하지 않았습니다.
+다른 영상 토픽은 `/cctv_2/image_raw`, `/robot/head_camera/image_raw`입니다. 각 카메라의 `.../camera_info`와 TF, 정답 비교용 `/sim/worker_pose`·`/sim/worker_in_keep_out`도 CTL 브리지가 발행합니다. `--topic`을 여러 번 주면 여러 카메라를 한 탐지기로 번갈아 처리합니다(아래 "여러 카메라와 미탐지 프레임 저장"). Florence-2 `<OD>`가 신뢰도 점수를 내지 않으면 `pending_confidence=true`로 표시하며, 안전 판정용 `Observation`·`HazardEvent`를 발행하지 않습니다. ROS 2 카메라 입력부터 모델 출력까지의 실제 동작·처리율은 아직 측정하지 않았습니다.
 
 ### 탐지기 선택
 
@@ -89,7 +89,20 @@ python ros_camera_detect.py --detector rtdetr --model /path/to/rtdetr_r50vd \
 - RT-DETR은 상자별 점수를 줍니다. `person`이면서 점수가 0.5(계획서의 WORKER 임계) 이상인 상자만 `people`에 넣고 `confidence`를 채웁니다.
 - 두 탐지기 모두 모델이 낸 라벨 전체를 `all_detections`에 기록합니다. RT-DETR은 점수 0.3 이상만 남깁니다. 미탐지가 "못 찾음"인지 "다른 라벨"인지 구분하는 분석용이며 작업자 판정에는 쓰지 않습니다.
 - `generation_ms`는 Florence-2에서는 생성 시간, RT-DETR에서는 모델 순전파 시간입니다. 둘 다 전처리·후처리를 제외합니다.
-- RT-DETR의 실제 처리율과 탐지율은 아직 측정하지 않았습니다.
+- 2026-11-03 서버 측정에서 RT-DETR은 13.71 Hz였지만 현재 CTL 마네킹을 작업자로 한 번도 잡지 못했습니다(0%). 상세는 `benchmarks/2026-11-02-dis01-ros-camera.md`에 있습니다.
+
+### 여러 카메라와 미탐지 프레임 저장
+
+```bash
+python ros_camera_detect.py --topic /cctv_1/image_raw --topic /cctv_2/image_raw \
+  --model /path/to/florence-2-base --output vlm_results/ros_camera_2cam.jsonl \
+  --duration-seconds 60 --save-misses-dir vlm_results/misses_2cam
+```
+
+- 탐지기 하나가 카메라마다 최신 프레임 하나를 보관하고 차례대로 처리합니다. 한 카메라의 프레임만 들어와 있으면 그 카메라를 처리합니다.
+- 요약의 `per_topic`에 카메라별 처리 건수·처리율·지연 p95가, 최상위에 전체 합계가 들어갑니다. 카메라별 처리율은 같은 탐지기를 나눠 쓴 값입니다.
+- 어느 한 카메라라도 `--idle-timeout-seconds` 동안 입력이 없으면 종료 코드 2로 끝납니다.
+- `--save-misses-dir`를 주면 작업자(`people`)가 없는 입력 프레임을 `<카메라>_<sec>_<nanosec>.png`로 저장하고 기록의 `saved_frame`에 경로를 남깁니다. 저장은 기본 300장까지(`--max-saved-misses`)이며 저장 시간은 `processing_ms`에 넣지 않지만 다음 프레임 처리를 늦출 수 있습니다. 처리율을 잴 때는 저장 없이 따로 실행하세요.
 
 ## 연속 추론 속도 측정 (CV-03)
 
