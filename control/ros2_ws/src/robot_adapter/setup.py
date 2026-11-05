@@ -18,6 +18,7 @@ setup(
     entry_points={
         "console_scripts": [
             "mock_adapter = robot_adapter.mock_adapter_node:main",
+            "tiago_adapter = robot_adapter.tiago_adapter_node:main",
         ],
     },
 )

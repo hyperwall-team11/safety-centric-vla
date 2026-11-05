@@ -11,6 +11,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .action_planner import ActionPlanningError, RuleBasedActionPlanner
+from .ctl_bridge import (
+    CommandSerializationError,
+    DispatchError,
+    create_action_dispatcher,
+)
 from .models import (
     ActionProposal,
     AdapterFailureCode,
@@ -107,6 +112,64 @@ def seed_rules() -> None:
 
 
 seed_rules()
+
+
+def apply_ctl_safety_event(event: dict) -> None:
+    """CTL의 HOLD·ESTOP을 더 낮은 안전 상태로 되돌리지 않고 반영한다."""
+    kind = event.get("kind")
+    robot_id = event.get("robot_id")
+    if kind not in {"HOLD", "ESTOP"} or not isinstance(robot_id, str):
+        return
+    with store.lock:
+        robot = store.robots.get(robot_id)
+        if robot is None:
+            return
+        proposal_id = event.get("proposal_id")
+        proposals = [
+            proposal
+            for proposal in store.proposals.values()
+            if proposal.robot_id == robot_id
+            and proposal.status == ProposalStatus.EXECUTING
+            and (proposal_id is None or proposal.proposal_id == proposal_id)
+        ]
+        robot.status = RobotStatus.ESTOP if kind == "ESTOP" else RobotStatus.HOLD
+        robot.updated_at = utc_now()
+        trigger_value = event.get("triggered_by", "RULE_ENGINE")
+        try:
+            triggered_by = TriggerSource(trigger_value)
+        except ValueError:
+            triggered_by = TriggerSource.RULE_ENGINE
+        for proposal in proposals:
+            proposal.status = ProposalStatus.HELD
+            task = store.tasks.get(proposal.task_id)
+            if task is not None:
+                task.status = TaskStatus.HELD
+            store.logs.append(
+                ExecutionLog(
+                    proposal_id=proposal.proposal_id,
+                    decision=Decision.ESTOP,
+                    rule_results=[],
+                    hazard_ids=[],
+                    robot_id=robot_id,
+                    result_message=f"CTL {kind} 이벤트 수신",
+                    triggered_by=triggered_by,
+                )
+            )
+
+
+action_dispatcher = create_action_dispatcher()
+if hasattr(action_dispatcher, "safety_event_handler"):
+    action_dispatcher.safety_event_handler = apply_ctl_safety_event
+
+
+@app.on_event("startup")
+def start_action_dispatcher() -> None:
+    action_dispatcher.start()
+
+
+@app.on_event("shutdown")
+def stop_action_dispatcher() -> None:
+    action_dispatcher.stop()
 
 
 @app.get("/health")
@@ -529,6 +592,20 @@ def execute_action(proposal_id: str) -> ActionProposal:
             )
             raise HTTPException(status_code=409, detail="실행 직전 안전 재검증에 실패했습니다.")
 
+        try:
+            action_dispatcher.dispatch(
+                proposal,
+                robot,
+                list(store.zones.values()),
+            )
+        except CommandSerializationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except DispatchError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
+
         proposal.status = ProposalStatus.EXECUTING
         task.status = TaskStatus.RUNNING
         robot.status = RobotStatus.MOVING
@@ -540,7 +617,9 @@ def execute_action(proposal_id: str) -> ActionProposal:
                 rule_results=rule_results,
                 hazard_ids=hazard_ids,
                 robot_id=proposal.robot_id,
-                result_message=f"Mock adapter({robot.control_adapter})로 전달됨",
+                result_message=(
+                    f"{action_dispatcher.name} adapter({robot.control_adapter})로 전달됨"
+                ),
                 evaluated_in_ms=evaluated_in_ms,
             )
         )
@@ -612,12 +691,47 @@ def report_action_result(
         return proposal
 
 
-@app.post("/hazards", response_model=HazardEvent, status_code=status.HTTP_201_CREATED)
+
+@app.post(
+    "/hazards",
+    response_model=HazardEvent,
+    status_code=status.HTTP_201_CREATED,
+)
 def create_hazard(hazard: HazardEvent) -> HazardEvent:
     with store.lock:
+        # 1. HazardEvent ID 중복 검사
         if hazard.hazard_id in store.hazards:
-            raise HTTPException(status_code=409, detail="이미 등록된 hazard_id입니다.")
+            raise HTTPException(
+                status_code=409,
+                detail="이미 등록된 hazard_id입니다.",
+            )
+
+        # 2. 관련 Robot ID 존재 여부 검사
+        # 빈 배열은 전역 위험을 뜻하지 않으므로 허용
+        unknown_robot_ids = sorted(
+            set(hazard.related_robot_ids) - set(store.robots)
+        )
+
+        if unknown_robot_ids:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "등록되지 않은 related_robot_ids: "
+                    + ", ".join(unknown_robot_ids)
+                ),
+            )
+
+        # 3. Zone ID 존재 여부 검사
+        if hazard.zone_id not in store.zones:
+            raise HTTPException(
+                status_code=422,
+                detail=f"등록되지 않은 zone_id: {hazard.zone_id}",
+            )
+
+        # 4. 유효한 HazardEvent만 저장
+        # Observation, Worker는 현재 등록 저장소가 없어 검사 제외
         store.hazards[hazard.hazard_id] = hazard
+
         return hazard
 
 

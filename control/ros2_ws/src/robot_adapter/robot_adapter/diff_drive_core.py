@@ -113,8 +113,10 @@ class DiffDriveCore(MockRobotCore):
             return []  # 다른 명령의 결과이거나, 이쪽에서 취소한 결과 (이미 보고함)
         self._clear_motion(cancel_arm=False)
         self.status = "IDLE"
-        return [self._result(pid, bool(result.get("success")), result.get("reason_code"),
-                             result.get("message"), now)]
+        return self._remember([
+            self._result(pid, bool(result.get("success")), result.get("reason_code"),
+                         result.get("message"), now)
+        ])
 
     def _on_resume(self, msg, now):
         # /odom이 끊겨 ERROR가 된 경우, 위치가 다시 들어오면 HOLD와 같은 절차로 복귀를 허용한다
