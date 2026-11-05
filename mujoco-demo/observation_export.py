@@ -14,19 +14,28 @@ ROTATION_CONVENTION = "mujoco_camera"
 
 
 def ground_position(box, width, height, camera):
-    """Intersect the ray through a bounding box's bottom centre with the floor."""
+    """Intersect the ray through a bounding box's bottom centre with the floor.
+
+    The camera gives either ``fovy_deg`` (centred square pixels) or pinhole ``intrinsics``.
+    """
     if camera.get("rotation_convention") != ROTATION_CONVENTION:
         raise ValueError(f"Camera rotation_convention must be {ROTATION_CONVENTION}")
     x1, y1, x2, y2 = (float(value) for value in box)
     if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
         raise ValueError(f"Invalid pixel box: {box}")
 
-    fovy = float(camera["fovy_deg"])
-    if not 0 < fovy < 180:
-        raise ValueError("Camera fovy_deg must be between 0 and 180")
-    focal_px = height / (2 * math.tan(math.radians(fovy) / 2))
-    local_ray = ((x1 + x2 - width) / (2 * focal_px),
-                 (height / 2 - y2) / focal_px, -1.0)
+    if "intrinsics" in camera:  # 보정된 핀홀 카메라(fx, fy, cx, cy, 픽셀 단위)
+        k = camera["intrinsics"]
+        fx, fy, cx, cy = (float(k[name]) for name in ("fx", "fy", "cx", "cy"))
+        if fx <= 0 or fy <= 0:
+            raise ValueError("Camera fx and fy must be positive")
+    else:
+        fovy = float(camera["fovy_deg"])
+        if not 0 < fovy < 180:
+            raise ValueError("Camera fovy_deg must be between 0 and 180")
+        fx = fy = height / (2 * math.tan(math.radians(fovy) / 2))
+        cx, cy = width / 2, height / 2
+    local_ray = (((x1 + x2) / 2 - cx) / fx, (cy - y2) / fy, -1.0)
     rotation = camera["rotation_cam_to_world"]
     origin = [float(value) for value in camera["position_m"]]
     if len(origin) != 3 or len(rotation) != 3 or any(len(row) != 3 for row in rotation):
