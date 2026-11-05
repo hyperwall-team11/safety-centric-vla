@@ -677,12 +677,47 @@ def report_action_result(
         return proposal
 
 
-@app.post("/hazards", response_model=HazardEvent, status_code=status.HTTP_201_CREATED)
+
+@app.post(
+    "/hazards",
+    response_model=HazardEvent,
+    status_code=status.HTTP_201_CREATED,
+)
 def create_hazard(hazard: HazardEvent) -> HazardEvent:
     with store.lock:
+        # 1. HazardEvent ID 중복 검사
         if hazard.hazard_id in store.hazards:
-            raise HTTPException(status_code=409, detail="이미 등록된 hazard_id입니다.")
+            raise HTTPException(
+                status_code=409,
+                detail="이미 등록된 hazard_id입니다.",
+            )
+
+        # 2. 관련 Robot ID 존재 여부 검사
+        # 빈 배열은 전역 위험을 뜻하지 않으므로 허용
+        unknown_robot_ids = sorted(
+            set(hazard.related_robot_ids) - set(store.robots)
+        )
+
+        if unknown_robot_ids:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "등록되지 않은 related_robot_ids: "
+                    + ", ".join(unknown_robot_ids)
+                ),
+            )
+
+        # 3. Zone ID 존재 여부 검사
+        if hazard.zone_id not in store.zones:
+            raise HTTPException(
+                status_code=422,
+                detail=f"등록되지 않은 zone_id: {hazard.zone_id}",
+            )
+
+        # 4. 유효한 HazardEvent만 저장
+        # Observation, Worker는 현재 등록 저장소가 없어 검사 제외
         store.hazards[hazard.hazard_id] = hazard
+
         return hazard
 
 
