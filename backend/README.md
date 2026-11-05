@@ -4,11 +4,15 @@
 
 1. 자연어 작업 명령을 검증해 `TaskOrder`로 변환
 2. `TaskOrder`를 공통 `ActionProposal`로 생성하거나 VLA 제안을 등록
-3. 최소 안전규칙(로봇 상태, 제어 어댑터, 기본·로봇·Zone 속도 상한, 연결된 CRITICAL 위험) 평가
+3. 최소 안전규칙(로봇 상태, 제어 어댑터, 기본·로봇·Zone 속도 상한, KEEP_OUT, 연결된 CRITICAL 위험) 평가
 4. 승인된 제안만 mock 또는 ROS 2 제어 어댑터에 전달
 5. 승인, 거절, 실행, 완료·실패 판단을 `ExecutionLog`에 기록
 
 현재 저장소는 시연용 인메모리 구현입니다. 프로세스를 재시작하면 데이터가 초기화되며, 이후 Redis 저장소로 교체할 수 있도록 파서·안전규칙·API를 분리했습니다.
+
+금지구역 이동 경로 검사는 기존 GeoJSON `Polygon/coordinates`와
+[Backend–CTL 계약](../docs/backend-ctl-contract-v0.1.md)의 `polygon/points`를 지원합니다.
+`points`의 마지막 점과 첫 점을 연결해 경계를 검사합니다.
 
 ## 실행
 

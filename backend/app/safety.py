@@ -27,7 +27,7 @@ _GEOMETRY_EPS = 1e-9  # 부동소수점 오차 허용치(거리 안전 여유값
 
 
 # docs/ontology-schema-v1.1.md §5: KEEP_OUT 경로 교차 금지.
-# 시범 구현: GeoJSON Polygon 2D, trajectory = [{"position": {"x": ..., "y": ...}}, ...].
+# 2D GeoJSON 및 Backend–CTL polygon/points 지원. trajectory = [{"position": {"x": ..., "y": ...}}, ...].
 # 구조가 다르거나 좌표계가 다르면 안전하다고 판단하지 않는다(Fail-Closed).
 def _keep_out_result(proposal, task, zones):
     if proposal.action_type != ActionType.MOVE_TO:
@@ -87,10 +87,20 @@ def _keep_out_result(proposal, task, zones):
             if z.frame_id != proposal.frame_id:
                 return False, f"{z.zone_id} 좌표계 불일치"
             geometry = z.geometry
-            rings = geometry.get("coordinates")
-            if geometry.get("type") != "Polygon" or not isinstance(rings, list) or len(rings) != 1:
+            if geometry.get("type") == "polygon":
+                points = geometry.get("points")
+                if not isinstance(points, list) or not points:
+                    return False, f"{z.zone_id}의 잘못된 polygon points"
+                ring = [xy(*point) for point in points]
+                if ring[0] != ring[-1]:
+                    ring.append(ring[0])
+            elif geometry.get("type") == "Polygon":
+                rings = geometry.get("coordinates")
+                if not isinstance(rings, list) or len(rings) != 1:
+                    return False, f"{z.zone_id}의 지원되지 않는 geometry"
+                ring = [xy(*point) for point in rings[0]]
+            else:
                 return False, f"{z.zone_id}의 지원되지 않는 geometry"
-            ring = [xy(*point) for point in rings[0]]
             if len(ring) < 4 or ring[0] != ring[-1] or len(set(ring[:-1])) < 3:
                 return False, f"{z.zone_id}의 잘못된 Polygon"
             if abs(sum(cross((0, 0), ring[i], ring[i+1]) for i in range(len(ring)-1))) < 1e-9:
@@ -101,7 +111,7 @@ def _keep_out_result(proposal, task, zones):
                    for a, b in zip(path, path[1:])
                    for c, d in zip(ring, ring[1:])):
                 return False, f"{z.zone_id} KEEP_OUT 구역 교차"
-    except (KeyError, TypeError, ValueError, IndexError) as exc:
+    except (KeyError, TypeError, ValueError, IndexError, OverflowError) as exc:
         return False, f"검증 불가능한 경로 또는 geometry: {exc}"
     return True, "KEEP_OUT 구역과 경로 교차 없음"
 
