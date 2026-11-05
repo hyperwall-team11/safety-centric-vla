@@ -106,6 +106,30 @@ python ros_camera_detect.py --topic /cctv_1/image_raw --topic /cctv_2/image_raw 
 - `--num-beams`는 Florence-2 생성의 빔 수입니다(기본 3, 기존과 같음). 줄이면 빨라질 수 있지만 탐지 결과가 달라질 수 있어 정답 비교로 확인한 뒤 바꿉니다.
 - `--save-misses-dir`를 주면 작업자(`people`)가 없는 입력 프레임을 `<카메라>_<sec>_<nanosec>.png`로 저장하고 기록의 `saved_frame`에 경로를 남깁니다. 저장은 기본 300장까지(`--max-saved-misses`)이며 저장 시간은 `processing_ms`에 넣지 않지만 다음 프레임 처리를 늦출 수 있습니다. 처리율을 잴 때는 저장 없이 따로 실행하세요.
 
+### 카메라 보정 파일
+
+바닥 위치 투영(센서·작업자 스냅샷, HazardEvent)에는 고정 CCTV의 위치·방향·렌즈 정보가 필요합니다. `--camera-calib <파일>`을 주면 MuJoCo를 읽지 않고 이 파일만 쓰므로, MuJoCo 렌더링·Three.js 렌더링·실제 CCTV 어느 영상에도 같은 CV 노드를 쓸 수 있습니다. 파일이 없으면 기존처럼 `--scene`의 MuJoCo 장면에서 읽고 640×480으로 가정합니다.
+
+```bash
+# 시나리오 장면의 CCTV 2대 보정 파일 (저장소에 cameras/scenario_cctv.json으로 포함)
+python camera_calib.py --scene ../control/mujoco/models/scenario_scene.xml \
+  --camera cctv_1 --camera cctv_2 --output cameras/scenario_cctv.json
+```
+
+```json
+{"version": 1, "cameras": [{
+  "sensor_id": "cctv_1", "topic": "/cctv_1/image_raw", "width": 640, "height": 480,
+  "position_m": [1.2, -4.2, 3.2],
+  "rotation_cam_to_world": [[1, 0, 0], [0, 0.568, -0.823], [0, 0.823, 0.568]],
+  "rotation_convention": "mujoco_camera", "world_frame": "mujoco_z_up",
+  "fovy_deg": 60, "ground_plane_z_m": 0.0}]}
+```
+
+- 위치·방향은 백엔드 Zone과 같은 월드 좌표(z 위)입니다. Three.js 좌표(y 위)로 적었다면 `"world_frame": "threejs_y_up"`을 주면 변환합니다(MuJoCo `(x, y, z)` = Three.js `(x, z, -y)`).
+- 방향은 `rotation_cam_to_world`(3×3, 카메라 축을 월드에서 본 열) 또는 `quaternion_wxyz` 중 하나입니다. 축 규약은 `mujoco_camera`(x 오른쪽, y 위, -z 앞, Three.js 카메라와 같음) 또는 `ros_optical`(x 오른쪽, y 아래, z 앞)입니다.
+- 렌즈는 `fovy_deg`(정사각 픽셀, 중심 주점) 또는 보정값 `intrinsics: {fx, fy, cx, cy}`(픽셀) 중 하나입니다. 렌즈 왜곡은 다루지 않으므로 필요하면 영상을 먼저 보정합니다.
+- 들어온 영상 크기가 파일의 `width`·`height`와 다르면 그 프레임은 백엔드에 보고하지 않습니다(작업자 없음으로 보내지 않음). 계속 다르면 센서가 `DEGRADED`가 되어 관측 공백 규칙이 실행을 막고, 요약의 `calibration_mismatch_frames`에 개수가 남습니다.
+
 ### 백엔드 연결: 센서·작업자 스냅샷과 HazardEvent
 
 ```bash
