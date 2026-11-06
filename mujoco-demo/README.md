@@ -156,6 +156,29 @@ python ros_camera_detect.py --topic /cctv_1/image_raw --topic /cctv_2/image_raw 
 - 진입마다 고정 `hazard_id`를 정해 보내므로, 응답 타임아웃 뒤 다시 보내도 같은 진입이 두 번 등록되지 않습니다(백엔드의 `409` 중복 ID 응답을 등록 완료로 처리). 등록에 실패하면 로그를 남기고 다음 프레임에서 다시 시도합니다. 기록의 `hazard`에 투영 위치·금지구역 판정·등록된 `hazard_id`가, 요약에 `hazard_ids`·`hazard_post_failures`가 남습니다.
 - 미구현: 실행 중 로봇의 즉시 정지. 지금 백엔드는 열린 `CRITICAL` 이벤트로 이후 평가와 실행 직전 재검증을 막지만, 이벤트 등록만으로 이미 실행 중인 행동을 멈추지는 않습니다.
 
+## 가상 CCTV 오프라인 탐지 평가
+
+`control/scripts/threejs_cctv`(PR #45)가 만든 렌더 폴더(`cctv_N/000000.png`, `frames.csv`, `boxes.json`, `cameras.json`)로 탐지율·금지구역 경보·바닥 위치 오차를 잽니다. 탐지기는 PNG와 `cameras.json`의 카메라 정보만 보고, 정답(`frames.csv`, `boxes.json`)은 채점에만 씁니다.
+
+```bash
+# 1) 모델 없이 카메라 변환·금지구역 위치 점검 (정답 상자를 탐지 결과로 넣음, CPU)
+python offline_eval.py --render-dir ../control/outputs/threejs_cctv --detector truth --output-dir eval/truth
+# 2) GPU 노드에서 실제 측정
+python offline_eval.py --render-dir <렌더 폴더> --detector florence2 \
+  --model-id /abr/coss38/florence-2-base --output-dir eval/florence2 [--batch] [--num-beams 1]
+python offline_eval.py --render-dir <렌더 폴더> --detector rtdetr \
+  --model-id PekingU/rtdetr_r50vd --output-dir eval/rtdetr
+```
+
+- 채점: 카메라마다 보이는 작업자(마스크 픽셀 400 이상)의 정답 상자와 예측 `person` 상자를 IoU 0.5 이상으로 1:1 대응합니다. 정답 상자는 가려진 부분을 뺀 보이는 영역입니다.
+- `summary.json`
+  - `cameras.<id>.recall`, `recall_in_keep_out`, `precision`, `position_error_m`(대응된 상자의 투영 위치와 정답 위치 거리)
+  - `combined_recall`: 어느 카메라든 보이는 작업자를 찾은 비율
+  - `keep_out_alarm`: 정답상 금지구역 안에 작업자가 있는 프레임에서 어느 카메라든 투영 위치가 구역 안인 비율(`hit_when_inside`), 아무도 없는 프레임의 오경보 비율(`false_alarm_when_clear`). 연속 2프레임 규칙은 적용하지 않은 프레임 단위 값입니다.
+  - `model_call_ms`, `per_camera_hz_model_only`, `per_camera_hz_wall`(PNG 읽기 포함)
+- `--detector truth`로 `hit_when_inside`가 1.0에 가깝지 않으면 카메라 정보나 구역 좌표가 어긋난 것이니 모델 측정 전에 확인합니다. 가림으로 발이 안 보이면 정답 상자로도 위치 오차가 생깁니다.
+- 미구현: ROS 토픽 실시간 입력. 이 스크립트는 저장된 PNG만 처리하므로 처리율은 카메라 수신·전송 지연을 포함하지 않습니다.
+
 ## 연속 추론 속도 측정 (CV-03)
 
 GPU 할당을 받은 터미널에서 아래처럼 실행하면 모델 로드와 워밍업 3회를 제외하고 두 정지 이미지를 순서대로 **60초 이상 반복 추론**합니다. 출력은 `vlm_results/benchmark.json`에 저장됩니다.
