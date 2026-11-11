@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { api } from "../api/client";
 import { usePolling } from "../hooks/usePolling";
@@ -17,6 +18,9 @@ const MENU = [
 export function Layout() {
   const health = usePolling(api.health, 5000, false);
   const stream = useStateStream();
+  // WebSocket이 끊기거나 다시 붙으면 Backend 상태를 바로 확인한다(5초 주기를 기다리지 않음).
+  const refreshHealth = health.refresh;
+  useEffect(() => { refreshHealth(); }, [stream.connected, refreshHealth]);
   return (
     <div className="app">
       <header className="topbar">
