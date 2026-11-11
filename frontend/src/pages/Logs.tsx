@@ -6,7 +6,7 @@ export function Logs() {
   const logs = usePolling(api.executionLogs, 2000);
   return (
     <>
-      <div className="page-head"><h1>판단 이력</h1></div>
+      <div className="page-head"><div className="page-head-copy"><span className="eyebrow">판단 이력</span><h1>모든 판단을,<br />남깁니다.</h1><p>안전 판정과 실행 결과를 빠짐없이 시간순으로 추적합니다.</p></div></div>
       <Panel title="ExecutionLog">
         <Async state={logs}>
           {(rows) => (

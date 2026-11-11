@@ -14,12 +14,21 @@ export function SiteMap({ compact = false }: { compact?: boolean }) {
   const zones = usePolling(api.zones, 5000);
   const robots = usePolling(api.robots);
   const workers = usePolling(api.workers);
+  const isEmpty = (zones.data?.length ?? 0) === 0 && (robots.data?.length ?? 0) === 0;
   const view = { x: -4, y: -4, w: 8, h: 8 }; // 시나리오 장면 기준 범위(m)
   const flip = (y: number) => -y;
 
   const map = (
-    <figure className="map">
+    <figure className={`map ${isEmpty ? "is-empty" : ""}`}>
       <svg viewBox={`${view.x} ${view.y} ${view.w} ${view.h}`} role="img" aria-label="현장 지도">
+        {isEmpty && (
+          <g className="map-awaiting" aria-hidden="true">
+            <path d="M-3 2.6 C-2 1.8,-1.6 1.9,-.8 1 C.3-.3,1.3.2,3-2" />
+            <circle cx="-3" cy="2.6" r=".13" />
+            <circle cx="3" cy="-2" r=".13" />
+            <rect x="-.32" y=".55" width=".64" height=".64" rx=".12" />
+          </g>
+        )}
         {(zones.data ?? []).map((z) => (
           <g key={z.zone_id} className="zone" data-type={z.zone_type}>
             <polygon points={ring(z).map(([x, y]) => `${x},${flip(y)}`).join(" ")} />
@@ -36,8 +45,8 @@ export function SiteMap({ compact = false }: { compact?: boolean }) {
           <circle key={w.worker_id} className="worker" cx={w.pose.position.x} cy={flip(w.pose.position.y)} r={0.2} />
         ))}
       </svg>
-      <figcaption className="note">
-        □ 로봇 · ○ 작업자{workers.missing && " (작업자 조회 API 대기)"}
+      <figcaption className="map-legend">
+        <span><i className="legend-robot" /> 로봇</span><span><i className="legend-worker" /> 작업자</span>{workers.missing && <small>작업자 조회 API 대기</small>}
       </figcaption>
     </figure>
   );
@@ -45,10 +54,10 @@ export function SiteMap({ compact = false }: { compact?: boolean }) {
 
   return (
     <>
-      <div className="page-head"><h1>CCTV·현장 지도</h1></div>
+      <div className="page-head"><div className="page-head-copy"><span className="eyebrow">CCTV · 현장 지도</span><h1>현장을, 더<br />선명하게.</h1><p>공간 구역과 사람, 로봇 그리고 위험을 한 화면에서 확인합니다.</p></div></div>
       <div className="columns">
-        <Panel title="현장 지도">{map}</Panel>
-        <Panel title="CCTV">
+        <Panel title="현장 지도" className="map-panel">{map}</Panel>
+        <Panel title="CCTV" className="camera-panel">
           <div className="stack">
             <Placeholder label="cctv_1 영상 (ROS 2 → 웹 브리지 필요, #55)" height={180} />
             <Placeholder label="cctv_2 영상" height={180} />

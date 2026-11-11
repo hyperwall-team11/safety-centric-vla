@@ -14,24 +14,25 @@ export function Dashboard() {
   const estopped = (robots.data ?? []).filter((r) => r.status === "ESTOP" || r.status === "HOLD");
 
   return (
-    <>
-      <div className="page-head">
-        <h1>운영 대시보드</h1>
-        <Link className="button" to="/tasks/new">새 작업 요청</Link>
+    <div className="dashboard-page">
+      <div className="page-head dashboard-head">
+        <div className="page-head-copy"><span className="eyebrow">운영 대시보드</span><h1>안전이 먼저<br />움직입니다.</h1><p>로봇의 행동을 실시간으로 이해하고, 위험을 미리 감지해 작업을 더 안전하게 만듭니다.</p></div>
+        <Link className="button primary" to="/tasks/new">새 작업 요청</Link>
       </div>
 
+      <section className="dashboard-stage" aria-label="실시간 현장 지도"><SiteMap compact /></section>
+
       <div className="stats">
-        <Stat label="로봇" value={robots.data?.length ?? "-"} detail={summary(countBy(robots.data ?? [], (r) => r.status))} />
-        <Stat label="작업" value={tasks.data?.length ?? "-"} detail={summary(countBy(tasks.data ?? [], (t) => t.status))} />
+        <Stat label="운영 로봇" value={robots.data?.length ?? "-"} detail={summary(countBy(robots.data ?? [], (r) => r.status))} />
+        <Stat label="작업 진행" value={tasks.data?.length ?? "-"} detail={summary(countBy(tasks.data ?? [], (t) => t.status))} />
         <Stat label="열린 위험" value={hazards.missing ? "API 대기" : openHazards.length}
               detail={summary(countBy(openHazards, (h) => h.severity))} />
-        <Stat label="정지 중 로봇" value={estopped.length} detail={estopped.map((r) => r.robot_id).join(", ") || "-"} />
-        <Stat label="판단 이력" value={logs.data?.length ?? "-"} detail={summary(countBy(logs.data ?? [], (l) => l.decision))} />
+        <Stat label="비상정지" value={estopped.length} detail={estopped.map((r) => r.robot_id).join(", ") || "-"} />
+        <Stat label="누적 판단" value={logs.data?.length ?? "-"} detail={summary(countBy(logs.data ?? [], (l) => l.decision))} />
       </div>
 
       <div className="columns">
         <div className="stack">
-          <Panel title="현장 지도"><SiteMap compact /></Panel>
           <Panel title="열린 위험" action={<Link to="/hazards">위험 모니터링</Link>}>
             <Async state={hazards}>
               {() => (
@@ -86,6 +87,6 @@ export function Dashboard() {
           </Panel>
         </div>
       </div>
-    </>
+    </div>
   );
 }

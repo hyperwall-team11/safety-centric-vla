@@ -7,9 +7,9 @@ const MENU = [
   { to: "/", label: "대시보드", end: true },
   { to: "/tasks/new", label: "작업 요청" },
   { to: "/proposals", label: "행동 제안" },
-  { to: "/hazards", label: "위험 모니터링" },
-  { to: "/site", label: "CCTV·현장 지도" },
-  { to: "/estop", label: "비상정지·복귀" },
+  { to: "/hazards", label: "위험" },
+  { to: "/site", label: "현장" },
+  { to: "/estop", label: "비상정지" },
   { to: "/logs", label: "판단 이력" },
 ];
 
@@ -18,12 +18,18 @@ export function Layout() {
   return (
     <div className="app">
       <header className="topbar">
-        <strong>VLA 안전 운영</strong>
-        <span className="note">서버 {health.error ? "연결 안 됨" : health.data ? "연결됨" : "확인 중"}</span>
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true"><i /><i /></span>
+          <strong>VLA SAFETY</strong>
+        </div>
+        <nav className="topnav" aria-label="주요 메뉴">
+          {MENU.map((m) => <NavLink key={m.to} to={m.to} end={m.end}>{m.label}</NavLink>)}
+        </nav>
+        <div className="system-state" data-state={health.error ? "down" : health.data ? "up" : "pending"}>
+          <span className="system-dot" />
+          <span>{health.error ? "연결 안 됨" : health.data ? "현장 정상 운영" : "확인 중"}</span>
+        </div>
       </header>
-      <nav className="sidebar" aria-label="메뉴">
-        {MENU.map((m) => <NavLink key={m.to} to={m.to} end={m.end}>{m.label}</NavLink>)}
-      </nav>
       <main className="content">
         <CriticalBanner />
         <Outlet />

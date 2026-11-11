@@ -13,8 +13,8 @@ export function EStop() {
   return (
     <>
       <div className="page-head">
-        <h1>비상정지·복귀</h1>
-        <button disabled title="운영자 E-Stop API가 아직 없어요">비상정지 (API 대기)</button>
+        <div className="page-head-copy"><span className="eyebrow">비상정지 · 복귀</span><h1>복귀는,<br />한 단계씩.</h1><p>정지 상태를 확인하고 안전한 복귀 절차를 순서대로 진행합니다.</p></div>
+        <button className="danger" disabled title="운영자 E-Stop API가 아직 없어요">비상정지 · API 대기</button>
       </div>
       <Panel title="정지 중 로봇">
         <Async state={robots}>
@@ -28,7 +28,7 @@ export function EStop() {
           )}
         </Async>
       </Panel>
-      <Panel title="복귀 순서">
+      <Panel title="복귀 순서" className="recovery-panel">
         <ol className="steps">
           <li>현장 확인 후 <Link to="/hazards">위험 모니터링</Link>에서 관련 위험을 운영자 해제</li>
           <li>보류 작업에서 RESUME 행동 제안을 만들고 검증</li>
