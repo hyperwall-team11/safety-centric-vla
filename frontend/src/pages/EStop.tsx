@@ -13,7 +13,7 @@ export function EStop() {
   return (
     <>
       <div className="page-head">
-        <div className="page-head-copy"><span className="eyebrow">비상정지 · 복귀</span><h1>복귀는,<br />한 단계씩.</h1><p>정지 상태를 확인하고 안전한 복귀 절차를 순서대로 진행합니다.</p></div>
+        <div className="page-head-copy"><span className="eyebrow">비상정지 · 복귀</span><h1>복귀는, 한 단계씩.</h1><p>정지 상태를 확인하고 안전한 복귀 절차를 순서대로 진행합니다.</p></div>
         <button className="danger" disabled title="운영자 E-Stop API가 아직 없어요">비상정지 · API 대기</button>
       </div>
       <Panel title="정지 중 로봇">

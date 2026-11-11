@@ -8,7 +8,7 @@ export function ProposalList() {
   const tasks = usePolling(() => api.tasks(), 2000);
   return (
     <>
-      <div className="page-head"><div className="page-head-copy"><span className="eyebrow">행동 제안</span><h1>행동은, 검증된<br />다음에.</h1><p>모델이 만든 계획을 규칙별로 확인하고 승인된 행동만 실행합니다.</p></div></div>
+      <div className="page-head"><div className="page-head-copy"><span className="eyebrow">행동 제안</span><h1>행동은, 검증된 다음에.</h1><p>모델이 만든 계획을 규칙별로 확인하고 승인된 행동만 실행합니다.</p></div></div>
       <Panel title="작업 목록">
         <Async state={tasks}>
           {(rows) => (
@@ -42,7 +42,7 @@ export function ProposalDetail() {
 
   return (
     <>
-      <div className="page-head"><div className="page-head-copy"><span className="eyebrow">행동 제안 상세</span><h1>계획을, 하나씩<br />확인합니다.</h1><p>규칙 검사 결과를 확인한 뒤 승인된 행동만 실행합니다.</p></div><Link className="button subtle" to="/proposals">목록으로</Link></div>
+      <div className="page-head"><div className="page-head-copy"><span className="eyebrow">행동 제안 상세</span><h1>계획을, 하나씩 확인합니다.</h1><p>규칙 검사 결과를 확인한 뒤 승인된 행동만 실행합니다.</p></div><Link className="button subtle" to="/proposals">목록으로</Link></div>
       <Panel title="작업">
         <Async state={task}>
           {(t) => (

@@ -63,19 +63,15 @@ a:hover { text-decoration: underline; }
 .system-state[data-state="down"] .system-dot { background: var(--red); box-shadow: 0 0 0 4px rgba(228, 33, 25, .09); }
 
 .content { display: flex; width: min(100%, 1500px); min-width: 0; margin: 0 auto; padding: clamp(50px, 7vw, 104px) clamp(22px, 4.5vw, 72px) 110px; flex-direction: column; gap: 38px; }
-.page-head { display: flex; min-height: 220px; align-items: flex-end; justify-content: space-between; gap: 36px; padding: 0 0 20px; }
+.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 36px; padding: 8px 0 16px; }
 .page-head-copy { max-width: 980px; }
-.eyebrow { display: block; margin-bottom: 15px; color: var(--blue); font-size: 16px; font-weight: 650; letter-spacing: -.02em; }
-h1 { max-width: 980px; margin: 0; color: #09090a; font-size: clamp(42px, 5.2vw, 72px); font-weight: 750; letter-spacing: -.055em; line-height: .98; text-wrap: balance; }
-.page-head p { max-width: 730px; margin: 22px 0 0; color: var(--muted); font-size: clamp(16px, 1.45vw, 20px); font-weight: 430; letter-spacing: -.02em; line-height: 1.48; text-wrap: pretty; }
+.eyebrow { display: block; margin-bottom: 8px; color: var(--blue); font-size: 14px; font-weight: 650; letter-spacing: -.02em; }
+h1 { max-width: 980px; margin: 0; color: #09090a; font-size: clamp(26px, 2.6vw, 34px); font-weight: 750; letter-spacing: -.04em; line-height: .98; text-wrap: balance; }
+.page-head p { max-width: 730px; margin: 8px 0 0; color: var(--muted); font-size: 15px; font-weight: 430; letter-spacing: -.02em; line-height: 1.48; text-wrap: pretty; }
 h2 { margin: 0; color: var(--ink); font-size: 22px; font-weight: 680; letter-spacing: -.035em; }
 h3 { margin: 22px 0 10px; color: var(--muted); font-size: 13px; font-weight: 650; }
 
 .dashboard-page { display: flex; flex-direction: column; gap: 46px; }
-.dashboard-head { min-height: 260px; align-items: center; justify-content: center; flex-direction: column; padding: 20px 0 4px; text-align: center; }
-.dashboard-head .page-head-copy { display: flex; align-items: center; flex-direction: column; }
-.dashboard-head p { max-width: 760px; }
-.dashboard-head .button { margin-top: 3px; }
 .dashboard-stage { overflow: hidden; min-height: 480px; padding: 22px; background: #eaedf2; border-radius: 28px; box-shadow: inset 0 1px 0 rgba(255,255,255,.75); }
 .dashboard-stage .map svg { aspect-ratio: 16 / 7; min-height: 410px; background: radial-gradient(circle at 50% 36%, #fff 0, #f1f3f7 45%, #e2e6ed 100%); border: 0; border-radius: 20px; }
 .dashboard-stage .map-legend { padding: 0 6px; }
@@ -190,6 +186,9 @@ code { padding: 3px 6px; color: #424247; background: #e9e9ec; border-radius: 5px
 
 .stepper { display: grid; grid-template-columns: repeat(3,1fr); margin: 12px 0 4px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .stepper span { display: flex; min-height: 120px; align-items: flex-start; flex-direction: column; gap: 9px; padding: 25px 28px; color: var(--muted); border-right: 1px solid var(--line); font-size: 20px; font-weight: 650; }
+.stepper.compact { margin: 0 0 20px; }
+.stepper.compact span { min-height: 0; flex-direction: row; align-items: center; gap: 10px; padding: 12px 20px; font-size: 15px; }
+.stepper.compact b { font-size: 20px; }
 .stepper span:last-child { border-right: 0; }
 .stepper b { color: var(--faint); font-size: 38px; font-weight: 480; letter-spacing: -.05em; line-height: 1; }
 .stepper span.active { color: var(--ink); background: rgba(255,255,255,.55); }
@@ -220,12 +219,9 @@ code { padding: 3px 6px; color: #424247; background: #e9e9ec; border-radius: 5px
   .topnav { margin-top: 5px; }
   .topnav a { padding: 9px 12px; font-size: 13px; }
   .content { padding: 58px 16px 72px; gap: 26px; }
-  .page-head { min-height: 0; align-items: flex-start; flex-direction: column; gap: 22px; padding-bottom: 12px; }
-  h1 { font-size: clamp(38px,12vw,54px); }
-  .page-head p { margin-top: 18px; font-size: 16px; }
+  .page-head { align-items: flex-start; flex-direction: column; gap: 14px; padding-bottom: 12px; }
+  .page-head h1 { font-size: clamp(24px,7vw,30px); }
   .page-head > .button, .page-head > button { align-self: stretch; }
-  .dashboard-head { min-height: 280px; align-items: center; text-align: center; }
-  .dashboard-head h1 { font-size: clamp(40px,12vw,56px); }
   .dashboard-stage { min-height: 330px; padding: 12px; border-radius: 20px; }
   .dashboard-stage .map svg { min-height: 285px; aspect-ratio: 1.15; border-radius: 15px; }
   .stats { grid-template-columns: repeat(2,1fr); }

@@ -65,7 +65,7 @@ export function SiteMap({ compact = false, selectedRobotId, selectedZoneId, onRo
 
   return (
     <>
-      <div className="page-head"><div className="page-head-copy"><span className="eyebrow">CCTV · 현장 지도</span><h1>현장을, 더<br />선명하게.</h1><p>공간 구역과 사람, 로봇 그리고 위험을 한 화면에서 확인합니다.</p></div></div>
+      <div className="page-head"><div className="page-head-copy"><span className="eyebrow">CCTV · 현장 지도</span><h1>현장을, 더 선명하게.</h1><p>공간 구역과 사람, 로봇 그리고 위험을 한 화면에서 확인합니다.</p></div></div>
       <div className="columns">
         <Panel title="현장 지도" className="map-panel">{map}</Panel>
         <Panel title="CCTV" className="camera-panel">

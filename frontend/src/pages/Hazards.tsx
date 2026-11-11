@@ -21,7 +21,7 @@ export function Hazards() {
   return (
     <>
       <div className="page-head">
-        <div className="page-head-copy"><span className="eyebrow">위험 모니터링</span><h1>위험은<br />한눈에.</h1><p>관측된 위험을 심각도별로 확인하고 현장을 확인한 뒤 해제합니다.</p></div>
+        <div className="page-head-copy"><span className="eyebrow">위험 모니터링</span><h1>위험은 한눈에.</h1><p>관측된 위험을 심각도별로 확인하고 현장을 확인한 뒤 해제합니다.</p></div>
         <select value={filter} onChange={(e) => setFilter(e.target.value as "OPEN" | "ALL")} aria-label="상태 필터">
           <option value="OPEN">열린 위험</option>
           <option value="ALL">전체</option>

@@ -42,8 +42,8 @@ export function TaskRequest() {
 
   return (
     <>
-      <div className="page-head"><div className="page-head-copy"><span className="eyebrow">작업 요청</span><h1>말하면, 안전하게<br />계획합니다.</h1><p>자연어 지시를 이해하고 실행 계획을 제안한 뒤, 안전 규칙에 따라 검증합니다.</p></div></div>
-      <div className="stepper" aria-label="작업 요청 단계"><span className="active"><b>01</b> 명령 입력</span><span className={preview ? "active" : ""}><b>02</b> 해석 확인</span><span><b>03</b> 안전 검증</span></div>
+      <div className="page-head"><div className="page-head-copy"><span className="eyebrow">작업 요청</span><h1>말하면, 안전하게 계획합니다.</h1><p>자연어 지시를 이해하고 실행 계획을 제안한 뒤, 안전 규칙에 따라 검증합니다.</p></div></div>
+      <div className="stepper compact" aria-label="작업 요청 단계"><span className="active"><b>01</b> 명령 입력</span><span className={preview ? "active" : ""}><b>02</b> 해석 확인</span><span><b>03</b> 안전 검증</span></div>
       <div className="request-layout">
       <Panel title="현장 지도" className="map-panel">
         <SiteMap compact

@@ -15,8 +15,8 @@ export function Dashboard() {
 
   return (
     <div className="dashboard-page">
-      <div className="page-head dashboard-head">
-        <div className="page-head-copy"><span className="eyebrow">운영 대시보드</span><h1>안전이 먼저<br />움직입니다.</h1><p>로봇의 행동을 실시간으로 이해하고, 위험을 미리 감지해 작업을 더 안전하게 만듭니다.</p></div>
+      <div className="page-head">
+        <div className="page-head-copy"><span className="eyebrow">운영 대시보드</span><h1>안전이 먼저 움직입니다.</h1><p>로봇의 행동을 실시간으로 이해하고, 위험을 미리 감지해 작업을 더 안전하게 만듭니다.</p></div>
         <Link className="button primary" to="/tasks/new">새 작업 요청</Link>
       </div>
 
