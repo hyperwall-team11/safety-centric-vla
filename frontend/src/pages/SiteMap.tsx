@@ -1,6 +1,5 @@
 import { api } from "../api/client";
 import { usePolling } from "../hooks/usePolling";
-import { Panel, Placeholder } from "../components/ui";
 import type { Zone } from "../api/types";
 import type { Point } from "../api/explain";
 
@@ -10,9 +9,8 @@ function ring(zone: Zone): [number, number][] {
   return pts.map((p) => [p[0], p[1]]);
 }
 
-/** 바닥 평면도(x 오른쪽, y 위). 작업자 위치는 GET /workers/snapshot이 생기면 표시된다. */
+/** 바닥 평면도(x 오른쪽, y 위). 구역·로봇·작업자·열린 위험·계획 경로를 그린다. */
 type SiteMapProps = {
-  compact?: boolean;
   /** 작업 요청 화면처럼 지도에서 대상을 고를 때 쓴다. */
   selectedRobotId?: string;
   selectedZoneId?: string;
@@ -29,7 +27,7 @@ const centroid = (pts: [number, number][]) => ({
   y: pts.reduce((a, p) => a + p[1], 0) / pts.length,
 });
 
-export function SiteMap({ compact = false, selectedRobotId, selectedZoneId, onRobotClick, onZoneClick, plan, violation }: SiteMapProps) {
+export function SiteMap({ selectedRobotId, selectedZoneId, onRobotClick, onZoneClick, plan, violation }: SiteMapProps) {
   const zones = usePolling(api.zones, 5000);
   const robots = usePolling(api.robots);
   const workers = usePolling(api.workers);
@@ -105,20 +103,5 @@ export function SiteMap({ compact = false, selectedRobotId, selectedZoneId, onRo
       </figcaption>
     </figure>
   );
-  if (compact) return map;
-
-  return (
-    <>
-      <div className="page-head"><div className="page-head-copy"><span className="eyebrow">CCTV · 현장 지도</span><h1>현장을, 더 선명하게.</h1><p>공간 구역과 사람, 로봇 그리고 위험을 한 화면에서 확인합니다.</p></div></div>
-      <div className="columns">
-        <Panel title="현장 지도" className="map-panel">{map}</Panel>
-        <Panel title="CCTV" className="camera-panel">
-          <div className="stack">
-            <Placeholder label="cctv_1 영상 (ROS 2 → 웹 브리지 필요, #55)" height={180} />
-            <Placeholder label="cctv_2 영상" height={180} />
-          </div>
-        </Panel>
-      </div>
-    </>
-  );
+  return map;
 }

@@ -7,10 +7,9 @@ import { CriticalBanner } from "./CriticalBanner";
 
 const MENU = [
   { to: "/", label: "대시보드", end: true },
-  { to: "/tasks/new", label: "작업 요청" },
   { to: "/proposals", label: "행동 제안" },
   { to: "/hazards", label: "위험" },
-  { to: "/site", label: "현장" },
+  { to: "/site", label: "현장·작업 요청" },
   { to: "/estop", label: "비상정지" },
   { to: "/logs", label: "판단 이력" },
 ];

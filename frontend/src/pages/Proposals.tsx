@@ -68,7 +68,7 @@ export function ProposalDetail() {
       {error && <p className="error">{error}</p>}
       <div className="request-layout">
         <Panel title="현장 지도" className="map-panel">
-          <SiteMap compact selectedRobotId={shown?.robot_id}
+          <SiteMap selectedRobotId={shown?.robot_id}
                    selectedZoneId={task.data?.destination.type === "ZONE" ? task.data.destination.zone_id : undefined}
                    plan={overlay.plan} violation={overlay.violation} />
           <p className="map-hint">{shown ? `${shown.proposal_id.slice(0, 17)} 제안의 이동과 위반 위치` : "제안이 없습니다."}</p>

@@ -16,10 +16,9 @@ Backend 주소가 다르면 `VITE_BACKEND_URL=http://host:8000 npm run dev`. Bac
 | 경로 | 화면 | 흐름 | 사용 API |
 |---|---|---|---|
 | `/` | 대시보드 | 조치 필요 대기열(CRITICAL·WARNING 위험 → 정지 로봇 → 실행·검증 대기·거절 제안, 항목에서 바로 해제·검증·실행) → 현장 지도(열린 위험 구역 표시) → 요약 카드·목록. 대기열·목록·지도 중 하나를 고르면 같은 로봇·구역을 함께 강조 | `GET /robots`, `/zones`, `/task-orders`, `/task-orders/{id}/action-proposals`, `/execution-logs`, `/hazards`* |
-| `/tasks/new` | 작업 요청 | 현장 지도에서 로봇·구역 클릭(명령 자동 작성) 또는 자연어 입력 → 해석 미리보기 → 작업·행동 제안 생성 → 같은 화면에서 안전 검증·실행. 계획 경로와 위반 구역·작업자를 지도에 표시 | `POST /task-orders/preview`, `/task-orders/from-natural-language`, `/task-orders/{id}/action-proposals`, `GET /zones`, `/robots`, `/workers/snapshot`* |
 | `/proposals`, `/proposals/:taskId` | 행동 제안 | 제안별 규칙 결과(위반 먼저, 해결 방법·속도 낮춰 재제안) → 승인 시 [실행]. 고른 제안의 경로·위반 위치를 지도에 표시 | `POST /action-proposals/{id}/evaluate`, `/execute`, `GET /execution-logs` |
 | `/hazards` | 위험 모니터링 | CRITICAL·WARNING 목록 → 운영자 해제 | `GET /hazards`*, `POST /hazards/{id}/resolve` |
-| `/site` | CCTV·현장 지도 | 구역·로봇·작업자 평면도, CCTV 자리 | `GET /zones`, `/robots`, `/workers/snapshot`* |
+| `/site` | 현장·작업 요청 | 현장 지도·CCTV 아래에서 바로 작업 요청: 지도에서 로봇·구역 클릭(명령 자동 작성) 또는 자연어 입력 → 해석 미리보기 → 작업·행동 제안 생성 → 같은 화면에서 안전 검증·실행. 계획 경로와 위반 구역·작업자를 지도에 표시. `/tasks/new`는 여기로 이동 | `POST /task-orders/preview`, `/task-orders/from-natural-language`, `/task-orders/{id}/action-proposals`, `GET /zones`, `/robots`, `/workers/snapshot`*, `/workers/snapshot`* |
 | `/estop` | 비상정지·복귀 | 정지 로봇 → 위험 해제 → RESUME 제안 → 검증·실행 | `GET /robots`, `/task-orders?status=HELD`, `/execution-logs` |
 | `/logs` | 판단 이력 | ExecutionLog 타임라인 | `GET /execution-logs` |
 
@@ -48,5 +47,5 @@ src/
 ├── hooks/usePolling.ts      # 스트림 연결 시 revision 기반, 아니면 주기 조회
 ├── hooks/useStateStream.tsx # /ws/state 구독·재연결
 ├── components/        # Layout, 아이콘, CriticalBanner, ui(Panel·Table·Stat·Status·Async)
-└── pages/             # 화면 7개
+└── pages/             # 화면 6개
 ```

@@ -107,7 +107,7 @@ export function Dashboard() {
     <div className="dashboard-page">
       <div className="page-head">
         <div className="page-head-copy"><span className="eyebrow">운영 대시보드</span><h1>안전이 먼저 움직입니다.</h1><p>로봇의 행동을 실시간으로 이해하고, 위험을 미리 감지해 작업을 더 안전하게 만듭니다.</p></div>
-        <Link className="button primary" to="/tasks/new">새 작업 요청</Link>
+        <Link className="button primary" to="/site">새 작업 요청</Link>
       </div>
 
       <Panel title="조치 필요" action={queue.length > 0 && <span className="stat-detail">{queue.length}건</span>}>
@@ -134,7 +134,7 @@ export function Dashboard() {
       </Panel>
 
       <section className="dashboard-stage" aria-label="실시간 현장 지도">
-        <SiteMap compact selectedRobotId={focus.robotId} selectedZoneId={focus.zoneId}
+        <SiteMap selectedRobotId={focus.robotId} selectedZoneId={focus.zoneId}
                  onRobotClick={(id) => toggle({ robotId: id })} onZoneClick={(id) => toggle({ zoneId: id })} />
         {focused && (
           <div className="focus-bar">
