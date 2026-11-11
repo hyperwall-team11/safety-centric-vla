@@ -32,6 +32,14 @@ class HazardReporterTests(unittest.TestCase):
             with self.subTest(override=override), self.assertRaises(ValueError):
                 keep_out_ring(zone(**override))
 
+    def test_contract_polygon_points_match_geojson(self):
+        points = zone(geometry={"type": "polygon", "points": SQUARE[:-1]})
+        self.assertEqual(keep_out_ring(points), keep_out_ring(zone()))
+        closed = zone(geometry={"type": "polygon", "points": SQUARE})
+        self.assertEqual(keep_out_ring(closed), keep_out_ring(zone()))
+        with self.assertRaises(ValueError):
+            keep_out_ring(zone(geometry={"type": "polygon", "points": []}))
+
     def test_worker_below_a_downward_camera_is_inside(self):
         # MuJoCo camera looks along its -z axis, so the identity rotation points at the floor.
         camera = camera_from_pose([0, 0, 3], [[1, 0, 0], [0, 1, 0], [0, 0, 1]], 60)
@@ -80,6 +88,29 @@ class HazardReporterTests(unittest.TestCase):
         retry = tracker.update("cctv_1", True, 0.2)
         self.assertTrue(first["hazard_id"].startswith("hazard-"))
         self.assertEqual(first["hazard_id"], retry["hazard_id"])
+
+    def test_retry_resends_the_first_trigger_evidence(self):
+        # PR #41 리뷰: cctv_1 두 프레임으로 트리거 → 등록 실패 → cctv_2 미탐지 프레임에서 재시도
+        tracker = IntrusionTracker(["cctv_1", "cctv_2"])
+        at = datetime(2026, 11, 5, tzinfo=timezone.utc)
+        tracker.update("cctv_1", True, 0.0, ["a"], detected_at=at)
+        first = tracker.update("cctv_1", True, 0.1, ["b"], detected_at=at)
+        retry = tracker.update("cctv_2", False, 0.2, detected_at=datetime(2026, 11, 6, tzinfo=timezone.utc))
+        self.assertEqual(retry, first)
+        hazard = build_hazard("keep-out", ["robot-01"], retry)
+        self.assertEqual(hazard["source_observation_ids"], ["a", "b"])
+        self.assertEqual(hazard["confidence"], 1.0)
+        self.assertEqual(hazard["detected_at"], "2026-11-05T00:00:00+00:00")
+
+    def test_unreported_entry_is_kept_until_registered(self):
+        tracker = IntrusionTracker(["cctv_1"])
+        tracker.update("cctv_1", True, 0.0)
+        first = tracker.update("cctv_1", True, 0.1)
+        # 등록 실패가 이어지는 동안 작업자가 나가도 같은 사건을 계속 재시도한다
+        retry = tracker.update("cctv_1", False, 5.0)
+        self.assertEqual(retry["hazard_id"], first["hazard_id"])
+        tracker.mark_reported()
+        self.assertIsNone(tracker.update("cctv_1", False, 5.1))
 
     def test_stalled_camera_does_not_end_the_entry(self):
         tracker = IntrusionTracker(["cctv_1", "cctv_2"])

@@ -38,17 +38,28 @@ def point_in_ring(x, y, ring):
 
 
 def keep_out_ring(zone):
-    """Validated outer ring of a world-frame KEEP_OUT Zone stored as a GeoJSON Polygon."""
+    """Validated outer ring of a world-frame KEEP_OUT Zone.
+
+    Accepts the GeoJSON ``Polygon/coordinates`` form and the Backend–CTL contract ``polygon/points``
+    form (an open ring is closed here), matching what the backend safety gate accepts.
+    """
     if zone.get("zone_type") != "KEEP_OUT":
         raise ValueError(f"Zone {zone.get('zone_id')} is not KEEP_OUT")
     if zone.get("frame_id") != "world":
         raise ValueError(f"Zone {zone.get('zone_id')} must use the world frame")
     geometry = zone.get("geometry") or {}
-    rings = geometry.get("coordinates")
-    if geometry.get("type") != "Polygon" or not isinstance(rings, list) or len(rings) != 1:
-        raise ValueError(f"Zone {zone.get('zone_id')} needs a single-ring GeoJSON Polygon")
+    if geometry.get("type") == "polygon":
+        points = geometry.get("points")
+        if not isinstance(points, list) or not points:
+            raise ValueError(f"Zone {zone.get('zone_id')} needs polygon points")
+        points = points if points[0] == points[-1] else [*points, points[0]]
+    else:
+        rings = geometry.get("coordinates")
+        if geometry.get("type") != "Polygon" or not isinstance(rings, list) or len(rings) != 1:
+            raise ValueError(f"Zone {zone.get('zone_id')} needs a single-ring Polygon or polygon points")
+        points = rings[0]
     ring = []
-    for point in rings[0]:
+    for point in points:
         if len(point) < 2:
             raise ValueError("Polygon points need x and y")
         x, y = float(point[0]), float(point[1])
@@ -88,7 +99,9 @@ class IntrusionTracker:
 
     An entry ends only when every camera in ``sensor_ids`` has processed frames after the last
     in-zone sighting for ``clear_seconds``; a stalled camera keeps the entry open. Each entry has
-    a fixed ``hazard_id`` so a retried POST cannot register the same entry twice.
+    a fixed ``hazard_id`` so a retried POST cannot register the same entry twice. The evidence of
+    the first trigger (sensor, observation IDs, confidence, time) is frozen and resent unchanged
+    until the event is reported, and an unreported entry never ends, so a failed POST is not lost.
     """
 
     def __init__(self, sensor_ids=(), required=REQUIRED_CONSECUTIVE_FRAMES,
@@ -105,13 +118,14 @@ class IntrusionTracker:
         self.reported = False
         self.last_seen = None
         self.hazard_id = None
+        self.trigger = None
 
     def _entry_over(self, now):
         observed_since = all(self.last_frame.get(s, float("-inf")) > self.last_seen
                              for s in self.sensor_ids | set(self.last_frame))
         return observed_since and now - self.last_seen >= self.clear_seconds
 
-    def update(self, sensor_id, in_zone, now, observation_ids=()):
+    def update(self, sensor_id, in_zone, now, observation_ids=(), detected_at=None):
         """Record one processed frame; return trigger details when an event should be opened."""
         history = self.history.setdefault(sensor_id, [])
         history.append(bool(in_zone))
@@ -126,17 +140,19 @@ class IntrusionTracker:
         else:
             self.streaks[sensor_id] = 0
             self.observations[sensor_id] = []
-            if self.active and self._entry_over(now):
+            if self.active and self.reported and self._entry_over(now):
                 self.active = self.reported = False
-                self.hazard_id = None
+                self.hazard_id = self.trigger = None
         if in_zone and self.streaks[sensor_id] >= self.required and not self.active:
             self.active = True
             self.hazard_id = f"hazard-{uuid4()}"
+            self.trigger = {"hazard_id": self.hazard_id, "sensor_id": sensor_id,
+                            "confidence": sum(history) / len(history),
+                            "observation_ids": list(self.observations[sensor_id]),
+                            "detected_at": detected_at or datetime.now(timezone.utc)}
         if not self.active or self.reported:
             return None
-        return {"hazard_id": self.hazard_id, "sensor_id": sensor_id,
-                "confidence": sum(history) / len(history),
-                "observation_ids": list(self.observations[sensor_id])}
+        return dict(self.trigger, observation_ids=list(self.trigger["observation_ids"]))
 
     def mark_reported(self):
         self.reported = True
@@ -152,7 +168,7 @@ def build_hazard(zone_id, robot_ids, trigger, detected_at=None):
         "related_worker_ids": [],
         "zone_id": zone_id,
         "confidence": round(trigger["confidence"], 3),
-        "detected_at": (detected_at or datetime.now(timezone.utc)).isoformat(),
+        "detected_at": (detected_at or trigger.get("detected_at") or datetime.now(timezone.utc)).isoformat(),
     }
 
 
