@@ -15,8 +15,8 @@
 | v1 | 2026-09-23 | 최초 기준선 확정 | - |
 | v1.1 | 2026-09-28 | 선택 필드 12건·열거값 2건 추가, 승인 규칙 8번 추가, 통합 규칙 수치화, E-Stop 경로 원칙 추가 | 개발계획서 v1.0(실행판) 정합 및 SR-06·KPI 측정 구현 가능화 |
 | v1.1 (적용 범위 수정) | 2026-10-11 | 적용 범위의 시뮬레이터를 Isaac Sim → MuJoCo로 변경. 객체·필드·열거값·규칙 변경 없음 | 팀 시뮬레이터 변경 결정 |
-| v1.1 (가상 CCTV·디지털 트윈 반영) | 2026-11-06 | CV 직접 등록 HazardEvent의 `source_observation_ids` 빈 배열 허용, 점수 없는 탐지기의 `confidence` 정의, `COLLISION` 규칙을 MuJoCo ② 사전 시뮬레이션 판정으로 정의, 토크·관절 속도 규칙 미결 명시. 객체명·필수 필드·열거값 변경 없음 | [플랫폼 구조 v1.0](platform-architecture-v1.0.md), PR #41 팀 결정 |
 | v1.1 (연결 의미 명확화) | 2026-10-30 | 빈 `related_robot_ids`는 전역 위험이 아니라 명시적 로봇 연결 없음으로 해석하고, 작업 목적지 Zone 연결 판정 기준을 명시 | 승인 규칙 6의 백엔드 구현 모호성 제거 |
+| v1.1 (가상 CCTV·디지털 트윈 반영) | 2026-11-06 | CV 직접 등록 HazardEvent의 `source_observation_ids`에 CV JSONL 탐지 기록과 연결되는 결정적 관측 ID 사용, 점수 없는 탐지기의 `confidence` 정의, `COLLISION` 규칙을 MuJoCo ② 사전 시뮬레이션 판정으로 정의, 토크·관절 속도 규칙 미결 명시. 객체명·필수 필드·열거값 변경 없음 | [플랫폼 구조 v1.0](platform-architecture-v1.0.md), PR #41 팀 결정 |
 
 변경 절차 [v1.1]: 스키마 변경은 GitHub 이슈로 제안 → 영향 모듈 담당 전원 승인 → 버전 태그 후 반영한다. 필수 필드 변경·삭제, 열거값 삭제는 v2 제안으로만 다룬다.
 
@@ -228,7 +228,7 @@ Action 승인 여부를 판단하는 규칙을 표현한다.
 
 생성 경로 [2026-11-06]:
 
-- 현재(PR #41 팀 결정): CV가 `POST /hazards`로 직접 등록한다. 카메라 1대라도 연속 2프레임에서 `KEEP_OUT` 구역 안 작업자를 탐지하면 `CRITICAL` `WORKER_INTRUSION`을 등록한다. 이 경로는 Observation 객체를 만들지 않으므로 `source_observation_ids`는 빈 배열을 허용한다.
+- 현재(PR #41 팀 결정): CV가 `POST /hazards`로 직접 등록한다. 카메라 1대라도 연속 2프레임에서 `KEEP_OUT` 구역 안 작업자를 탐지하면 `CRITICAL` `WORKER_INTRUSION`을 등록한다. 이 경로는 Observation 객체를 등록하지 않고, `source_observation_ids`에 CV JSONL 탐지 기록(`hazard.observation_ids`)과 연결되는 결정적 관측 ID를 넣는다.
 - `confidence`: 모델 점수가 있으면 그 점수를 쓴다. 점수가 없는 탐지기(예: Florence-2 `<OD>`)는 해당 카메라 최근 5프레임 중 작업자를 탐지한 비율(탐지 지속 비율)을 쓴다.
 - 6장 병합 규칙은 Observation 등록 경로가 생긴 뒤 적용한다. 그 전까지 병합 대신 CV 쪽 연속 탐지 조건이 오탐을 줄인다.
 - 탐지 실패나 신뢰도 부재를 위험 해제의 근거로 쓰지 않는다. 관측 공백은 `OBSERVATION_GAP` 규칙이 판정한다.

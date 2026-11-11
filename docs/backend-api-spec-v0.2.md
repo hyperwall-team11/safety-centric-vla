@@ -283,7 +283,7 @@ TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 
 | `hazard_id` | string | 생략 시 서버 생성, 중복 불가 |
 | `hazard_type` | enum | `WORKER_INTRUSION`, `COLLISION_RISK`, `FIRE`, `SMOKE`, `FALLING_OBJECT`, `UNKNOWN` |
 | `severity` | enum | `WARNING`, `CRITICAL` |
-| `source_observation_ids` | string[] | 필수. CV 직접 등록 경로는 빈 배열 허용(스키마 v1.1 HazardEvent 생성 경로) |
+| `source_observation_ids` | string[] | 필수. CV 직접 등록 경로는 Observation 객체를 등록하지 않고, CV JSONL 탐지 기록과 연결되는 결정적 관측 ID를 넣는다(스키마 v1.1 HazardEvent 생성 경로) |
 | `related_robot_ids` | string[] | 필수. 빈 배열은 명시적인 로봇 연결이 없음을 의미 |
 | `related_worker_ids` | string[] | 필수 |
 | `zone_id` | string | 필수 |
