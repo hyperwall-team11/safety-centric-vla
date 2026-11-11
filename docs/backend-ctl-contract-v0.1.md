@@ -319,8 +319,8 @@ Backend는 5 Hz로 발행한다. CTL이 마지막 정상 heartbeat 후 1초 동�
 | Proposal 상태 | Backend 반환값은 `EXECUTING` | 전송 스냅샷은 `APPROVED` |
 | 좌표 | Backend `{x,y,z}` | CTL `[x,y,z]` 변환 |
 | Zone | `zone_id`만 제안에 유지 | `geometry.navigation_target` 필요 |
-| 실패 코드 | CTL 로컬 코드 8종 추가 | 3개 표준 코드로 정규화 |
-| 멱등성 | Backend 결과 API만 멱등 | CTL `proposal_id` 중복 실행 방지 필요 |
+| 실패 코드 | CTL 로컬 코드 8종 추가 | 구현: Backend 브리지(`ctl_bridge.LOCAL_FAILURE_CODES`)가 5.3절 표대로 3개 표준 코드로 정규화, 원본 코드는 `detail` 앞에 보존 |
+| 멱등성 | Backend 결과 API만 멱등 | 구현(CT-03): 같은 `proposal_id`·같은 본문은 기존 ACK·최종 RESULT 재전송, 본문이 다르면 `INVALID` |
 | Robot state | CTL 고유 축약 형식 | v0.1은 관측용, 후속 계약으로 분리 |
 
 | CCTV 영상 | MuJoCo 렌더링 | Three.js 렌더링 (v0.2, 계획) |
