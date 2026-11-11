@@ -400,9 +400,9 @@ CV가 CCTV 영상 속 작업자를 인식해 온톨로지 현장 상태에 반�
 | 승인 명령 ROS 2 전달, ACK·RESULT, 중복 실행 방지 | 구현 | PR #30 |
 | 운영자 웹 콘솔 | 구현 | PR #31 |
 | 사람 형태 작업자 모델 (MuJoCo skin) | 구현, 리뷰 중 | PR #43. 걷기 자세 계산·MPFB 에셋은 Three.js에서 재사용 |
-| Three.js 실사 CCTV 영상 | 계획 | |
+| Three.js 실사 CCTV 영상 | 구현, 리뷰 중 | PR #45. 오프라인 PNG·마스크·정답 출력, Cycles 실사 렌더, 실시간 재생. ROS 2 토픽 발행은 #55 |
 | MuJoCo ② 트윈 재구성·사전 시뮬레이션 | 계획 | 새 규칙 종류는 스키마 반영 필요 |
-| HazardEvent 등록 시 실행 중인 로봇 즉시 정지 | 미구현 | 백엔드·CTL 후속 작업 |
+| HazardEvent 등록 시 실행 중인 로봇 즉시 정지 | 구현, 리뷰 중 | PR #66. `CRITICAL` 위험이 실행 중 로봇과 연결되면 Backend가 `/safety/estop` 발행 |
 | 토크·관절 속도 검사 | 미결 | ONT와 기준 협의 |
 | Scenario 3 (여러 현장 구성) | 계획 | |
 
