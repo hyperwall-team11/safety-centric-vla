@@ -25,8 +25,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   const body = response.status === 204 ? null : await response.json().catch(() => null);
   if (!response.ok) {
-    if (response.status === 404 || response.status === 405) {
-      if (path === "/hazards" || path === "/workers/snapshot") throw new MissingApiError(`GET ${path}`);
+    // 405: 조회 API가 없는 Backend(#75 이전). /workers/snapshot의 404는 "아직 관측 없음"이다.
+    if (response.status === 405 && (path === "/hazards" || path === "/workers/snapshot")) {
+      throw new MissingApiError(`GET ${path}`);
     }
     throw new ApiError(response.status, body?.detail ?? body);
   }
@@ -45,9 +46,12 @@ export const api = {
   taskProposals: (taskId: string) => request<ActionProposal[]>(`/task-orders/${taskId}/action-proposals`),
   executionLogs: () => request<ExecutionLog[]>("/execution-logs"),
 
-  // 미구현: Backend에 조회 API가 없다(이슈 #47). 생기면 그대로 동작한다.
+  // #75로 추가되는 조회 API. 없는 Backend에서는 "API 대기"로 표시한다.
   hazards: () => request<HazardEvent[]>("/hazards"),
-  workers: () => request<WorkerSnapshot>("/workers/snapshot"),
+  workers: () => request<WorkerSnapshot>("/workers/snapshot").catch((e) => {
+    if (e instanceof ApiError && e.status === 404) return { observed_at: "", workers: [] } as WorkerSnapshot;
+    throw e;
+  }),
 
   previewTask: (instruction: string) => post<TaskOrderPreview>("/task-orders/preview", { instruction }),
   createTask: (instruction: string) =>
