@@ -1,6 +1,7 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { api } from "../api/client";
 import { usePolling } from "../hooks/usePolling";
+import { useStateStream } from "../hooks/useStateStream";
 import { CriticalBanner } from "./CriticalBanner";
 
 const MENU = [
@@ -14,7 +15,8 @@ const MENU = [
 ];
 
 export function Layout() {
-  const health = usePolling(api.health, 5000);
+  const health = usePolling(api.health, 5000, false);
+  const stream = useStateStream();
   return (
     <div className="app">
       <header className="topbar">
@@ -28,6 +30,7 @@ export function Layout() {
         <div className="system-state" data-state={health.error ? "down" : health.data ? "up" : "pending"}>
           <span className="system-dot" />
           <span>{health.error ? "연결 안 됨" : health.data ? "현장 정상 운영" : "확인 중"}</span>
+          {health.data && !health.error && <span className="sync-mode">{stream.connected ? "실시간" : "주기 조회"}</span>}
         </div>
       </header>
       <main className="content">

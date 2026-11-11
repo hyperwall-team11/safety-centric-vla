@@ -32,8 +32,11 @@ Backend 주소가 다르면 `VITE_BACKEND_URL=http://host:8000 npm run dev`. Bac
 - `GET /hazards`: 위험 목록·경보 배너·위험 모니터링
 - `GET /workers/snapshot`: 현장 지도의 작업자 위치
 - 운영자 E-Stop API: 비상정지 버튼(현재 비활성)
-- WebSocket `/ws/state`: 지금은 1초 주기 조회(`usePolling`)
 - CCTV 영상: ROS 2 토픽을 웹으로 보내는 브리지(#55)
+
+## 실시간 갱신
+
+`StateStreamProvider`가 WebSocket `/ws/state`(#76)를 구독합니다. 스냅샷의 `revision`이 바뀌면 각 화면이 쓰던 조회 API를 한 번 다시 부르고, 15초 heartbeat(같은 `revision`)에는 조회하지 않습니다. 연결이 끊기거나 20초간 수신이 없으면 1~15초 간격으로 재연결하며, 그동안 화면은 기존 주기 조회(`usePolling`)로 동작합니다. 상단 바에 `실시간`/`주기 조회`로 표시합니다.
 
 ## 구조
 
@@ -41,7 +44,8 @@ Backend 주소가 다르면 `VITE_BACKEND_URL=http://host:8000 npm run dev`. Bac
 src/
 ├── api/types.ts       # backend/app/models.py와 같은 이름·상태값
 ├── api/client.ts      # fetch 래퍼, 미구현 API는 MissingApiError
-├── hooks/usePolling.ts
+├── hooks/usePolling.ts      # 스트림 연결 시 revision 기반, 아니면 주기 조회
+├── hooks/useStateStream.tsx # /ws/state 구독·재연결
 ├── components/        # Layout, 아이콘, CriticalBanner, ui(Panel·Table·Stat·Status·Async)
 └── pages/             # 화면 7개
 ```

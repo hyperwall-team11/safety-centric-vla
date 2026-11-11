@@ -9,10 +9,12 @@ import { Hazards } from "./pages/Hazards";
 import { SiteMap } from "./pages/SiteMap";
 import { EStop } from "./pages/EStop";
 import { Logs } from "./pages/Logs";
+import { StateStreamProvider } from "./hooks/useStateStream";
 import "./styles.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
+    <StateStreamProvider>
     <BrowserRouter>
       <Routes>
         <Route element={<Layout />}>
@@ -27,5 +29,6 @@ createRoot(document.getElementById("root")!).render(
         </Route>
       </Routes>
     </BrowserRouter>
+    </StateStreamProvider>
   </StrictMode>,
 );

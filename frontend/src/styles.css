@@ -59,6 +59,7 @@ a:hover { text-decoration: underline; }
 .system-dot { width: 8px; height: 8px; background: #f5a623; border-radius: 50%; }
 .system-state[data-state="up"] .system-dot { background: #27b75e; box-shadow: 0 0 0 4px rgba(39, 183, 94, .1); }
 .system-state[data-state="down"] { color: var(--red); }
+.sync-mode { padding: 2px 8px; border-radius: 999px; background: #f0f0f2; color: #6b6b72; font-size: 12px; font-weight: 600; }
 .system-state[data-state="down"] .system-dot { background: var(--red); box-shadow: 0 0 0 4px rgba(228, 33, 25, .09); }
 
 .content { display: flex; width: min(100%, 1500px); min-width: 0; margin: 0 auto; padding: clamp(50px, 7vw, 104px) clamp(22px, 4.5vw, 72px) 110px; flex-direction: column; gap: 38px; }

@@ -9,7 +9,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/api": { target: backend, changeOrigin: true, rewrite: (path) => path.replace(/^\/api/, "") },
+      "/api": { target: backend, changeOrigin: true, ws: true, rewrite: (path) => path.replace(/^\/api/, "") },
     },
   },
 });
