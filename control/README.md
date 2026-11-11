@@ -13,6 +13,7 @@ ROS 2 제어 어댑터, 안전 경로(HOLD·E-Stop), MuJoCo 시뮬레이션 환�
 | CT-01 | 브리지 확장: `/joint_states`, 카메라 3대(Image + CameraInfo), TF, 주기 측정 | 완료 | `pixi run measure` |
 | CT-02 | 시나리오 장면: 금지구역, A·B 작업대와 상자, CCTV 2대 + 머리 카메라, 작업자 접근 동작 | 완료 | `pixi run snapshot` |
 | CT-03 | Backend 승인 명령·RESULT 연동, `proposal_id` 중복 실행 방지 | 완료 | `pixi run test` |
+| #54 | MuJoCo ② 디지털 트윈 재구성: 온톨로지 상태(Robot·Worker 스냅샷·Zone)로 장면 생성, 정답 대비 위치 오차 | 완료 | `pixi run test` |
 
 다음 단계는 Backend와 TIAGo 어댑터를 함께 띄운 통합 시나리오 자동화입니다.
 
@@ -165,6 +166,22 @@ world ─┬─ odom ── base_link ── camera_head_camera   (동적, 머�
 
 RoboStack Humble에 `ros-humble-mujoco-ros2-control` 0.0.3(osx-arm64·linux-64)과 `ros2_control`·`diff_drive_controller`·`joint_state_broadcaster`가 있습니다. 다만 0.0.3은 초기 버전이고, 쓰려면 URDF에 `ros2_control` 태그와 컨트롤러 설정을 새로 만들어야 하며 MuJoCo 3.15.0과의 호환도 확인되지 않았습니다. 카메라 발행·작업자 스크립트·안전 경로는 어차피 직접 구현해야 하므로 **직접 구현한 브리지를 유지**합니다. MoveIt 연동이 필요해지면 다시 검토합니다.
 
+## MuJoCo ② 디지털 트윈 (#54)
+
+`mujoco/twin.py`는 온톨로지 상태만으로 사전 시뮬레이션용 MuJoCo 장면을 만듭니다. MuJoCo ①(`scenario_scene.xml`)의 정답 좌표는 읽지 않습니다.
+
+```bash
+python mujoco/twin.py --state state.json --xml outputs/twin.xml          # 제어 계약 13.1 state 형식
+python mujoco/twin.py --backend http://127.0.0.1:8000 --workers snapshot.json   # GET /robots, GET /zones + Worker 스냅샷
+```
+
+- 로봇: 종류별 원기둥(`MOBILE`은 반경 0.30 m, 높이 1.10 m)과 평면 이동 관절(`robot:<id>:x`, `:y`, `:yaw`). 사전 시뮬레이션(#53)이 이 관절을 움직입니다.
+- 작업자: 반경 0.25 m + CV 위치 오차 여유 0.20 m 캡슐(mocap).
+- Zone: 볼록 껍질 바닥 판, 충돌 없음. GeoJSON `Polygon/coordinates`와 `polygon/points`를 모두 받습니다.
+- `frame_id`는 `world`만 받습니다. Worker 스냅샷이 없으면 빈 현장으로 가정하지 않고 `TwinError`로 거부합니다(Fail-Closed). 빈 목록(`items: []`)은 "작업자 없음"으로 받습니다.
+- `position_errors()`로 트윈 위치와 MuJoCo ① 정답 위치의 거리, 미탐(`missing`)·오탐(`extra`)을 잽니다.
+- 미구현: Backend에 Worker 조회 API(`GET /workers/snapshot`)가 없어 `--backend` 모드에서는 Worker 스냅샷을 파일로 넘깁니다. 작업자 이동 예측, 작업대·상자 등 PhysicalObject 반영도 아직 없습니다.
+
 ## 어댑터 동작 규칙
 
 - `status=APPROVED`가 아닌 제안은 ACK 없이 `NOT_APPROVED`로 거부합니다.
@@ -196,6 +213,7 @@ control/
 │   │   └── franka_emika_panda/     # Panda 모델 (33MB, 저장소 제외 → fetch_models.sh로 받음)
 │   ├── simulation.py               # 차동 구동 시뮬레이션 (DiffDriveSim, 로봇 목록 ROBOTS)
 │   ├── scenario.py                 # 작업자 접근 동작, 카메라 렌더·내부 파라미터, 관절 목록, 스냅샷
+│   ├── twin.py                     # MuJoCo ② 디지털 트윈: 온톨로지 상태 → 장면, 정답 대비 위치 오차
 │   └── manipulator.py              # Panda move_to·그리퍼·pick_and_place
 ├── ros2_ws/src/
 │   ├── mujoco_bridge/              # ROS 2 ↔ MuJoCo 브리지, odom_echo, rate_monitor
