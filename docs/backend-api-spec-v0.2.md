@@ -57,6 +57,10 @@
 | `GET` | `/safety-rules` | `200` | 활성 안전 규칙 조회 |
 | `GET` | `/execution-logs` | `200` | 전체 ExecutionLog 조회 |
 
+WebSocket `WS /ws/state`는 연결 직후와 상태 변경 시 전체 상태 스냅샷을 전송한다. 상태 변경이 없어도 15초마다 같은 형식의 스냅샷을 heartbeat로 전송한다. WebSocket 경로는 HTTP OpenAPI path·operation 수에 포함하지 않는다.
+
+스냅샷은 `type=STATE_SNAPSHOT`, 단조 증가하는 `revision`, 서버 전송 시각 `observed_at`과 함께 Robot, Sensor, Worker, Zone, TaskOrder, ActionProposal, HazardEvent, SafetyRule, ExecutionLog 전체 목록을 포함한다. Worker 관측이 한 번도 없으면 `workers=null`, 관측 결과 작업자가 없으면 `workers=[]`이며, `workers_observed_at`으로 관측 시각을 제공한다. 현재는 인증과 재연결 시 delta 복구 없이 항상 전체 스냅샷을 보낸다.
+
 ## 3. 데이터 계약
 
 ### 3.1 Robot
@@ -347,7 +351,7 @@ ResumeTask 전이와 실제 ROS 2 어댑터 결과 토픽 연결은 아직 구�
 | 규칙 SR-01~06 | 속도·구역·거리·위험·상태·센서 공백 | SR-01 기본 0.4m/s·Robot·Zone 상한, 로봇 상태·adapter·관련 CRITICAL 위험 구현. KEEP_OUT 경로 검사를 구현하고 거리·센서 공백은 관측 안전 검사 활성화 시 적용 |
 | E-Stop | ROS 2 latched 전용 경로 | 실행 재검증 실패 시 Robot ESTOP·Task HELD·감사 로그 구현, ROS 2 전용 신호는 미구현 |
 | 어댑터 실행 결과 | ROS 2 result 토픽으로 완료·실패 보고 | HTTP 결과 보고, 상태 전이, 멱등 감사 로그 구현. ROS 2 토픽 연결은 미구현 |
-| 상태 구독 | WebSocket `/ws/state` | 미구현 |
+| 상태 구독 | WebSocket `/ws/state` | 전체 상태 스냅샷 구독과 15초 heartbeat 구현, delta 복구는 미구현 |
 | 영속 저장 | Redis 또는 ROS 2 상태 연동 | 인메모리 |
 | 판정 시간 | `evaluated_in_ms` 기록 | 평가·실행 직전 재평가 로그에 구현 |
 | 스키마 v1.1 선택 필드 | 모델에서 선택적으로 허용 | Robot, Sensor, Observation, Worker, Zone, SafetyRule, HazardEvent, ExecutionLog에 반영 |

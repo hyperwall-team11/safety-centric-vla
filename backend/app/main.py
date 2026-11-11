@@ -1,12 +1,23 @@
 from __future__ import annotations
 
+import asyncio
 from hashlib import sha256
 from os import getenv
 from pathlib import Path
 from time import perf_counter
 from typing import Annotated, Literal
 
-from fastapi import FastAPI, Header, HTTPException, Query, Response, status
+from fastapi import (
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import AwareDatetime, BaseModel
@@ -52,6 +63,7 @@ from .models import (
     utc_now,
 )
 from .safety import WORKER_SNAPSHOT_MAX_AGE_SECONDS, default_rules, evaluate_proposal
+from .state_stream import state_broadcaster
 from .store import store
 from .task_parser import TaskParseError, parse_task_order, parse_task_order_preview
 
@@ -94,6 +106,81 @@ TASK_ORDER_RESPONSE_HEADERS = {
         "schema": {"type": "string", "enum": ["true", "false"]},
     },
 }
+STATE_HEARTBEAT_SECONDS = 15.0
+NON_MUTATING_POST_PATHS = {
+    "/task-orders/preview",
+    "/task-orders/preview/batch",
+}
+
+
+class StateSnapshot(BaseModel):
+    type: Literal["STATE_SNAPSHOT"] = "STATE_SNAPSHOT"
+    revision: int
+    observed_at: AwareDatetime
+    workers_observed_at: AwareDatetime | None
+    robots: list[Robot]
+    sensors: list[Sensor]
+    workers: list[Worker] | None
+    zones: list[Zone]
+    task_orders: list[TaskOrder]
+    action_proposals: list[ActionProposal]
+    hazards: list[HazardEvent]
+    safety_rules: list[SafetyRule]
+    execution_logs: list[ExecutionLog]
+
+
+def make_state_snapshot() -> dict:
+    with store.lock:
+        snapshot = StateSnapshot(
+            revision=state_broadcaster.revision,
+            observed_at=utc_now(),
+            workers_observed_at=store.workers_observed_at,
+            robots=list(store.robots.values()),
+            sensors=list(store.sensors.values()),
+            workers=None if store.workers is None else list(store.workers),
+            zones=list(store.zones.values()),
+            task_orders=list(store.tasks.values()),
+            action_proposals=list(store.proposals.values()),
+            hazards=list(store.hazards.values()),
+            safety_rules=list(store.rules.values()),
+            execution_logs=list(store.logs),
+        )
+        return snapshot.model_dump(mode="json")
+
+
+@app.middleware("http")
+async def publish_successful_state_writes(request: Request, call_next):
+    response = await call_next(request)
+    is_state_write = request.method in {"POST", "PUT", "PATCH", "DELETE"}
+    if (
+        is_state_write
+        and request.url.path not in NON_MUTATING_POST_PATHS
+        and 200 <= response.status_code < 400
+    ):
+        state_broadcaster.publish()
+    return response
+
+
+@app.websocket("/ws/state")
+async def stream_state(websocket: WebSocket) -> None:
+    await websocket.accept()
+    subscription = state_broadcaster.subscribe()
+    try:
+        await websocket.send_json(make_state_snapshot())
+        while True:
+            try:
+                await asyncio.wait_for(
+                    subscription.event.wait(),
+                    timeout=STATE_HEARTBEAT_SECONDS,
+                )
+            except TimeoutError:
+                pass
+            subscription.event.clear()
+            await websocket.send_json(make_state_snapshot())
+    except WebSocketDisconnect:
+        pass
+    finally:
+        state_broadcaster.unsubscribe(subscription.subscription_id)
 
 
 def normalize_idempotency_key(idempotency_key: str | None) -> str | None:
@@ -125,6 +212,7 @@ def apply_ctl_safety_event(event: dict) -> None:
     robot_id = event.get("robot_id")
     if kind not in {"HOLD", "ESTOP"} or not isinstance(robot_id, str):
         return
+    changed = False
     with store.lock:
         robot = store.robots.get(robot_id)
         if robot is None:
@@ -139,6 +227,7 @@ def apply_ctl_safety_event(event: dict) -> None:
         ]
         robot.status = RobotStatus.ESTOP if kind == "ESTOP" else RobotStatus.HOLD
         robot.updated_at = utc_now()
+        changed = True
         trigger_value = event.get("triggered_by", "RULE_ENGINE")
         try:
             triggered_by = TriggerSource(trigger_value)
@@ -160,6 +249,8 @@ def apply_ctl_safety_event(event: dict) -> None:
                     triggered_by=triggered_by,
                 )
             )
+    if changed:
+        state_broadcaster.publish()
 
 
 action_dispatcher = create_action_dispatcher()
