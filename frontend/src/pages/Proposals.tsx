@@ -3,6 +3,8 @@ import { Link, useParams } from "react-router-dom";
 import { ApiError, api } from "../api/client";
 import { usePolling } from "../hooks/usePolling";
 import { Async, Panel, Status, Table, time } from "../components/ui";
+import { ProposalReview, latestLog, planOverlay } from "../components/ProposalReview";
+import { SiteMap } from "./SiteMap";
 
 export function ProposalList() {
   const tasks = usePolling(() => api.tasks(), 2000);
@@ -26,19 +28,26 @@ export function ProposalList() {
   );
 }
 
-/** 흐름: 제안(PROPOSED) → [검증] → APPROVED면 [실행] → EXECUTING → SUCCEEDED/FAILED. 거부 사유는 판단 이력에서 */
+/** 흐름: 제안(PROPOSED) → [검증] → APPROVED면 [실행] → EXECUTING → SUCCEEDED/FAILED. 위반 위치는 지도에 표시 */
 export function ProposalDetail() {
   const { taskId = "" } = useParams();
   const task = usePolling(() => api.task(taskId), 2000);
   const proposals = usePolling(() => api.taskProposals(taskId), 1000);
   const logs = usePolling(api.executionLogs, 2000);
   const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  const [focusId, setFocusId] = useState<string>();
 
   const act = (fn: () => Promise<unknown>) => {
     setError(undefined);
+    setBusy(true);
     fn().catch((e) => setError(e instanceof ApiError ? `${e.status}: ${JSON.stringify(e.detail)}` : String(e)))
-      .finally(() => { proposals.refresh(); logs.refresh(); });
+      .finally(() => { setBusy(false); proposals.refresh(); logs.refresh(); });
   };
+  // 최신 제안이 위로. 지도는 고른 제안(없으면 최신)을 보여 준다.
+  const sorted = [...(proposals.data ?? [])].sort((a, b) => b.proposed_at.localeCompare(a.proposed_at));
+  const shown = sorted.find((p) => p.proposal_id === focusId) ?? sorted[0];
+  const overlay = planOverlay(task.data, shown, latestLog(logs.data, shown?.proposal_id));
 
   return (
     <>
@@ -57,35 +66,32 @@ export function ProposalDetail() {
         <button className="primary" onClick={() => act(() => api.createProposal(taskId))}>새 행동 제안</button>
       </Panel>
       {error && <p className="error">{error}</p>}
-      <Async state={proposals}>
-        {(rows) => (
-          <>
-            {rows.map((p) => {
-              const rules = [...(logs.data ?? [])].reverse().find((l) => l.proposal_id === p.proposal_id)?.rule_results ?? [];
-              return (
-                <Panel className="proposal-card" key={p.proposal_id} title={`${p.action_type} · ${p.proposal_id.slice(0, 17)}`}
-                       action={<Status value={p.status} />}>
-                  <dl className="fields">
-                    <dt>속도 상한</dt><dd>{p.speed_limit} m/s</dd>
-                    <dt>목적지</dt><dd><code>{JSON.stringify(p.parameters.target_pose ?? p.parameters)}</code></dd>
-                    <dt>모델</dt><dd>{p.model_name} {p.model_version}</dd>
-                  </dl>
-                  <h3>규칙 검사</h3>
-                  <Table rows={rules} rowKey={(r) => r.rule_id} empty="아직 검증하지 않음" columns={[
-                    { key: "rule", label: "규칙", render: (r) => r.rule_id },
-                    { key: "ok", label: "결과", render: (r) => (r.passed ? "통과" : "위반") },
-                    { key: "why", label: "사유", render: (r) => r.reason },
-                  ]} />
-                  <div className="row">
-                    <button className="primary" disabled={p.status !== "PROPOSED"} onClick={() => act(() => api.evaluate(p.proposal_id))}>안전 규칙 검증</button>
-                    <button disabled={p.status !== "APPROVED"} onClick={() => act(() => api.execute(p.proposal_id))}>승인된 행동 실행</button>
-                  </div>
-                </Panel>
-              );
-            })}
-          </>
-        )}
-      </Async>
+      <div className="request-layout">
+        <Panel title="현장 지도" className="map-panel">
+          <SiteMap compact selectedRobotId={shown?.robot_id}
+                   selectedZoneId={task.data?.destination.type === "ZONE" ? task.data.destination.zone_id : undefined}
+                   plan={overlay.plan} violation={overlay.violation} />
+          <p className="map-hint">{shown ? `${shown.proposal_id.slice(0, 17)} 제안의 이동과 위반 위치` : "제안이 없습니다."}</p>
+        </Panel>
+        <div className="stack">
+          <Async state={proposals}>
+            {() => (
+              <>
+                {sorted.length === 0 && <p className="empty-state">아직 행동 제안이 없습니다.</p>}
+                {sorted.map((p) => (
+                  <Panel className={`proposal-card${p === shown ? " is-shown" : ""}`} key={p.proposal_id}
+                         title={`${p.action_type} · ${p.proposal_id.slice(0, 17)}`}
+                         action={p === shown ? <span className="stat-detail">지도에 표시 중</span>
+                                             : <button className="compact-button" onClick={() => setFocusId(p.proposal_id)}>지도에 표시</button>}>
+                    <small className="muted">{time(p.proposed_at)} 제안 · {p.model_name} {p.model_version}</small>
+                    <ProposalReview proposal={p} log={latestLog(logs.data, p.proposal_id)} busy={busy} act={act} />
+                  </Panel>
+                ))}
+              </>
+            )}
+          </Async>
+        </div>
+      </div>
     </>
   );
 }

@@ -2,6 +2,7 @@ import { api } from "../api/client";
 import { usePolling } from "../hooks/usePolling";
 import { Panel, Placeholder } from "../components/ui";
 import type { Zone } from "../api/types";
+import type { Point } from "../api/explain";
 
 function ring(zone: Zone): [number, number][] {
   const g = zone.geometry as { points?: number[][]; coordinates?: number[][][] };
@@ -17,9 +18,18 @@ type SiteMapProps = {
   selectedZoneId?: string;
   onRobotClick?: (robotId: string) => void;
   onZoneClick?: (zoneId: string) => void;
+  /** 행동 제안의 이동 계획. path가 2점 미만이면 로봇→목적지 구역을 점선(경로 없음)으로 잇는다. */
+  plan?: { robotId: string; path: Point[]; toZoneId?: string; status: "pending" | "passed" | "blocked" };
+  /** 안전 검증에서 위반 원인으로 지목된 구역·작업자 */
+  violation?: { zoneIds: string[]; workerIds: string[] };
 };
 
-export function SiteMap({ compact = false, selectedRobotId, selectedZoneId, onRobotClick, onZoneClick }: SiteMapProps) {
+const centroid = (pts: [number, number][]) => ({
+  x: pts.reduce((a, p) => a + p[0], 0) / pts.length,
+  y: pts.reduce((a, p) => a + p[1], 0) / pts.length,
+});
+
+export function SiteMap({ compact = false, selectedRobotId, selectedZoneId, onRobotClick, onZoneClick, plan, violation }: SiteMapProps) {
   const zones = usePolling(api.zones, 5000);
   const robots = usePolling(api.robots);
   const workers = usePolling(api.workers);
@@ -34,6 +44,22 @@ export function SiteMap({ compact = false, selectedRobotId, selectedZoneId, onRo
   const view = { x: -4, y: -4, w: 8, h: 8 }; // 시나리오 장면 기준 범위(m)
   const flip = (y: number) => -y;
 
+  // 계획 경로: trajectory가 있으면 그대로, 없으면 로봇 위치 → 목적지 구역 중심을 점선으로 잇는다.
+  let planLine: { points: string; estimated: boolean; end?: Point } | undefined;
+  if (plan) {
+    let pts = plan.path;
+    let estimated = false;
+    if (pts.length < 2) {
+      const robot = robots.data?.find((r) => r.robot_id === plan.robotId);
+      const zone = zones.data?.find((z) => z.zone_id === plan.toZoneId);
+      if (robot && zone && ring(zone).length > 0) {
+        pts = [{ x: robot.pose.position.x, y: robot.pose.position.y }, centroid(ring(zone))];
+        estimated = true;
+      }
+    }
+    if (pts.length >= 2) planLine = { points: pts.map((p) => `${p.x},${flip(p.y)}`).join(" "), estimated, end: pts[pts.length - 1] };
+  }
+
   const map = (
     <figure className={`map ${isEmpty ? "is-empty" : ""}`}>
       <svg viewBox={`${view.x} ${view.y} ${view.w} ${view.h}`} role="img" aria-label="현장 지도">
@@ -47,17 +73,22 @@ export function SiteMap({ compact = false, selectedRobotId, selectedZoneId, onRo
         )}
         {(zones.data ?? []).map((z) => (
           <g key={z.zone_id} className={`zone${onZoneClick ? " pickable" : ""}${z.zone_id === selectedZoneId ? " selected" : ""}`} data-type={z.zone_type} data-hazard={hazardLevel.get(z.zone_id)}
+             data-violation={violation?.zoneIds.includes(z.zone_id) || undefined}
              onClick={onZoneClick && (() => onZoneClick(z.zone_id))}>
             <polygon points={ring(z).map(([x, y]) => `${x},${flip(y)}`).join(" ")} />
             {hazardLevel.has(z.zone_id) && ring(z).length > 0 && (() => {
-              const pts = ring(z);
-              const cx = pts.reduce((a, p) => a + p[0], 0) / pts.length;
-              const cy = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+              const { x: cx, y: cy } = centroid(ring(z));
               return <g className="hazard-marker"><circle cx={cx} cy={flip(cy)} r={0.32} /><text x={cx} y={flip(cy) + 0.07}>!</text></g>;
             })()}
             {ring(z)[0] && <text x={ring(z)[0][0]} y={flip(ring(z)[0][1]) - 0.1}>{z.zone_id}</text>}
           </g>
         ))}
+        {planLine && (
+          <g className="plan" data-status={plan?.status} data-estimated={planLine.estimated || undefined}>
+            <polyline points={planLine.points} />
+            {planLine.end && <circle cx={planLine.end.x} cy={flip(planLine.end.y)} r={0.1} />}
+          </g>
+        )}
         {(robots.data ?? []).map((r) => (
           <g key={r.robot_id} className={`robot${onRobotClick ? " pickable" : ""}${r.robot_id === selectedRobotId ? " selected" : ""}`}
              onClick={onRobotClick && ((e) => { e.stopPropagation(); onRobotClick(r.robot_id); })}>
@@ -66,11 +97,11 @@ export function SiteMap({ compact = false, selectedRobotId, selectedZoneId, onRo
           </g>
         ))}
         {(workers.data?.workers ?? []).map((w) => (
-          <circle key={w.worker_id} className="worker" cx={w.pose.position.x} cy={flip(w.pose.position.y)} r={0.2} />
+          <circle key={w.worker_id} className={`worker${violation?.workerIds.includes(w.worker_id) ? " violation" : ""}`} cx={w.pose.position.x} cy={flip(w.pose.position.y)} r={0.2} />
         ))}
       </svg>
       <figcaption className="map-legend">
-        <span><i className="legend-robot" /> 로봇</span><span><i className="legend-worker" /> 작업자</span><span><i className="legend-hazard" /> 열린 위험</span>{workers.missing && <small>작업자 조회 API 대기</small>}
+        <span><i className="legend-robot" /> 로봇</span><span><i className="legend-worker" /> 작업자</span><span><i className="legend-hazard" /> 열린 위험</span>{planLine && <span><i className="legend-plan" /> {planLine.estimated ? "예상 이동(경로 없음)" : "계획 경로"}</span>}{workers.missing && <small>작업자 조회 API 대기</small>}
       </figcaption>
     </figure>
   );

@@ -163,6 +163,31 @@ tbody tr.selected { background: rgba(0, 113, 227, .07); box-shadow: inset 3px 0 
 .hazard-marker circle { fill: var(--red); stroke: #fff; stroke-width: .05; }
 .zone[data-hazard="WARNING"] .hazard-marker circle { fill: #e49b21; }
 .hazard-marker text { fill: #fff; font-size: .38px; font-weight: 800; text-anchor: middle; }
+.plan polyline { fill: none; stroke: var(--blue); stroke-width: .06; stroke-linecap: round; stroke-linejoin: round; }
+.plan circle { fill: var(--blue); }
+.plan[data-estimated] polyline { stroke: #8a8a92; stroke-dasharray: .14 .1; }
+.plan[data-estimated] circle { fill: #8a8a92; }
+.plan[data-status="passed"] polyline { stroke: #1f8f4a; }
+.plan[data-status="passed"] circle { fill: #1f8f4a; }
+.plan[data-status="blocked"] polyline { stroke: var(--red); }
+.plan[data-status="blocked"] circle { fill: var(--red); }
+.zone[data-violation] polygon { fill: rgba(228,33,25,.28); stroke: var(--red); stroke-width: .08; stroke-dasharray: none; }
+.worker.violation { stroke: var(--red); stroke-width: .08; }
+.legend-plan { display: inline-block; width: 14px; height: 0; border-top: 2px dashed currentColor; vertical-align: middle; }
+.review { display: flex; flex-direction: column; gap: 14px; }
+.review-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 15px; font-weight: 600; }
+.review-head small { width: 100%; color: var(--muted); font-weight: 450; }
+.rule-checks { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+.rule-checks li { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 10px; padding: 12px 2px; border-bottom: 1px solid var(--line); }
+.rule-checks .mark { display: grid; width: 22px; height: 22px; place-items: center; color: #fff; background: #1f8f4a; border-radius: 50%; font-size: 12px; font-weight: 800; }
+.rule-checks [data-passed="false"] .mark { background: var(--red); }
+.rule-checks [data-passed="true"] { color: var(--muted); }
+.rule-checks strong { display: block; font-size: 14px; }
+.rule-checks small { display: block; margin-top: 2px; font-size: 13px; }
+.rule-checks .hint { margin: 8px 0 0; padding: 8px 12px; color: #8a1c14; background: rgba(228,33,25,.07); border-radius: 10px; font-size: 13px; }
+.rule-checks .row { margin-top: 8px; }
+.proposal-card.is-shown { box-shadow: inset 3px 0 0 var(--blue); padding-left: 14px; }
+.muted { color: var(--muted); }
 .legend-hazard { display: inline-block; width: 9px; height: 9px; background: var(--red); border-radius: 50%; }
 @keyframes hazard-blink { 50% { fill-opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .zone[data-hazard="CRITICAL"] polygon { animation: none; } }
