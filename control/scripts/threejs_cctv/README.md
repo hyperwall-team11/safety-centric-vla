@@ -17,6 +17,12 @@ node render.mjs --data ../../outputs/threejs_cctv/data --out ../../outputs/three
 
 300프레임 × 카메라 2대 렌더는 Apple M3에서 약 70초 걸린다.
 
+### 지게차 모델
+
+`prop_forklift_*`는 `models/forklift.glb`로 그린다. 출처: Sketchfab [Forklift low poly](https://sketchfab.com/3d-models/forklift-low-poly-8ab650b3982243f8b661142de50f79c9), Ricardo Sanchez, **CC-BY-4.0** (영상·보고서에 출처 표기 필요).
+2.7 MB라 저장소에 함께 둔다. 모델은 MuJoCo 박스(`prop_forklift_1`) 안에 비율을 유지해 맞추며, 포크가 +x를 향한다(`props.js`의 `FORKLIFT_YAW`).
+모델을 바꾸면 바닥 라이트맵(`floor_bake.png`)을 다시 굽는다.
+
 ### 실시간 재생 (Cycles로 구운 바닥 + Three.js)
 
 바닥(화면의 대부분)은 Cycles로 조명·그림자·반사광·도장을 한 번 구워(`floor_bake.png`) 쓰고, 로봇·작업자만 실시간 그림자를 드리운다.

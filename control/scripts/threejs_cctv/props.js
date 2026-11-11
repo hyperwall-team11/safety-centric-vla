@@ -188,8 +188,27 @@ B.piperack = ([sx, sy, sz]) => {
   return g;
 };
 
+// 외부 glTF 모델 (render.html이 미리 불러 넣는다). 없으면 아래 코드 모델을 쓴다.
+export const MODELS = {};
+const FORKLIFT_YAW = Math.PI / 2;   // 모델의 포크가 +x를 보도록 하는 회전 (rad)
+// glTF 장면(y-위)을 z-위로 돌리고 MuJoCo 박스(반크기 sx,sy,sz)에 비율 유지로 맞춘다. 바닥은 -sz, xy 중심은 0.
+function fitModel(src, [sx, sy, sz], yaw = 0) {
+  const o = src.clone(true);
+  o.rotation.set(Math.PI / 2, yaw, 0, 'XYZ');
+  const g = new THREE.Group(); g.add(o); g.updateMatrixWorld(true);
+  const b = new THREE.Box3().setFromObject(o), d = b.getSize(new THREE.Vector3());
+  const k = Math.min(2 * sx / d.x, 2 * sy / d.y, 2 * sz / d.z);
+  o.scale.setScalar(k); g.updateMatrixWorld(true);
+  const c = new THREE.Box3().setFromObject(o);
+  o.position.set(-(c.min.x + c.max.x) / 2, -(c.min.y + c.max.y) / 2, -sz - c.min.z);
+  // Blender 내보내기에서 모델 자체 텍스처를 지우지 않도록 표시
+  o.traverse(m => { if (m.isMesh) (Array.isArray(m.material) ? m.material : [m.material]).forEach(x => { x.userData.keepTex = true; }); });
+  return g;
+}
+
 // 지게차: 길이 방향 x, +x 쪽이 포크
 B.forklift = ([sx, sy, sz]) => {
+  if (MODELS.forklift) return fitModel(MODELS.forklift, [sx, sy, sz], FORKLIFT_YAW);
   const g = new THREE.Group(); const z0 = -sz;
   const bodyL = 1.5, bx = -sx + bodyL / 2 + 0.1;
   g.add(at(box(bodyL, 2 * sy - 0.1, 0.7, M.yellowPaint), bx, 0, z0 + 0.6));

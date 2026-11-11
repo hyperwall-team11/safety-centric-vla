@@ -21,12 +21,15 @@ import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
-import { buildProp, floorTexture, backdrop, applyAssets, pbr, M } from './props.js';
+import { buildProp, floorTexture, backdrop, applyAssets, pbr, M, MODELS } from './props.js';
 
 const W = 640, H = 480;
 const meta = await (await fetch('/data/scene.json')).json();
 const frames = new Float32Array(await (await fetch('/data/frames.bin')).arrayBuffer());
 const assets = await (await fetch('/assets/manifest.json')).json();
+// prop_* 대신 쓸 저장소 내 glTF 모델 (models/, 출처·라이선스는 README)
+for (const name of ['forklift'])
+  MODELS[name] = (await new GLTFLoader().loadAsync(`/models/${name}.glb`)).scene;
 const nGeom = meta.ngeom_export, nWorkers = meta.workers.length;
 const workerLen = meta.nskinvert * 3 + 7;
 const frameLen = nGeom * 12 + nWorkers * workerLen;
@@ -317,7 +320,7 @@ window.exportGLB = async () => {
   // 파일 텍스처(PBR jpg)는 빼고 내보낸다: Blender가 assets/의 원본을 다시 붙인다. 캔버스 텍스처(도장·표지판)는 그대로 둔다.
   const KEYS = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap'], stash = [];
   root.traverse(o => { if (!o.isMesh) return; (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => {
-    KEYS.forEach(k => { const t = m[k]; if (t && !(t.image instanceof HTMLCanvasElement)) { stash.push([m, k, t]); m[k] = null; } }); }); });
+    KEYS.forEach(k => { const t = m[k]; if (t && !m.userData.keepTex && !(t.image instanceof HTMLCanvasElement)) { stash.push([m, k, t]); m[k] = null; } }); }); });
   console.log('export start');
   const glb = await new GLTFExporter().parseAsync(root, { binary: true, maxTextureSize: 4096 });
   console.log('export done', glb.byteLength);
