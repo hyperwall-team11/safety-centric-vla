@@ -10,7 +10,16 @@ function ring(zone: Zone): [number, number][] {
 }
 
 /** 바닥 평면도(x 오른쪽, y 위). 작업자 위치는 GET /workers/snapshot이 생기면 표시된다. */
-export function SiteMap({ compact = false }: { compact?: boolean }) {
+type SiteMapProps = {
+  compact?: boolean;
+  /** 작업 요청 화면처럼 지도에서 대상을 고를 때 쓴다. */
+  selectedRobotId?: string;
+  selectedZoneId?: string;
+  onRobotClick?: (robotId: string) => void;
+  onZoneClick?: (zoneId: string) => void;
+};
+
+export function SiteMap({ compact = false, selectedRobotId, selectedZoneId, onRobotClick, onZoneClick }: SiteMapProps) {
   const zones = usePolling(api.zones, 5000);
   const robots = usePolling(api.robots);
   const workers = usePolling(api.workers);
@@ -30,13 +39,15 @@ export function SiteMap({ compact = false }: { compact?: boolean }) {
           </g>
         )}
         {(zones.data ?? []).map((z) => (
-          <g key={z.zone_id} className="zone" data-type={z.zone_type}>
+          <g key={z.zone_id} className={`zone${onZoneClick ? " pickable" : ""}${z.zone_id === selectedZoneId ? " selected" : ""}`} data-type={z.zone_type}
+             onClick={onZoneClick && (() => onZoneClick(z.zone_id))}>
             <polygon points={ring(z).map(([x, y]) => `${x},${flip(y)}`).join(" ")} />
             {ring(z)[0] && <text x={ring(z)[0][0]} y={flip(ring(z)[0][1]) - 0.1}>{z.zone_id}</text>}
           </g>
         ))}
         {(robots.data ?? []).map((r) => (
-          <g key={r.robot_id} className="robot">
+          <g key={r.robot_id} className={`robot${onRobotClick ? " pickable" : ""}${r.robot_id === selectedRobotId ? " selected" : ""}`}
+             onClick={onRobotClick && ((e) => { e.stopPropagation(); onRobotClick(r.robot_id); })}>
             <rect x={r.pose.position.x - 0.25} y={flip(r.pose.position.y) - 0.25} width={0.5} height={0.5} />
             <text x={r.pose.position.x + 0.3} y={flip(r.pose.position.y)}>{r.robot_id}</text>
           </g>

@@ -160,6 +160,14 @@ code { padding: 3px 6px; color: #424247; background: #e9e9ec; border-radius: 5px
 .zone[data-type="KEEP_OUT"] polygon { fill: rgba(228,33,25,.13); stroke: var(--red); stroke-dasharray: .1 .06; stroke-width: .04; }
 .zone[data-type="CAUTION"] polygon { fill: rgba(240,169,47,.13); stroke: #d98a10; }
 .robot rect { fill: var(--blue); stroke: #fff; stroke-width: .04; rx: .1; }
+.pickable { cursor: pointer; }
+.zone.pickable:hover polygon { stroke: var(--blue); }
+.zone.selected polygon { stroke: var(--blue); stroke-width: .06; stroke-dasharray: none; }
+.robot.selected rect { stroke: #111; stroke-width: .07; }
+.request-layout { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: clamp(24px, 4vw, 56px); align-items: start; }
+.request-layout .map-panel { position: sticky; top: 88px; }
+.map-hint { margin: 10px 0 0; color: #6b6b72; font-size: 13px; }
+@media (max-width: 900px) { .request-layout { grid-template-columns: 1fr; } .request-layout .map-panel { position: static; } }
 .worker { fill: #fff; stroke: #24a65a; stroke-width: .06; }
 .map-awaiting path { fill: none; stroke: rgba(6,116,232,.58); stroke-width: .09; stroke-linecap: round; stroke-dasharray: .18 .14; }
 .map-awaiting circle { fill: #fff; stroke: var(--blue); stroke-width: .06; }
