@@ -333,13 +333,58 @@ Backend는 5 Hz로 발행한다. CTL이 마지막 정상 heartbeat 후 1초 동�
 스키마 v1.1의 `COLLISION` 규칙을 판정하기 위해 Backend가 CTL의 MuJoCo ② 서비스를 호출한다. 판정과 감사 기록은 Backend(온톨로지)가 하고, MuJoCo ②는 시뮬레이션 결과만 돌려준다.
 
 - 전송: HTTP `POST /twin/simulate` (CTL 서비스, 기본 `http://127.0.0.1:8100`)
-- 요청: `proposal_id`, 후보 행동(`action_type`, `target`, `max_speed`), 온톨로지 상태 스냅샷(Robot, Worker 스냅샷, Zone), `snapshot_at`
-- 응답: `result`(`PASS` | `COLLISION` | `UNSAFE_DISTANCE` | `ERROR`), `min_worker_distance_m`, `first_contact_at_s`, `simulated_horizon_s`, `elapsed_ms`
 - MuJoCo ②는 요청에 담긴 상태만으로 장면을 만들고 MuJoCo ① 정답 좌표를 읽지 않는다.
 - 작업자 위치에는 CV 위치 오차(측정값 0.15~0.20 m) 이상의 여유 반경을 더한다.
-- Backend는 응답이 시간 제한 안에 오지 않거나 `ERROR`이면 거부한다(Fail-Closed). 시간 제한 값은 ONT·백엔드가 정한다.
-- 결과는 `ExecutionLog`에 규칙 판정 근거와 함께 기록한다.
 - 긴급 정지는 이 서비스를 기다리지 않는다. `/safety/estop`과 heartbeat 경로가 우선한다.
+
+### 13.1 첫 지원 범위와 요청 형식
+
+- 첫 버전은 `MOVE_TO`만 지원한다. `MANIPULATE`(PICK·PLACE)는 대상 물체와 관절 초기 상태가 계약에 정해진 뒤 추가한다. 지원하지 않는 `action_type` 요청에는 `ERROR`를 돌려준다.
+- 후보 행동은 4장 `ApprovedActionCommand`와 같은 값으로 보낸다. Backend가 4.1절 규칙으로 해석한 결과를 그대로 쓴다.
+  - `target_pose`: `ZONE` 목적지를 `navigation_target`으로 해석한 **실제 CTL 전송 좌표**
+  - `speed_limit`: 4.1절의 유효 속도 상한 `min(proposal.speed_limit, parameters.speed_limit, robot.motion_limits.max_speed)`
+- 좌표계는 `world`(z 위, 오른손 좌표계), 길이 단위는 m, 속도는 m/s, 각도는 rad, 시각은 ISO 8601 UTC다.
+- `snapshot_id`는 Backend가 검증에 사용한 상태를 식별하는 값이다(13.3절).
+
+```json
+{
+  "contract_version": "backend-ctl/0.2",
+  "proposal_id": "proposal-123",
+  "snapshot_id": "snap-7f3a…",
+  "snapshot_at": "2026-11-06T00:00:00Z",
+  "action": {
+    "action_type": "MOVE_TO",
+    "robot_id": "robot-01",
+    "target_pose": {"frame_id": "world", "position": [1.2, -0.8, 0.0]},
+    "speed_limit": 0.3
+  },
+  "state": {
+    "robots": [{"robot_id": "robot-01", "frame_id": "world", "position": [0.0, 0.0, 0.0], "yaw_rad": 0.0}],
+    "workers": {"observed_at": "2026-11-05T23:59:59.800Z",
+                "items": [{"worker_id": "worker-01", "frame_id": "world", "position": [2.1, 0.4, 0.0]}]},
+    "zones": [{"zone_id": "keep-out-1", "zone_type": "KEEP_OUT", "frame_id": "world",
+               "geometry": {"type": "polygon", "points": [[0.5, -0.6], [1.9, -0.6], [1.9, 0.6], [0.5, 0.6]]}}]
+  }
+}
+```
+
+### 13.2 응답과 판정
+
+- 응답: `result`(`PASS` | `COLLISION` | `UNSAFE_DISTANCE` | `GOAL_NOT_REACHED` | `ERROR`), `snapshot_id`(요청 값 그대로), `min_worker_distance_m`, `first_contact_at_s`, `simulated_horizon_s`, `elapsed_ms`
+- `PASS`는 시뮬레이션 구간 안에서 **충돌 없이 목표 동작을 끝낸 경우에만** 쓴다. 충돌·안전거리 미달이 없어도 구간이 끝날 때 목표에 도달하지 못하면 `GOAL_NOT_REACHED`다.
+- `min_worker_distance_m`: 작업자가 없으면 `null`. `first_contact_at_s`: 접촉이 없으면 `null`. 필드는 생략하지 않고 `null`로 보낸다.
+- Backend는 아래를 모두 **실행 차단**으로 처리한다(Fail-Closed).
+  - `PASS`가 아닌 모든 `result`
+  - 시간 제한 초과, 연결 실패, 2xx가 아닌 HTTP 응답
+  - 응답 형식 오류(필수 필드 누락, 알 수 없는 `result`, 요청과 다른 `snapshot_id`)
+- 시간 제한 값은 ONT·백엔드가 정한다.
+- 결과는 `ExecutionLog`에 규칙 판정 근거·`snapshot_id`와 함께 기록한다.
+
+### 13.3 오래된 PASS 재사용 방지
+
+- Backend는 요청을 만들 때 관련 상태(대상 로봇 상태, Worker 스냅샷 `observed_at`, 열린 HazardEvent, 관련 Zone)로 `snapshot_id`를 정한다.
+- 실행 직전 재검증에서 관련 상태로 `snapshot_id`를 다시 계산해, 시뮬레이션한 값과 다르면 기존 `PASS`를 폐기하고 다시 시뮬레이션하거나 거부한다. 다른 `snapshot_id`의 `PASS`는 재사용하지 않는다.
+- Backend는 HTTP 응답을 기다리는 동안 저장소 잠금을 잡지 않는다. 잠금은 스냅샷을 만들 때와 결과를 반영할 때만 짧게 잡아, 대기 중에도 위험 이벤트 등록과 긴급 정지가 지연되지 않게 한다.
 
 | 항목 | Backend | ONT | CTL |
 |---|---|---|---|
