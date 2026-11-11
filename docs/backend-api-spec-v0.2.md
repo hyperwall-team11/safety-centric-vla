@@ -30,7 +30,7 @@
 
 ## 2. 구현 엔드포인트
 
-현재 구현은 19개 path, 22개 HTTP operation으로 구성된다.
+현재 구현은 19개 path, 24개 HTTP operation으로 구성된다.
 
 | Method | Path | 성공 | 용도 |
 |---|---|---:|---|
@@ -40,6 +40,7 @@
 | `POST` | `/zones` | `201` | Zone 등록 |
 | `GET` | `/zones` | `200` | Zone 전체 조회 |
 | `PUT` | `/sensors/{sensor_id}` | `200` | Sensor 등록·갱신 |
+| `GET` | `/workers/snapshot` | `200`, `404` | 최신 전체 Worker 관측 스냅샷 조회 |
 | `PUT` | `/workers/snapshot` | `200` | 전체 Worker 관측 스냅샷 교체 |
 | `GET` | `/task-orders` | `200` | TaskOrder 필터·정렬·페이지 목록 조회 |
 | `POST` | `/task-orders/preview` | `200` | 자연어 명령 단건 비저장 검증 |
@@ -52,6 +53,7 @@
 | `POST` | `/action-proposals/{proposal_id}/evaluate` | `200` | 안전 규칙 평가 |
 | `POST` | `/action-proposals/{proposal_id}/execute` | `200` | 실행 직전 재평가 후 Mock adapter 전달 |
 | `POST` | `/action-proposals/{proposal_id}/result` | `200` | 제어 어댑터 실행 결과 보고 |
+| `GET` | `/hazards` | `200` | HazardEvent 필터 목록 조회 |
 | `POST` | `/hazards` | `201` | HazardEvent 등록 |
 | `POST` | `/hazards/{hazard_id}/resolve` | `200` | HazardEvent 해제 |
 | `GET` | `/safety-rules` | `200` | 활성 안전 규칙 조회 |
@@ -276,6 +278,8 @@ TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 
 
 ### 3.6 HazardEvent
 
+`GET /hazards`는 저장된 HazardEvent를 등록 순서로 반환한다. `status`, `severity`, `robot_id`를 단독 또는 함께 필터링할 수 있다. `robot_id`는 `related_robot_ids`에 해당 ID가 포함된 이벤트만 반환한다. 필터와 일치하는 이벤트가 없으면 빈 배열을 반환한다.
+
 `POST /hazards`
 
 | 필드 | 타입 | 규칙 |
@@ -315,6 +319,7 @@ v1.1 객체의 Pydantic 모델 계약에는 다음 선택 필드를 반영한다
 
 - `PUT /sensors/{sensor_id}`는 기존 Sensor 모델 전체를 받는다. 센서 ID는 경로와 본문에서 일치해야 한다. 목적지 Zone을 감시하고 마지막 프레임의 나이가 2초 미만인 ONLINE 센서가 있어야 한다.
 - `PUT /workers/snapshot`은 `{"observed_at":"2026-11-05T12:00:00Z","workers":[]}` 형식으로 전체 Worker 목록을 교체한다. 빈 배열은 감지된 작업자가 없는 최신 관측을 뜻한다. 관측 시각은 시간대를 포함하며, 이전 관측보다 오래된 요청은 `409`다. 동일 스냅샷을 재전송해도 최신성은 관측 시각으로 계산한다.
+- `GET /workers/snapshot`은 마지막으로 저장된 `{"observed_at", "workers"}` 전체 스냅샷을 반환한다. 한 번도 저장되지 않았으면 `404`다.
 - Worker 스냅샷과 개별 Worker 위치는 현재 ONT MVP의 2초 최신성 정책을 적용한다. 안전거리 검사는 MOBILE 로봇의 XY 경로와 동일 좌표계의 작업자 위치를 비교한다.
 - 안전거리 위반의 백엔드 판정과 상태를 로그에 기록한다. 물리 E-Stop 신호 발행과 실행 중 연속 감시는 CTL 연동 범위다.
 
@@ -362,4 +367,4 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q app tests
 ```
 
-OpenAPI 경로 수는 19개, operation 수는 22개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.
+OpenAPI 경로 수는 19개, operation 수는 24개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.
