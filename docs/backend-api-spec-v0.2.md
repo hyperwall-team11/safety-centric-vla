@@ -296,6 +296,8 @@ TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 
 
 `POST /hazards/{hazard_id}/resolve` 요청은 `{"resolved_by":"SENSOR_AUTO|OPERATOR"}`이다. `WARNING`은 두 주체 모두 해제할 수 있지만 `CRITICAL`은 `OPERATOR`만 허용한다. 성공 시 `status=RESOLVED`, `resolved_at`, `resolved_by`를 기록하며, 이미 해제된 이벤트나 허용되지 않은 자동 해제는 `409`를 반환한다. 인증 계층은 아직 없으므로 이 값은 호출자가 명시하는 감사 필드다.
 
+실행 중 로봇 즉시 정지: `OPEN` `CRITICAL` HazardEvent의 `related_robot_ids`에 `EXECUTING` Proposal을 가진 로봇이 있으면, 등록 직후 `/safety/estop`에 `{"active":true,"triggered_by":"RULE_ENGINE","issued_at":...}`를 발행한다. 상태 전이(Robot `ESTOP`, Proposal·Task `HELD`)는 CTL이 보내는 `ESTOP` 이벤트로 반영한다. 정지를 발행하게 한 HazardEvent가 모두 해제되면 `{"active":false}`를 발행하지만, 이는 정지 신호만 풀며 로봇 복귀는 승인된 `RESUME`으로만 한다. 발행은 저장소 잠금 밖에서 하며, 발행에 실패해도 등록은 성공하고 이후 평가·실행 직전 재검증 차단은 그대로 적용된다. `/safety/estop`은 전역 토픽이므로 연결된 어댑터가 모두 정지한다.
+
 ### 3.7 SafetyRule과 ExecutionLog
 
 `GET /safety-rules`는 현재 기본 규칙 두 개를 반환한다.
@@ -345,7 +347,7 @@ ResumeTask 전이와 실제 ROS 2 어댑터 결과 토픽 연결은 아직 구�
 | ResumeTask | 관리자 승인 2단계 복귀 | 미구현, HELD 생성 요청은 `409` |
 | 인증·권한 | CRITICAL 해제와 Resume는 관리자 전용 | CRITICAL 해제 요청의 `resolved_by=OPERATOR` 검사 구현, 실제 인증·Resume는 미구현 |
 | 규칙 SR-01~06 | 속도·구역·거리·위험·상태·센서 공백 | SR-01 기본 0.4m/s·Robot·Zone 상한, 로봇 상태·adapter·관련 CRITICAL 위험 구현. KEEP_OUT 경로 검사를 구현하고 거리·센서 공백은 관측 안전 검사 활성화 시 적용 |
-| E-Stop | ROS 2 latched 전용 경로 | 실행 재검증 실패 시 Robot ESTOP·Task HELD·감사 로그 구현, ROS 2 전용 신호는 미구현 |
+| E-Stop | ROS 2 latched 전용 경로 | 실행 재검증 실패 시 Robot ESTOP·Task HELD·감사 로그 구현. `CRITICAL` HazardEvent가 실행 중 로봇과 연결되면 `/safety/estop` 발행(3.6절). 운영자 E-Stop API와 로봇별 정지는 미구현 |
 | 어댑터 실행 결과 | ROS 2 result 토픽으로 완료·실패 보고 | HTTP 결과 보고, 상태 전이, 멱등 감사 로그 구현. ROS 2 토픽 연결은 미구현 |
 | 상태 구독 | WebSocket `/ws/state` | 미구현 |
 | 영속 저장 | Redis 또는 ROS 2 상태 연동 | 인메모리 |

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from hashlib import sha256
 from os import getenv
 from pathlib import Path
@@ -160,6 +161,34 @@ def apply_ctl_safety_event(event: dict) -> None:
                     triggered_by=triggered_by,
                 )
             )
+
+
+LOGGER = logging.getLogger(__name__)
+
+
+def robots_to_stop(hazard: HazardEvent) -> list[str]:
+    """CRITICAL·OPEN HazardEvent와 연결된 로봇 중 승인 행동을 실행 중인 로봇. store.lock 안에서 호출한다."""
+    if hazard.severity != HazardSeverity.CRITICAL or hazard.status != HazardStatus.OPEN:
+        return []
+    executing = {
+        proposal.robot_id
+        for proposal in store.proposals.values()
+        if proposal.status == ProposalStatus.EXECUTING
+    }
+    return sorted(set(hazard.related_robot_ids) & executing)
+
+
+def publish_estop(active: bool, reason: str) -> None:
+    """정지 신호 발행. store.lock 밖에서 호출해 위험 등록·결과 반영을 막지 않는다."""
+    publisher = getattr(action_dispatcher, "publish_estop", None)
+    if publisher is None:
+        LOGGER.error("E-Stop을 발행할 수 없는 전송기입니다(%s): %s", action_dispatcher.name, reason)
+        return
+    try:
+        publisher(active, "RULE_ENGINE")
+        LOGGER.warning("E-Stop %s 발행: %s", "정지" if active else "해제", reason)
+    except DispatchError as exc:
+        LOGGER.error("E-Stop 발행 실패(%s): %s", reason, exc)
 
 
 action_dispatcher = create_action_dispatcher()
@@ -789,8 +818,14 @@ def create_hazard(hazard: HazardEvent) -> HazardEvent:
         # 4. 유효한 HazardEvent만 저장
         # Observation, Worker는 현재 등록 저장소가 없어 검사 제외
         store.hazards[hazard.hazard_id] = hazard
+        stop_robot_ids = robots_to_stop(hazard)
+        if stop_robot_ids:
+            store.estop_hazard_ids.add(hazard.hazard_id)
 
-        return hazard
+    # 실행 중 로봇 즉시 정지. 상태 전이(Robot ESTOP, Proposal·Task HELD)는 CTL ESTOP 이벤트로 반영된다.
+    if stop_robot_ids:
+        publish_estop(True, f"{hazard.hazard_id} → {', '.join(stop_robot_ids)}")
+    return hazard
 
 
 @app.post("/hazards/{hazard_id}/resolve", response_model=HazardEvent)
@@ -812,7 +847,14 @@ def resolve_hazard(hazard_id: str, request: HazardResolveRequest) -> HazardEvent
         hazard.status = HazardStatus.RESOLVED
         hazard.resolved_at = utc_now()
         hazard.resolved_by = request.resolved_by
-        return hazard
+        release = hazard_id in store.estop_hazard_ids
+        store.estop_hazard_ids.discard(hazard_id)
+        release = release and not store.estop_hazard_ids
+
+    # 정지 신호만 푼다. 로봇은 ESTOP에 머물고 복귀는 승인된 RESUME으로 한다(제어 계약 6장).
+    if release:
+        publish_estop(False, f"{hazard_id} 해제")
+    return hazard
 
 
 @app.get("/safety-rules", response_model=list[SafetyRule])
