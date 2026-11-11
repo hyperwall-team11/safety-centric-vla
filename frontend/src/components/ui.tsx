@@ -38,8 +38,10 @@ export function Status({ value }: { value: string | null | undefined }) {
 
 export type Column<T> = { key: string; label: string; render: (row: T) => ReactNode };
 
-export function Table<T>({ rows, columns, rowKey, empty = "없음" }: {
+export function Table<T>({ rows, columns, rowKey, empty = "없음", onRowClick, isSelected }: {
   rows: T[]; columns: Column<T>[]; rowKey: (row: T) => string; empty?: string;
+  /** 행을 누르면 지도 등 다른 영역에서 해당 대상을 강조할 때 쓴다. */
+  onRowClick?: (row: T) => void; isSelected?: (row: T) => boolean;
 }) {
   if (rows.length === 0) return <p className="empty-state">{empty}</p>;
   return (
@@ -47,7 +49,8 @@ export function Table<T>({ rows, columns, rowKey, empty = "없음" }: {
       <table>
         <thead><tr>{columns.map((c) => <th key={c.key}>{c.label}</th>)}</tr></thead>
         <tbody>
-          {rows.map((row) => <tr key={rowKey(row)}>{columns.map((c) => <td key={c.key}>{c.render(row)}</td>)}</tr>)}
+          {rows.map((row) => <tr key={rowKey(row)} className={`${onRowClick ? "pickable" : ""}${isSelected?.(row) ? " selected" : ""}`.trim() || undefined}
+                                 onClick={onRowClick && ((e) => { if (!(e.target as HTMLElement).closest("a,button")) onRowClick(row); })}>{columns.map((c) => <td key={c.key}>{c.render(row)}</td>)}</tr>)}
         </tbody>
       </table>
     </div>

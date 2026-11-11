@@ -157,6 +157,27 @@ code { padding: 3px 6px; color: #424247; background: #e9e9ec; border-radius: 5px
 .zone[data-type="CAUTION"] polygon { fill: rgba(240,169,47,.13); stroke: #d98a10; }
 .robot rect { fill: var(--blue); stroke: #fff; stroke-width: .04; rx: .1; }
 .pickable { cursor: pointer; }
+tbody tr.selected { background: rgba(0, 113, 227, .07); box-shadow: inset 3px 0 0 var(--blue); }
+.zone[data-hazard="WARNING"] polygon { fill: rgba(240,169,47,.22); stroke: #d98a10; stroke-width: .05; }
+.zone[data-hazard="CRITICAL"] polygon { fill: rgba(228,33,25,.2); stroke: var(--red); stroke-width: .06; animation: hazard-blink 1.4s ease-in-out infinite; }
+.hazard-marker circle { fill: var(--red); stroke: #fff; stroke-width: .05; }
+.zone[data-hazard="WARNING"] .hazard-marker circle { fill: #e49b21; }
+.hazard-marker text { fill: #fff; font-size: .38px; font-weight: 800; text-anchor: middle; }
+.legend-hazard { display: inline-block; width: 9px; height: 9px; background: var(--red); border-radius: 50%; }
+@keyframes hazard-blink { 50% { fill-opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .zone[data-hazard="CRITICAL"] polygon { animation: none; } }
+.action-queue { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+.action-queue li { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; gap: 16px; padding: 16px 4px; border-bottom: 1px solid var(--line); }
+.action-queue li.pickable:hover { background: rgba(255,255,255,.7); }
+.action-queue li.selected { background: rgba(0, 113, 227, .07); }
+.action-queue .level { width: 8px; height: 8px; border-radius: 50%; background: var(--blue); }
+.action-queue [data-level="critical"] .level { background: var(--red); }
+.action-queue [data-level="warning"] .level { background: #e49b21; }
+.action-queue strong { display: block; font-size: 15px; }
+.action-queue small { display: block; margin-top: 3px; color: var(--muted); font-size: 13px; }
+.action-queue .actions { display: flex; gap: 8px; }
+.queue-clear { padding: 22px 4px; color: #1f8f4a; font-size: 16px; font-weight: 650; border-top: 1px solid var(--line); }
+.focus-bar { display: flex; align-items: center; gap: 12px; margin-top: 10px; color: var(--muted); font-size: 13px; }
 .zone.pickable:hover polygon { stroke: var(--blue); }
 .zone.selected polygon { stroke: var(--blue); stroke-width: .06; stroke-dasharray: none; }
 .robot.selected rect { stroke: #111; stroke-width: .07; }

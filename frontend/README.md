@@ -15,7 +15,7 @@ Backend 주소가 다르면 `VITE_BACKEND_URL=http://host:8000 npm run dev`. Bac
 
 | 경로 | 화면 | 흐름 | 사용 API |
 |---|---|---|---|
-| `/` | 대시보드 | 요약 카드, 현장 지도, 열린 위험, 로봇 상태, 진행·보류 작업, 최근 판단 | `GET /robots`, `/zones`, `/task-orders`, `/execution-logs`, `/hazards`* |
+| `/` | 대시보드 | 조치 필요 대기열(CRITICAL·WARNING 위험 → 정지 로봇 → 실행·검증 대기·거절 제안, 항목에서 바로 해제·검증·실행) → 현장 지도(열린 위험 구역 표시) → 요약 카드·목록. 대기열·목록·지도 중 하나를 고르면 같은 로봇·구역을 함께 강조 | `GET /robots`, `/zones`, `/task-orders`, `/task-orders/{id}/action-proposals`, `/execution-logs`, `/hazards`* |
 | `/tasks/new` | 작업 요청 | 현장 지도에서 로봇·구역 클릭(명령 자동 작성) 또는 자연어 입력 → 해석 미리보기(지도에 대상 강조) → 작업 생성 + 행동 제안 생성 | `POST /task-orders/preview`, `/task-orders/from-natural-language`, `/task-orders/{id}/action-proposals`, `GET /zones`, `/robots`, `/workers/snapshot`* |
 | `/proposals`, `/proposals/:taskId` | 행동 제안 | 제안 → [검증] → 규칙별 결과 → 승인 시 [실행] | `POST /action-proposals/{id}/evaluate`, `/execute`, `GET /execution-logs` |
 | `/hazards` | 위험 모니터링 | CRITICAL·WARNING 목록 → 운영자 해제 | `GET /hazards`*, `POST /hazards/{id}/resolve` |

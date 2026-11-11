@@ -23,6 +23,13 @@ export function SiteMap({ compact = false, selectedRobotId, selectedZoneId, onRo
   const zones = usePolling(api.zones, 5000);
   const robots = usePolling(api.robots);
   const workers = usePolling(api.workers);
+  const hazards = usePolling(api.hazards);
+  // 구역별 가장 높은 열린 위험 등급. HazardEvent에는 좌표가 없어 구역 단위로 표시한다.
+  const hazardLevel = new Map<string, string>();
+  for (const h of hazards.data ?? []) {
+    if (h.status === "RESOLVED") continue;
+    if (h.severity === "CRITICAL" || !hazardLevel.has(h.zone_id)) hazardLevel.set(h.zone_id, h.severity);
+  }
   const isEmpty = (zones.data?.length ?? 0) === 0 && (robots.data?.length ?? 0) === 0;
   const view = { x: -4, y: -4, w: 8, h: 8 }; // 시나리오 장면 기준 범위(m)
   const flip = (y: number) => -y;
@@ -39,9 +46,15 @@ export function SiteMap({ compact = false, selectedRobotId, selectedZoneId, onRo
           </g>
         )}
         {(zones.data ?? []).map((z) => (
-          <g key={z.zone_id} className={`zone${onZoneClick ? " pickable" : ""}${z.zone_id === selectedZoneId ? " selected" : ""}`} data-type={z.zone_type}
+          <g key={z.zone_id} className={`zone${onZoneClick ? " pickable" : ""}${z.zone_id === selectedZoneId ? " selected" : ""}`} data-type={z.zone_type} data-hazard={hazardLevel.get(z.zone_id)}
              onClick={onZoneClick && (() => onZoneClick(z.zone_id))}>
             <polygon points={ring(z).map(([x, y]) => `${x},${flip(y)}`).join(" ")} />
+            {hazardLevel.has(z.zone_id) && ring(z).length > 0 && (() => {
+              const pts = ring(z);
+              const cx = pts.reduce((a, p) => a + p[0], 0) / pts.length;
+              const cy = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+              return <g className="hazard-marker"><circle cx={cx} cy={flip(cy)} r={0.32} /><text x={cx} y={flip(cy) + 0.07}>!</text></g>;
+            })()}
             {ring(z)[0] && <text x={ring(z)[0][0]} y={flip(ring(z)[0][1]) - 0.1}>{z.zone_id}</text>}
           </g>
         ))}
@@ -57,7 +70,7 @@ export function SiteMap({ compact = false, selectedRobotId, selectedZoneId, onRo
         ))}
       </svg>
       <figcaption className="map-legend">
-        <span><i className="legend-robot" /> 로봇</span><span><i className="legend-worker" /> 작업자</span>{workers.missing && <small>작업자 조회 API 대기</small>}
+        <span><i className="legend-robot" /> 로봇</span><span><i className="legend-worker" /> 작업자</span><span><i className="legend-hazard" /> 열린 위험</span>{workers.missing && <small>작업자 조회 API 대기</small>}
       </figcaption>
     </figure>
   );
