@@ -248,6 +248,18 @@ tbody tr.selected { background: rgba(0, 113, 227, .07); box-shadow: inset 3px 0 
 .placeholder > * { position: relative; z-index: 1; }
 .camera-reticle { width: 34px; height: 25px; border: 1px solid #747d8b; border-radius: 5px; }
 .camera-reticle::after { display: block; width: 6px; height: 6px; margin: 8px auto; content: ""; background: var(--blue); border-radius: 50%; box-shadow: 0 0 0 5px rgba(6,116,232,.15); }
+.cctv-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.cctv-tile { position: relative; margin: 0; overflow: hidden; aspect-ratio: 4 / 3; background: #15161a; border-radius: 18px; }
+.cctv-tile img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.cctv-tile figcaption { position: absolute; top: 10px; left: 10px; display: flex; align-items: center; gap: 7px; padding: 4px 10px; color: #fff; background: rgba(0,0,0,.55); border-radius: 999px; font-size: 12px; font-weight: 600; backdrop-filter: blur(6px); }
+.cctv-tile figcaption em { color: rgba(255,255,255,.7); font-style: normal; font-weight: 500; }
+.cctv-dot { width: 7px; height: 7px; background: #8a8a92; border-radius: 50%; }
+.cctv-tile[data-state="live"] .cctv-dot { background: #ff3b30; animation: pulse 1.6s ease-in-out infinite; }
+.cctv-tile[data-state="stale"] .cctv-dot { background: #e49b21; }
+.cctv-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 10px; padding: 16px; color: rgba(255,255,255,.72); font-size: 13px; text-align: center; }
+.cctv-empty small { color: rgba(255,255,255,.5); font-size: 11px; }
+.cctv-empty code { color: rgba(255,255,255,.8); }
+@media (max-width: 720px) { .cctv-grid { grid-template-columns: 1fr; } }
 .camera-panel .stack { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
 .camera-panel .placeholder { height: 320px !important; }
 

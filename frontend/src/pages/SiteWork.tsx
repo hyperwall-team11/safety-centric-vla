@@ -4,7 +4,8 @@ import { ApiError, api } from "../api/client";
 import type { TaskOrderPreview } from "../api/types";
 import { usePolling } from "../hooks/usePolling";
 import { ProposalReview, latestLog, planOverlay } from "../components/ProposalReview";
-import { Panel, Placeholder } from "../components/ui";
+import { Panel } from "../components/ui";
+import { CctvView } from "../components/CctvView";
 import { SiteMap } from "./SiteMap";
 
 const destination = (p: TaskOrderPreview) =>
@@ -87,10 +88,7 @@ export function SiteWork() {
           </p>
         </Panel>
         <Panel title="CCTV" className="camera-panel">
-          <div className="stack">
-            <Placeholder label="cctv_1 영상 (ROS 2 → 웹 브리지 필요, #55)" height={180} />
-            <Placeholder label="cctv_2 영상" height={180} />
-          </div>
+          <CctvView />
         </Panel>
       </div>
 
