@@ -111,6 +111,50 @@ class HazardEStopTests(unittest.TestCase):
         store.proposals.clear()
         self.hazard()  # 발행할 수 없어도 위험 등록은 성공한다(이후 평가·재검증 차단은 그대로)
 
+    def test_destination_zone_hazard_stops_executing_robot(self):
+        self.execute("robot-01")  # 목적지 A구역
+        response = self.client.post("/hazards", json={
+            "hazard_type": "WORKER_INTRUSION", "severity": "CRITICAL",
+            "source_observation_ids": ["cctv_1@1.0"], "related_robot_ids": [],
+            "related_worker_ids": [], "zone_id": "A구역", "confidence": 1.0,
+        })
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual([c["active"] for c in self.dispatcher.estop_commands], [True])
+
+    def test_delayed_activate_does_not_override_later_release(self):
+        import threading
+        self.execute("robot-01")
+        entered, proceed = threading.Event(), threading.Event()
+        original = self.dispatcher.publish_estop
+        calls = {"n": 0}
+
+        def slow_publish(active, triggered_by="RULE_ENGINE"):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                entered.set()
+                proceed.wait(5)
+            return original(active, triggered_by)
+
+        self.dispatcher.publish_estop = slow_publish
+        created = {}
+        worker = threading.Thread(target=lambda: created.update(self.hazard()))
+        worker.start()
+        self.assertTrue(entered.wait(5))
+        resolver = threading.Thread(target=lambda: self.client.post(
+            f"/hazards/{created_id()}/resolve", json={"resolved_by": "OPERATOR"}))
+
+        def created_id():
+            with store.lock:
+                return next(iter(store.hazards))
+
+        resolver.start()
+        proceed.set()
+        worker.join(5)
+        resolver.join(5)
+        values = [c["active"] for c in self.dispatcher.estop_commands]
+        self.assertEqual(values[-1], False)
+        self.assertEqual(store.estop_hazard_ids, set())
+
 
 if __name__ == "__main__":
     unittest.main()
