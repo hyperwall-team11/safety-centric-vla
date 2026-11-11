@@ -21,7 +21,7 @@ export function Hazards() {
   return (
     <>
       <div className="page-head">
-        <h1>위험 모니터링</h1>
+        <div className="page-head-copy"><span className="eyebrow">위험 모니터링</span><h1>위험은<br />한눈에.</h1><p>관측된 위험을 심각도별로 확인하고 현장을 확인한 뒤 해제합니다.</p></div>
         <select value={filter} onChange={(e) => setFilter(e.target.value as "OPEN" | "ALL")} aria-label="상태 필터">
           <option value="OPEN">열린 위험</option>
           <option value="ALL">전체</option>
@@ -29,7 +29,7 @@ export function Hazards() {
       </div>
       {error && <p className="error">{error}</p>}
       {(["CRITICAL", "WARNING"] as const).map((severity) => (
-        <Panel key={severity} title={`${severity} 위험`}>
+        <Panel key={severity} className={`hazard-panel ${severity.toLowerCase()}`} title={`${severity} 위험`}>
           <Async state={hazards}>
             {(rows) => (
               <Table rows={rows.filter((h) => h.severity === severity && (filter === "ALL" || h.status !== "RESOLVED"))}
@@ -41,7 +41,7 @@ export function Hazards() {
                 { key: "conf", label: "신뢰도", render: (h) => h.confidence.toFixed(2) },
                 { key: "at", label: "감지", render: (h) => time(h.detected_at) },
                 { key: "status", label: "상태", render: (h) => <Status value={h.status} /> },
-                { key: "act", label: "", render: (h) => h.status !== "RESOLVED" && <button onClick={() => resolve(h)}>운영자 해제</button> },
+                { key: "act", label: "", render: (h) => h.status !== "RESOLVED" && <button className="compact-button" onClick={() => resolve(h)}>운영자 해제</button> },
               ]} />
             )}
           </Async>

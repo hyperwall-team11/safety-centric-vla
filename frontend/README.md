@@ -1,6 +1,6 @@
-# 운영 콘솔 프론트엔드 (스캐폴드)
+# VLA 안전 운영 콘솔
 
-React 18 + Vite + TypeScript. Backend(FastAPI) API로 운영자 흐름을 화면 단위로 나눈 뼈대입니다. 스타일은 무채색 와이어프레임이고, 색·디자인은 상태값(`data-status`, `data-type`)에 붙여 나중에 입힙니다. 기존 `backend/app/static/console`(`/console`)은 그대로 둡니다.
+React 18 + Vite + TypeScript로 만든 안전 중심 운영 콘솔입니다. 얇은 상단 내비게이션, 넓은 작업면, 대형 상태 시각화, 상태별 색 체계와 반응형 레이아웃으로 로봇·작업·위험·판단 이력을 빠르게 구분합니다. Backend(FastAPI) API 계약과 기존 `backend/app/static/console`(`/console`)은 그대로 유지합니다.
 
 ```bash
 cd frontend
@@ -42,6 +42,6 @@ src/
 ├── api/types.ts       # backend/app/models.py와 같은 이름·상태값
 ├── api/client.ts      # fetch 래퍼, 미구현 API는 MissingApiError
 ├── hooks/usePolling.ts
-├── components/        # Layout(상단·메뉴), CriticalBanner, ui(Panel·Table·Stat·Status·Async)
+├── components/        # Layout, 아이콘, CriticalBanner, ui(Panel·Table·Stat·Status·Async)
 └── pages/             # 화면 7개
 ```

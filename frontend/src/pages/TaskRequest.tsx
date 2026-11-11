@@ -27,16 +27,17 @@ export function TaskRequest() {
 
   return (
     <>
-      <div className="page-head"><h1>작업 요청</h1></div>
-      <Panel title="1. 명령 입력">
+      <div className="page-head"><div className="page-head-copy"><span className="eyebrow">작업 요청</span><h1>말하면, 안전하게<br />계획합니다.</h1><p>자연어 지시를 이해하고 실행 계획을 제안한 뒤, 안전 규칙에 따라 검증합니다.</p></div></div>
+      <div className="stepper" aria-label="작업 요청 단계"><span className="active"><b>01</b> 명령 입력</span><span className={preview ? "active" : ""}><b>02</b> 해석 확인</span><span><b>03</b> 안전 검증</span></div>
+      <Panel title="명령 입력" className="request-panel">
         <form className="row" onSubmit={(e) => { e.preventDefault(); if (instruction.trim()) run(async () => setPreview(await api.previewTask(instruction))); }}>
           <input value={instruction} onChange={(e) => { setInstruction(e.target.value); setPreview(undefined); }}
                  placeholder="robot-01 로봇을 A구역으로 이동해" aria-label="자연어 명령" />
-          <button disabled={busy || !instruction.trim()}>해석</button>
+          <button className="primary" disabled={busy || !instruction.trim()}>명령 해석</button>
         </form>
         {error && <p className="error">{error}</p>}
       </Panel>
-      <Panel title="2. 해석 확인">
+      <Panel title="해석 확인" className="request-panel">
         {preview ? (
           <>
             <dl className="fields">
@@ -45,13 +46,13 @@ export function TaskRequest() {
               <dt>목적지</dt><dd>{destination(preview)}</dd>
               <dt>대상 물체</dt><dd>{preview.target_object_id ?? "-"}</dd>
             </dl>
-            <button disabled={busy} onClick={() => run(async () => {
+            <button className="primary" disabled={busy} onClick={() => run(async () => {
               const task = await api.createTask(instruction);
               await api.createProposal(task.task_id);
               navigate(`/proposals/${task.task_id}`);
-            })}>작업 생성하고 행동 제안 받기</button>
+            })}>작업 생성 후 행동 제안 받기</button>
           </>
-        ) : <p className="note">명령을 해석하면 여기에 표시돼요.</p>}
+        ) : <p className="empty-state roomy">명령을 해석하면 로봇, 행동, 목적지를 구조화해 표시합니다.</p>}
       </Panel>
     </>
   );

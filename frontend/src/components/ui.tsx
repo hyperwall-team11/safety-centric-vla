@@ -1,9 +1,9 @@
 import type { ReactNode } from "react";
 import type { Polled } from "../hooks/usePolling";
 
-export function Panel({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
+export function Panel({ title, action, children, className = "" }: { title: string; action?: ReactNode; children: ReactNode; className?: string }) {
   return (
-    <section className="panel">
+    <section className={`panel ${className}`.trim()}>
       <header className="panel-head">
         <h2>{title}</h2>
         {action}
@@ -15,9 +15,9 @@ export function Panel({ title, action, children }: { title: string; action?: Rea
 
 /** 조회 결과의 로딩·오류·API 미구현 상태를 한곳에서 처리한다. */
 export function Async<T>({ state, children }: { state: Polled<T>; children: (data: T) => ReactNode }) {
-  if (state.missing) return <p className="note">Backend API 대기 중: {state.error?.message.replace("Backend API 미구현: ", "")}</p>;
-  if (state.error && state.data === undefined) return <p className="note">불러오지 못했어요: {state.error.message}</p>;
-  if (state.data === undefined) return <p className="note">불러오는 중…</p>;
+  if (state.missing) return <p className="empty-state">Backend API 대기 중 · {state.error?.message.replace("Backend API 미구현: ", "")}</p>;
+  if (state.error && state.data === undefined) return <p className="empty-state error-state">불러오지 못했어요 · {state.error.message}</p>;
+  if (state.data === undefined) return <p className="empty-state loading-state">데이터를 불러오는 중…</p>;
   return <>{children(state.data)}</>;
 }
 
@@ -41,19 +41,21 @@ export type Column<T> = { key: string; label: string; render: (row: T) => ReactN
 export function Table<T>({ rows, columns, rowKey, empty = "없음" }: {
   rows: T[]; columns: Column<T>[]; rowKey: (row: T) => string; empty?: string;
 }) {
-  if (rows.length === 0) return <p className="note">{empty}</p>;
+  if (rows.length === 0) return <p className="empty-state">{empty}</p>;
   return (
-    <table>
-      <thead><tr>{columns.map((c) => <th key={c.key}>{c.label}</th>)}</tr></thead>
-      <tbody>
-        {rows.map((row) => <tr key={rowKey(row)}>{columns.map((c) => <td key={c.key}>{c.render(row)}</td>)}</tr>)}
-      </tbody>
-    </table>
+    <div className="table-scroll">
+      <table>
+        <thead><tr>{columns.map((c) => <th key={c.key}>{c.label}</th>)}</tr></thead>
+        <tbody>
+          {rows.map((row) => <tr key={rowKey(row)}>{columns.map((c) => <td key={c.key}>{c.render(row)}</td>)}</tr>)}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
 export function Placeholder({ label, height = 120 }: { label: string; height?: number }) {
-  return <div className="placeholder" style={{ height }}>{label}</div>;
+  return <div className="placeholder" style={{ height }}><span className="camera-reticle" /><span>{label}</span></div>;
 }
 
 export const time = (iso: string | null | undefined) =>
