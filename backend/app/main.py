@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import Enum
 from hashlib import sha256
 from os import getenv
 from pathlib import Path
@@ -77,6 +78,42 @@ ACTIVE_PROPOSAL_STATUSES = {
 PLANNABLE_TASK_STATUSES = {
     TaskStatus.CREATED,
     TaskStatus.PLANNING,
+}
+
+
+class OntologyObjectType(str, Enum):
+    ROBOT = "Robot"
+    SENSOR = "Sensor"
+    WORKER = "Worker"
+    ZONE = "Zone"
+    TASK_ORDER = "TaskOrder"
+    ACTION_PROPOSAL = "ActionProposal"
+    HAZARD_EVENT = "HazardEvent"
+    SAFETY_RULE = "SafetyRule"
+    EXECUTION_LOG = "ExecutionLog"
+
+
+OntologyObject = (
+    Robot
+    | Sensor
+    | Worker
+    | Zone
+    | TaskOrder
+    | ActionProposal
+    | HazardEvent
+    | SafetyRule
+    | ExecutionLog
+)
+OBJECT_STORE_ATTRIBUTES = {
+    OntologyObjectType.ROBOT: "robots",
+    OntologyObjectType.SENSOR: "sensors",
+    OntologyObjectType.WORKER: "workers",
+    OntologyObjectType.ZONE: "zones",
+    OntologyObjectType.TASK_ORDER: "tasks",
+    OntologyObjectType.ACTION_PROPOSAL: "proposals",
+    OntologyObjectType.HAZARD_EVENT: "hazards",
+    OntologyObjectType.SAFETY_RULE: "rules",
+    OntologyObjectType.EXECUTION_LOG: "logs",
 }
 TASK_LIST_RESPONSE_HEADERS = {
     "X-Total-Count": {
@@ -180,6 +217,19 @@ def stop_action_dispatcher() -> None:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/v1/objects/{type}", response_model=list[OntologyObject])
+def list_ontology_objects(type: OntologyObjectType) -> list[OntologyObject]:
+    if type == OntologyObjectType.SAFETY_RULE:
+        seed_rules()
+    with store.lock:
+        collection = getattr(store, OBJECT_STORE_ATTRIBUTES[type])
+        if collection is None:
+            return []
+        if isinstance(collection, dict):
+            collection = collection.values()
+        return [item.model_copy(deep=True) for item in collection]
 
 
 @app.get("/console", include_in_schema=False)

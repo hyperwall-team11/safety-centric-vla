@@ -4,11 +4,12 @@
 - 기준 코드: `backend/app/main.py`, `backend/app/models.py`
 - 기준 버전: FastAPI application `0.2.0`
 - 작성일: 2026-10-30
+- 수정일: 2026-11-12
 - 기본 URL(로컬): `http://127.0.0.1:8000`
 - 대화형 문서: `/docs`
 - OpenAPI JSON: `/openapi.json`
 
-이 문서는 현재 저장소에서 실제 호출 가능한 HTTP API를 정의한다. [ontology-schema-v1.1.md](ontology-schema-v1.1.md)는 객체·상태·안전 의미의 기준이고, 이 문서는 그중 현재 백엔드 MVP가 구현한 전송 경로와 동작의 기준이다. 개발계획서의 `/api/v1/...` 표기는 목표 인터페이스 초안이며 아직 현재 코드에 적용되지 않았다.
+이 문서는 현재 저장소에서 실제 호출 가능한 HTTP API를 정의한다. [ontology-schema-v1.1.md](ontology-schema-v1.1.md)는 객체·상태·안전 의미의 기준이고, 이 문서는 그중 현재 백엔드 MVP가 구현한 전송 경로와 동작의 기준이다. 개발계획서의 `/api/v1/...` 표기 중 통합 객체 조회 경로를 우선 적용했으며, 나머지 기존 경로는 하위 호환을 위해 기존 경로를 유지한다.
 
 ## 1. 공통 규약
 
@@ -17,7 +18,7 @@
 - 시간은 UTC ISO 8601 문자열로 반환한다.
 - 거리 단위는 m, 속도 단위는 m/s이다.
 - ID는 문자열이다. 서버 생성 ID는 `task-`, `proposal-`, `hazard-`, `log-` 접두사와 UUID를 사용한다.
-- 현재 인증·인가와 `/api/v1` 접두사는 구현하지 않았다.
+- 현재 인증·인가는 구현하지 않았다. `/api/v1` 접두사는 통합 객체 조회 API에만 적용되어 있다.
 - 현재 저장소는 인메모리이므로 서버 재시작 시 등록 데이터가 사라진다.
 
 ### 공통 오류
@@ -30,11 +31,12 @@
 
 ## 2. 구현 엔드포인트
 
-현재 구현은 19개 path, 22개 HTTP operation으로 구성된다.
+현재 구현은 20개 path, 23개 HTTP operation으로 구성된다.
 
 | Method | Path | 성공 | 용도 |
 |---|---|---:|---|
 | `GET` | `/health` | `200` | 서버 상태 확인 |
+| `GET` | `/api/v1/objects/{type}` | `200` | 저장된 온톨로지 객체를 타입별로 통합 조회 |
 | `POST` | `/robots` | `201` | Robot 등록 |
 | `GET` | `/robots` | `200` | Robot 전체 조회 |
 | `POST` | `/zones` | `201` | Zone 등록 |
@@ -56,6 +58,22 @@
 | `POST` | `/hazards/{hazard_id}/resolve` | `200` | HazardEvent 해제 |
 | `GET` | `/safety-rules` | `200` | 활성 안전 규칙 조회 |
 | `GET` | `/execution-logs` | `200` | 전체 ExecutionLog 조회 |
+
+### 2.1 통합 객체 조회
+
+`GET /api/v1/objects/{type}`은 현재 인메모리 저장소에 보관된 객체를 저장 순서대로 배열에 담아 반환한다. `type`은 대소문자를 구분하며 다음 온톨로지 클래스명만 허용한다.
+
+- `Robot`
+- `Sensor`
+- `Worker`
+- `Zone`
+- `TaskOrder`
+- `ActionProposal`
+- `HazardEvent`
+- `SafetyRule`
+- `ExecutionLog`
+
+해당 타입의 객체가 없거나 Worker 관측 스냅샷이 아직 들어오지 않은 경우 `200` 빈 배열 `[]`을 반환한다. 지원하지 않는 타입이나 대소문자가 다른 값은 `422`를 반환한다. `SafetyRule`은 저장소가 빈 경우 기본 규칙을 생성한 뒤 반환한다. `Observation`과 `PhysicalObject`는 현재 저장 계층이 없어 조회 대상에서 제외한다.
 
 ## 3. 데이터 계약
 
@@ -339,9 +357,9 @@ ResumeTask 전이와 실제 ROS 2 어댑터 결과 토픽 연결은 아직 구�
 
 | 항목 | 기준 문서의 목표 | v0.2 현재 구현 |
 |---|---|---|
-| API prefix | `/api/v1` | prefix 없음 |
+| API prefix | `/api/v1` | 통합 객체 조회에 적용, 나머지 경로는 prefix 없음 |
 | Proposal 제출·평가 | 한 경계에서 판정 결과 반환 | 등록, 평가, 실행 API 분리 |
-| 객체 조회 | `GET /api/v1/objects/{type}` | Robot, TaskOrder, Proposal, Rule, Log의 개별 API 일부 |
+| 객체 조회 | `GET /api/v1/objects/{type}` | 저장 계층이 있는 9개 객체 타입의 통합 조회 구현 |
 | ResumeTask | 관리자 승인 2단계 복귀 | 미구현, HELD 생성 요청은 `409` |
 | 인증·권한 | CRITICAL 해제와 Resume는 관리자 전용 | CRITICAL 해제 요청의 `resolved_by=OPERATOR` 검사 구현, 실제 인증·Resume는 미구현 |
 | 규칙 SR-01~06 | 속도·구역·거리·위험·상태·센서 공백 | SR-01 기본 0.4m/s·Robot·Zone 상한, 로봇 상태·adapter·관련 CRITICAL 위험 구현. KEEP_OUT 경로 검사를 구현하고 거리·센서 공백은 관측 안전 검사 활성화 시 적용 |
@@ -362,4 +380,4 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q app tests
 ```
 
-OpenAPI 경로 수는 19개, operation 수는 22개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.
+OpenAPI 경로 수는 20개, operation 수는 23개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.
