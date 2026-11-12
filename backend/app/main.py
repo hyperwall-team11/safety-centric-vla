@@ -107,6 +107,9 @@ TASK_ORDER_RESPONSE_HEADERS = {
     },
 }
 STATE_HEARTBEAT_SECONDS = 15.0
+# UI 상태 스트림 부하 제한이며 ROS 2 안전 heartbeat·판정 주기와 무관하다.
+STATE_MIN_PUSH_INTERVAL_SECONDS = 0.2
+STATE_EXECUTION_LOG_LIMIT = 100
 NON_MUTATING_POST_PATHS = {
     "/task-orders/preview",
     "/task-orders/preview/batch",
@@ -130,22 +133,24 @@ class StateSnapshot(BaseModel):
 
 
 def make_state_snapshot() -> dict:
+    """Copy a consistent store view quickly, then validate and serialize unlocked."""
     with store.lock:
-        snapshot = StateSnapshot(
-            revision=state_broadcaster.revision,
-            observed_at=utc_now(),
-            workers_observed_at=store.workers_observed_at,
-            robots=list(store.robots.values()),
-            sensors=list(store.sensors.values()),
-            workers=None if store.workers is None else list(store.workers),
-            zones=list(store.zones.values()),
-            task_orders=list(store.tasks.values()),
-            action_proposals=list(store.proposals.values()),
-            hazards=list(store.hazards.values()),
-            safety_rules=list(store.rules.values()),
-            execution_logs=list(store.logs),
-        )
-        return snapshot.model_dump(mode="json")
+        snapshot_values = {
+            "revision": state_broadcaster.revision,
+            "observed_at": utc_now(),
+            "workers_observed_at": store.workers_observed_at,
+            "robots": list(store.robots.values()),
+            "sensors": list(store.sensors.values()),
+            "workers": None if store.workers is None else list(store.workers),
+            "zones": list(store.zones.values()),
+            "task_orders": list(store.tasks.values()),
+            "action_proposals": list(store.proposals.values()),
+            "hazards": list(store.hazards.values()),
+            "safety_rules": list(store.rules.values()),
+            "execution_logs": list(store.logs[-STATE_EXECUTION_LOG_LIMIT:]),
+        }
+    snapshot = StateSnapshot(**snapshot_values)
+    return snapshot.model_dump(mode="json")
 
 
 @app.middleware("http")
@@ -166,21 +171,42 @@ async def stream_state(websocket: WebSocket) -> None:
     await websocket.accept()
     subscription = state_broadcaster.subscribe()
     try:
-        await websocket.send_json(make_state_snapshot())
+        loop = asyncio.get_running_loop()
+        if not await send_state_snapshot(websocket):
+            return
+        last_sent_at = loop.time()
         while True:
             try:
                 await asyncio.wait_for(
                     subscription.event.wait(),
                     timeout=STATE_HEARTBEAT_SECONDS,
                 )
-            except TimeoutError:
+            except asyncio.TimeoutError:
                 pass
+            remaining_interval = (
+                STATE_MIN_PUSH_INTERVAL_SECONDS - (loop.time() - last_sent_at)
+            )
+            if remaining_interval > 0:
+                await asyncio.sleep(remaining_interval)
+            # Delay 중 발생한 변경도 이어지는 전체 스냅샷 하나로 합친다.
             subscription.event.clear()
-            await websocket.send_json(make_state_snapshot())
+            if not await send_state_snapshot(websocket):
+                return
+            last_sent_at = loop.time()
     except WebSocketDisconnect:
         pass
     finally:
         state_broadcaster.unsubscribe(subscription.subscription_id)
+
+
+async def send_state_snapshot(websocket: WebSocket) -> bool:
+    snapshot = await asyncio.to_thread(make_state_snapshot)
+    try:
+        await websocket.send_json(snapshot)
+    except (WebSocketDisconnect, RuntimeError):
+        # send_json과 연결 종료가 경합하면 Starlette가 RuntimeError를 낼 수 있다.
+        return False
+    return True
 
 
 def normalize_idempotency_key(idempotency_key: str | None) -> str | None:

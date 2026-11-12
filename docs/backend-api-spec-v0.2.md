@@ -57,9 +57,9 @@
 | `GET` | `/safety-rules` | `200` | 활성 안전 규칙 조회 |
 | `GET` | `/execution-logs` | `200` | 전체 ExecutionLog 조회 |
 
-WebSocket `WS /ws/state`는 연결 직후와 상태 변경 시 전체 상태 스냅샷을 전송한다. 상태 변경이 없어도 15초마다 같은 형식의 스냅샷을 heartbeat로 전송한다. WebSocket 경로는 HTTP OpenAPI path·operation 수에 포함하지 않는다.
+WebSocket `WS /ws/state`는 연결 직후와 상태 변경 시 전체 상태 스냅샷을 전송한다. 연속 변경은 200ms 전송 간격 안에서 최신 전체 상태 하나로 합치며, 상태 변경이 없어도 15초마다 같은 형식의 스냅샷을 heartbeat로 전송한다. 이 heartbeat는 상태 구독 연결 유지용이며 ROS 2 안전 heartbeat나 Sensor·Worker 관측 최신성을 대신하지 않는다. WebSocket 경로는 HTTP OpenAPI path·operation 수에 포함하지 않는다.
 
-스냅샷은 `type=STATE_SNAPSHOT`, 단조 증가하는 `revision`, 서버 전송 시각 `observed_at`과 함께 Robot, Sensor, Worker, Zone, TaskOrder, ActionProposal, HazardEvent, SafetyRule, ExecutionLog 전체 목록을 포함한다. Worker 관측이 한 번도 없으면 `workers=null`, 관측 결과 작업자가 없으면 `workers=[]`이며, `workers_observed_at`으로 관측 시각을 제공한다. 현재는 인증과 재연결 시 delta 복구 없이 항상 전체 스냅샷을 보낸다.
+스냅샷은 `type=STATE_SNAPSHOT`, 단조 증가하는 `revision`, 서버 전송 시각 `observed_at`과 함께 Robot, Sensor, Worker, Zone, TaskOrder, ActionProposal, HazardEvent, SafetyRule 및 최근 ExecutionLog 100건을 포함한다. Worker 관측이 한 번도 없으면 `workers=null`, 관측 결과 작업자가 없으면 `workers=[]`이며, `workers_observed_at`으로 관측 시각을 제공한다. 관측 유효성은 WebSocket 연결 여부가 아니라 기존 `last_frame_at`, `workers_observed_at` 기준으로 판단한다. 전체 ExecutionLog는 `GET /execution-logs`로 조회한다. 현재는 인증과 재연결 시 delta 복구 없이 항상 전체 스냅샷을 보낸다.
 
 ## 3. 데이터 계약
 
