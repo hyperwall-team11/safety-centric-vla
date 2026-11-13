@@ -64,6 +64,20 @@ cd backend
 python3 -m unittest discover -s tests -v
 ```
 
+## 명령→Action publish 지연 측정
+
+Backend를 실행한 상태에서 자연어 명령 생성부터 안전 평가와 승인 Action publish API 응답까지
+10회 왕복 시간을 측정합니다. 각 측정 뒤 성공 결과를 보고해 로봇 상태를 `IDLE`로 복구합니다.
+
+```bash
+cd backend
+python3 scripts/benchmark_command_to_dispatch.py --runs 10 --threshold-ms 1000
+```
+
+기본 Backend의 mock dispatcher와 ROS 2 dispatcher 모두 사용할 수 있습니다. 이 수치는 승인 Action을
+publish한 API 응답까지의 시간이며 CTL이 별도로 보내는 ACK 시각은 현재 Backend가 저장하지 않으므로
+KPI 9의 최종 ACK 측정값으로 과장하지 않습니다. CTL ACK 저장 계약이 추가되면 종료 시점을 확장합니다.
+
 ## 자연어 파서 예시
 
 등록된 로봇이 `robot-01`일 때:
