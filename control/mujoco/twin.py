@@ -26,10 +26,12 @@ import mujoco
 
 FRAME_ID = "world"
 # 작업자 위치 여유 반경: CV 바닥 투영 오차 중앙값 0.15~0.20 m(2026-11-05 측정) 이상 (스키마 v1.1 COLLISION 규칙)
+# 중앙값 기반 MVP 초기값이며 안전이 보장되는 오차 상한이 아니다 (control/README.md 적용 범위)
 WORKER_MARGIN_M = 0.20
 WORKER_BODY_RADIUS_M = 0.25  # 어깨 폭 기준 사람 반경
 WORKER_HEIGHT_M = 1.75
 # 로봇 종류별 충돌 형상(반경, 높이). MOBILE은 TIAGo 베이스(지름 약 0.54 m, 높이 약 1.1 m) 기준
+# 사전 시뮬레이션용 단순화 모델. 팔·관절 자세는 반영하지 않으므로 정밀 충돌 검사로 쓰지 않는다
 ROBOT_SHAPES = {
     "MOBILE": (0.30, 1.10),
     "QUADRUPED": (0.40, 0.60),

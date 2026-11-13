@@ -180,6 +180,13 @@ python mujoco/twin.py --backend http://127.0.0.1:8000 --workers snapshot.json   
 - Zone: 볼록 껍질 바닥 판, 충돌 없음. GeoJSON `Polygon/coordinates`와 `polygon/points`를 모두 받습니다.
 - `frame_id`는 `world`만 받습니다. Worker 스냅샷이 없으면 빈 현장으로 가정하지 않고 `TwinError`로 거부합니다(Fail-Closed). 빈 목록(`items: []`)은 "작업자 없음"으로 받습니다.
 - `position_errors()`로 트윈 위치와 MuJoCo ① 정답 위치의 거리, 미탐(`missing`)·오탐(`extra`)을 잽니다.
+
+적용 범위와 한계(ONT 리뷰 반영):
+
+- **작업자 여유 반경 0.20 m**: CV 바닥 투영 오차의 **중앙값**(2026-11-05 측정 0.15~0.20 m)을 바탕으로 정한 MVP 초기값입니다. 오차가 이 값을 넘는 경우가 있으므로 안전이 보장되는 오차 상한으로 해석하지 않습니다.
+- **로봇 충돌 형상**: 종류별 원기둥은 사전 시뮬레이션용으로 단순화한 모델입니다. TIAGo의 팔·관절 자세를 반영하지 않으므로 팔이 뻗은 상태의 정밀 충돌 검사로 쓰지 않습니다.
+- **접촉 감지와 `SAFETY_DISTANCE`**: 트윈 장면의 접촉은 사전 시뮬레이션의 단순 접촉 감지일 뿐이며, Safety Gate의 `SAFETY_DISTANCE` 판정을 대신하지 않습니다. COLLISION 판정 기준과 시간 제한은 #50에서 정하고, 안전 판정 연결은 #53에서 합니다.
+- **Worker 스냅샷 최신성**: 이 모듈은 스냅샷이 없을 때만 거부하고 `observed_at`이 오래되었는지는 검사하지 않습니다. 최신성 검사와 Fail-Closed 처리는 #53 사전 시뮬레이션 판정에서 합니다.
 - 미구현: Backend에 Worker 조회 API(`GET /workers/snapshot`)가 없어 `--backend` 모드에서는 Worker 스냅샷을 파일로 넘깁니다. 작업자 이동 예측, 작업대·상자 등 PhysicalObject 반영도 아직 없습니다.
 
 ## 어댑터 동작 규칙
