@@ -5,12 +5,13 @@
 `/cctv_{n}/image_raw`(rgb8, Best Effort)로 발행한다.
 
     GET  /frame?after=N            N보다 새 프레임(float32 바이트). 없으면 최대 1초 기다린 뒤 204. 헤더 X-Seq, X-Sim-Time
-    POST /image?cam=cctv_1&t=12.3  RGB 바이트(width*height*3) → 발행
+    POST /image?cam=cctv_1&t=12.3  JPEG(Content-Type: image/jpeg) 또는 rgb8 바이트(width*height*3) → rgb8로 발행
 
 HTTP 요청은 서버 스레드에서 처리한다. MuJoCo 데이터는 건드리지 않고, 브리지 스레드가 만든 바이트만 읽는다.
 """
 from __future__ import annotations
 
+import io
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -52,9 +53,19 @@ class LiveFrames:
             frame = self._frame
             return frame if frame is not None and frame[0] > after else None
 
-    def accept_image(self, cam: str, sim_time: float, data: bytes) -> None:
+    def accept_image(self, cam: str, sim_time: float, data: bytes, jpeg: bool = False) -> None:
         if cam not in self.cameras:
             raise ValueError(f"unknown camera {cam!r}")
+        if jpeg:
+            # 렌더러는 CCTV 압축 효과를 겸해 JPEG(품질 0.72)로 보낸다. 원시 RGB보다 전송량이 약 20분의 1이다
+            from PIL import Image
+            try:
+                with Image.open(io.BytesIO(data)) as img:
+                    if img.size != (self.width, self.height):
+                        raise ValueError(f"image must be {self.width}x{self.height}, got {img.size[0]}x{img.size[1]}")
+                    data = img.convert("RGB").tobytes()
+            except OSError as exc:
+                raise ValueError(f"bad JPEG: {exc}") from exc
         expected = self.width * self.height * 3
         if len(data) != expected:
             raise ValueError(f"image must be {expected} bytes (rgb8 {self.width}x{self.height}), got {len(data)}")
@@ -103,7 +114,8 @@ def make_handler(live: LiveFrames):
                 return
             body = self.rfile.read(length)
             try:
-                live.accept_image(q.get("cam", [""])[0], float(q.get("t", ["nan"])[0]), body)
+                live.accept_image(q.get("cam", [""])[0], float(q.get("t", ["nan"])[0]), body,
+                                  jpeg=self.headers.get("Content-Type", "") == "image/jpeg")
             except ValueError as exc:
                 self._reply(400, str(exc).encode())
                 return

@@ -15,7 +15,7 @@ ROS 2 제어 어댑터, 안전 경로(HOLD·E-Stop), MuJoCo 시뮬레이션 환�
 | CT-02 | 시나리오 장면: 금지구역, A·B 작업대와 상자, CCTV 2대 + 머리 카메라, 작업자 접근 동작 | 완료 | `pixi run snapshot` |
 | CT-03 | Backend 승인 명령·RESULT 연동, `proposal_id` 중복 실행 방지 | 완료 | `pixi run test` |
 | #54 | MuJoCo ② 디지털 트윈 재구성: 온톨로지 상태(Robot·Worker 스냅샷·Zone)로 장면 생성, 정답 대비 위치 오차 | 완료 | `pixi run test` |
-| #55 | Three.js CCTV 실시간 발행: 브리지 MuJoCo 상태 → Three.js 렌더 → `/cctv_{n}/image_raw`(stamp = 시뮬레이션 시각) | 구현 (처리율 미확정) | `pixi run bridge-threejs` + `pixi run cctv-threejs` |
+| #55 | Three.js CCTV 실시간 발행: 브리지 MuJoCo 상태 → Three.js 렌더 → `/cctv_{n}/image_raw`(stamp = 시뮬레이션 시각) | 완료 (카메라당 10Hz) | `pixi run bridge-threejs` + `pixi run cctv-threejs` |
 
 다음 단계는 Backend와 TIAGo 어댑터를 함께 띄운 통합 시나리오 자동화입니다.
 
@@ -124,17 +124,23 @@ pixi run cctv-threejs       # 터미널 2: 헤드리스 Chromium 렌더러, 5초
 
 1. 브리지가 시작할 때 자기 장면(기본 `scenario_scene.xml`)을 `scene.json`·텍스처로 내보냅니다. 카메라 위치·방향·fovy는 장면의 `cctv_1`, `cctv_2`와 같습니다.
 2. `camera_hz`마다 MuJoCo 상태(geom 자세, 작업자 skin 정점)를 한 프레임으로 묶어 `http://127.0.0.1:8765/frame`에 둡니다(`threejs_live.py`). 프레임 형식은 오프라인 `export_scene.py`의 `FramePacker`와 같습니다.
-3. 렌더러(`node render.mjs --ros`)가 새 프레임을 롱폴링으로 받아 카메라마다 렌더하고, 오프라인 영상과 같은 CCTV 효과·JPEG 압축을 거친 rgb8을 돌려보냅니다.
+3. 렌더러(`node render.mjs --ros`)가 새 프레임을 롱폴링으로 받아 카메라마다 렌더하고, 오프라인 영상과 같은 CCTV 효과를 거친 JPEG(품질 0.72)를 돌려보냅니다. 브리지가 rgb8로 풀어 발행합니다.
 4. 브리지는 그 영상을 **렌더한 프레임의 시뮬레이션 시각**을 `header.stamp`로 붙여 발행합니다. 렌더가 밀리면 중간 프레임은 건너뛰고 최신 프레임만 렌더합니다.
 
 - 렌더러가 멈추면 영상이 끊기고, Backend는 `OBSERVATION_GAP`(2초)으로 실행을 거부합니다(제어 계약 3장).
 - 같은 ROS 도메인에서 `cctv_renderer:=mujoco` 브리지를 함께 띄우면 같은 토픽에 두 영상이 섞입니다. 하나만 띄웁니다.
-- 처리율: 아래 측정은 다른 브리지와 과열(`kernel_task` CPU 점유)이 겹친 Apple M3에서 잰 값이라 **기준값이 아닙니다**. 확정 측정은 남아 있습니다.
+- `plant_scene.xml`을 `model_path`로 주면 작업자 2·3(`worker_2`, `worker_3` mocap)도 오프라인 영상과 같은 경로로 함께 렌더합니다.
 
-| 조건 | 카메라당 발행 |
-|---|---|
-| 측정 1 (다른 브리지가 같은 토픽 발행 중) | 약 4.5 Hz (영상 합계 약 9장/s) |
-| 측정 2 (도메인 분리, 기계 과열) | 0.5 Hz 미만, 브리지 물리도 실시간 대비 0.35배 |
+처리율 (Apple M3, 별도 `ROS_DOMAIN_ID`, 2026-11-15 측정, 물리는 모든 경우 실시간 대비 1.00배):
+
+| 장면 | `camera_hz` | 카메라당 발행 | 프레임당 시간 (카메라 2대) |
+|---|---|---|---|
+| `scenario_scene.xml` | 10 | 10.0 Hz | 렌더 3 ms, JPEG 인코딩 30 ms, 전송 10 ms |
+| `scenario_scene.xml` | 15 | 9~11.5 Hz | |
+| `scenario_scene.xml` | 20 | 13~14.6 Hz | |
+| `plant_scene.xml` (작업자 3명) | 10 | 7.6~9.8 Hz | 자세 15 ms, 렌더 13 ms, JPEG 인코딩 42 ms, 전송 19 ms |
+
+`bridge-threejs`는 `camera_hz` 10으로 띄웁니다. 남은 병목은 브라우저의 JPEG 인코딩입니다. 렌더러는 5초마다 단계별 시간을 출력합니다.
 
 ## 토픽
 

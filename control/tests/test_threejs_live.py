@@ -33,6 +33,26 @@ def test_accept_image_checks_camera_and_size():
         live.accept_image("cctv_1", 1.5, bytes(10))
 
 
+def test_accept_jpeg_decodes_to_rgb8():
+    import io
+
+    from PIL import Image
+    sent = []
+    live = LiveFrames(["cctv_1"], W, H, lambda *a: sent.append(a))
+    buf = io.BytesIO()
+    Image.new("RGB", (W, H), (200, 30, 10)).save(buf, "JPEG", quality=95)
+    live.accept_image("cctv_1", 2.0, buf.getvalue(), jpeg=True)
+    cam, t, rgb = sent[0]
+    assert (cam, t, len(rgb)) == ("cctv_1", 2.0, W * H * 3)
+    assert abs(rgb[0] - 200) < 10 and abs(rgb[1] - 30) < 10
+    small = io.BytesIO()
+    Image.new("RGB", (2, 2)).save(small, "JPEG")
+    with pytest.raises(ValueError, match="4x3"):
+        live.accept_image("cctv_1", 2.0, small.getvalue(), jpeg=True)
+    with pytest.raises(ValueError, match="bad JPEG"):
+        live.accept_image("cctv_1", 2.0, b"not a jpeg", jpeg=True)
+
+
 def test_latest_waits_for_newer_frame():
     live = LiveFrames(["cctv_1"], W, H, lambda *a: None)
     assert live.latest(-1, 0.0) is None

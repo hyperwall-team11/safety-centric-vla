@@ -88,6 +88,8 @@ if (rosUrl) {   // 브리지가 scene.json을 쓴 뒤 렌더를 시작하고, �
     const dt = (Date.now() - t) / 1000; t = Date.now();
     console.log(`프레임 ${((s.frames - prev.frames) / dt).toFixed(1)} Hz, 영상 ${((s.images - prev.images) / dt).toFixed(1)} 장/s, `
       + `건너뜀 ${s.skipped}, 오류 ${s.errors}${s.lastError ? ` (${s.lastError})` : ''}`);
+    const n = Math.max(s.frames - prev.frames, 1), d = k => ((s.ms[k] - (prev.ms?.[k] ?? 0)) / n).toFixed(0);
+    console.log(`  프레임당 ms: 대기 ${d('wait')}, 자세 ${d('scene')}, 렌더 ${d('render')}, 픽셀 ${d('pixels')}, 전송 ${d('post')}`);
     prev = s;
   }, 5000);
   const stop = async () => { clearInterval(timer); await browser.close(); server.close(); process.exit(0); };
