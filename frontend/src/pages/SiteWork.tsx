@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ApiError, api } from "../api/client";
+import { explainTaskError, type TaskErrorView } from "../api/taskError";
 import type { TaskOrderPreview } from "../api/types";
 import { usePolling } from "../hooks/usePolling";
 import { ProposalReview, latestLog, planOverlay } from "../components/ProposalReview";
@@ -27,7 +28,7 @@ const noop = () => Promise.resolve(undefined);
 export function SiteWork() {
   const [instruction, setInstruction] = useState("");
   const [preview, setPreview] = useState<TaskOrderPreview>();
-  const [error, setError] = useState<string>();
+  const [error, setError] = useState<TaskErrorView>();
   const [busy, setBusy] = useState(false);
   const [pickedRobot, setPickedRobot] = useState<string>();
   const [pickedZone, setPickedZone] = useState<string>();
@@ -59,7 +60,9 @@ export function SiteWork() {
     setBusy(true);
     setError(undefined);
     try { await fn(); } catch (e) {
-      setError(e instanceof ApiError ? JSON.stringify(e.detail) : String(e));
+      setError(e instanceof ApiError
+        ? explainTaskError(e.detail)
+        : { title: "연결을 확인해 주세요", message: String(e) });
     } finally {
       setBusy(false);
       task.refresh(); proposals.refresh(); logs.refresh();
@@ -109,7 +112,13 @@ export function SiteWork() {
             ? <button type="button" onClick={reset}>새 요청</button>
             : <button className="primary" disabled={busy || !instruction.trim()}>명령 해석</button>}
         </form>
-        {error && <p className="error">{error}</p>}
+        {error && (
+          <div className="error task-error" role="alert">
+            <strong>{error.title}</strong>
+            <p>{error.message}</p>
+            {error.hint && <small>{error.hint}</small>}
+          </div>
+        )}
 
         {preview && (
           <div className="request-block">
