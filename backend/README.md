@@ -64,6 +64,14 @@ cd backend
 python3 -m unittest discover -s tests -v
 ```
 
+자연어 파서의 정상·거부 명령 100건 정확도와 처리시간은 별도 평가 명령으로 확인합니다.
+
+```bash
+python3 evaluation/run_command_evaluation.py
+```
+
+평가 데이터와 결과 해석은 [`evaluation/README.md`](evaluation/README.md)를 참고합니다.
+
 ## KPI 9 proxy: 명령→Action publish API 응답 지연 측정
 
 Backend를 실행한 상태에서 자연어 명령 생성부터 안전 평가와 승인 Action publish API 응답까지
