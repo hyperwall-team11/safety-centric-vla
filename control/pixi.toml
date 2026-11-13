@@ -27,6 +27,8 @@ sim-view = { cmd = "mjpython mujoco/simulation.py --view" }
 bridge = { cmd = "bash -c 'source ros2_ws/install/setup.bash && ros2 run mujoco_bridge bridge'", depends-on = ["build"] }
 # 뷰어 창과 카메라 3대 렌더가 같은 OpenGL 자원을 다퉈 둘 다 켜면 카메라가 약 5Hz로 떨어지므로 뷰어 모드는 카메라를 끈다
 bridge-view = { cmd = "bash -c 'source ros2_ws/install/setup.bash && mjpython ros2_ws/install/mujoco_bridge/lib/mujoco_bridge/bridge --ros-args -p viewer:=true -p cameras:=false'", depends-on = ["build"] }
+# 카메라 토픽 → 웹 콘솔용 MJPEG (http://127.0.0.1:8081/stream/cctv_1). bridge와 함께 실행
+cctv-stream = { cmd = "bash -c 'source ros2_ws/install/setup.bash && ros2 run mujoco_bridge cctv_stream'", depends-on = ["build"] }
 cmd-vel-demo = { cmd = "bash scripts/cmd_vel_demo.sh", depends-on = ["build"] }
 # CT-01 성능 측정 (기본 60초, 카메라 15Hz, 640x480): pixi run measure -- 60 15 640 480
 measure = { cmd = "bash scripts/measure_rates.sh", depends-on = ["build"] }
