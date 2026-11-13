@@ -47,6 +47,8 @@ TIAGo(PAL Robotics)는 차동 구동 바퀴 + 7축 팔 + 그리퍼 + 승강 몸�
 | 로봇 카메라 `head_camera` | TIAGo 머리 (원본 모델의 카메라) | 머리 관절을 따라 움직임 |
 | 작업자 `worker` (mocap) | 경로 (3.4, 1.8) → (1.6, 0.15) 2초 정지 → (3.4, -1.8) → 반복 | 0.6 m/s, 한 주기 약 15초. 금지구역에 들어갔다 나옴 |
 
+작업자는 실사형 사람 모델입니다(MakeHuman CC0 에셋의 피부·옷·머리를 MuJoCo `<skin>`으로 변환, `mujoco/models/worker/`). 부위별 mocap 바디(`worker_pelvis` 등 14개)에 skin이 붙어 있고, `WorkerScript.apply`가 걷기 자세(`worker/walk.npy`)를 이동 거리에 맞춰 재생해 발이 미끄러지지 않습니다. 정지 구간에서는 선 자세로 0.3초 동안 바뀝니다. 모두 mocap이라 `qpos`·keyframe 길이는 바뀌지 않고, 충돌 계산에도 참여하지 않습니다. 기준점 `worker` 바디(발 아래)와 `/sim/worker_pose`는 이전과 같습니다. 스킨을 다시 만드는 방법은 `mujoco/models/worker/README.md`에 있습니다.
+
 작업자 동작은 `scenario.WorkerScript`가 시뮬 시각 기준으로 재생합니다. 경로점·속도는 코드에서 바꿀 수 있고, 브리지에서는 `-p worker_motion:=false`로 끕니다. 실제 위치는 `/sim/worker_pose`, 금지구역 안 여부는 `/sim/worker_in_keep_out`으로 나가므로 CV 탐지 결과와 비교할 수 있습니다.
 
 `pixi run snapshot`은 작업자가 금지구역 안에 있는 시점의 카메라 3대 이미지를 `outputs/snapshots/`에 저장합니다.
