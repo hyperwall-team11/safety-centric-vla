@@ -79,14 +79,15 @@ def camera_from_pose(position, rotation, fovy_deg, ground_z=0.0):
 
 
 def workers_in_zone(people, width, height, camera, ring):
-    """Ground positions of detected people and whether any stands inside ``ring``."""
+    """Ground positions of detected people and whether any stands inside ``ring`` (None: no zone)."""
     positions = []
     for person in people:
         try:
             point = ground_position(person["bbox_xyxy"], width, height, camera)
         except ValueError:
             continue
-        positions.append({**point, "in_zone": point_in_ring(point["x"], point["y"], ring)})
+        inside = ring is not None and point_in_ring(point["x"], point["y"], ring)
+        positions.append({**point, "in_zone": inside})
     return positions, any(p["in_zone"] for p in positions)
 
 
@@ -194,11 +195,20 @@ class BackendClient:
             detail = exc.read().decode("utf-8", "replace")
             raise BackendHTTPError(exc.code, f"{method} {path} failed with HTTP {exc.code}: {detail}") from exc
 
+    def zones(self):
+        return self._call("GET", "/zones")
+
     def zone(self, zone_id):
-        for zone in self._call("GET", "/zones"):
+        for zone in self.zones():
             if zone.get("zone_id") == zone_id:
                 return zone
         raise ValueError(f"Zone {zone_id} is not registered in the backend")
+
+    def put_sensor(self, sensor):
+        return self._call("PUT", f"/sensors/{sensor['sensor_id']}", sensor)
+
+    def put_worker_snapshot(self, snapshot):
+        return self._call("PUT", "/workers/snapshot", snapshot)
 
     def post_hazard(self, hazard):
         """Create the event; a 409 for the same fixed ``hazard_id`` means an earlier try already did."""
