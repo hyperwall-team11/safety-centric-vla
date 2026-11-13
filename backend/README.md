@@ -112,6 +112,11 @@ TaskOrder 생성 요청에 선택적인 `Idempotency-Key` 헤더를 보내면 �
 
 현재 자동 변환 범위는 로봇 이동과 물체 운반입니다. `STOP`, `RESUME`은 Action enum에는 존재하지만 목적지가 필수인 TaskOrder v1.1 계약상 아직 자동 변환하지 않고 `422`를 반환합니다.
 
+외부 VLA가 `POST /action-proposals`로 제안을 등록하면 Pydantic 필드 검증에 더해
+TaskOrder의 행동, 대상 로봇·물체, 목적지와 좌표계가 바뀌지 않았는지 검증합니다.
+불일치 출력은 저장하거나 안전 규칙에 넘기지 않고 `422`로 거부합니다. 속도와 경로가
+현장 안전 기준을 만족하는지는 이 문맥 검증과 분리해 기존 제출 기준 평가에서 판정합니다.
+
 ## ActionProposal 생성
 
 TaskOrder를 생성한 뒤 아래 API를 호출합니다.
