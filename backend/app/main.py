@@ -56,6 +56,7 @@ from .models import (
 from .safety import WORKER_SNAPSHOT_MAX_AGE_SECONDS, default_rules, evaluate_proposal
 from .store import store
 from .task_parser import TaskParseError, parse_task_order, parse_task_order_preview
+from .vla_output import VlaOutputValidationError, validate_vla_proposal
 
 
 app = FastAPI(
@@ -559,6 +560,10 @@ def create_proposal(proposal: ActionProposal) -> ActionProposal:
             )
         if robot.status == "ERROR":
             raise HTTPException(status_code=409, detail="ERROR 상태의 로봇에는 제안을 등록할 수 없습니다.")
+        try:
+            validate_vla_proposal(proposal, task, robot)
+        except VlaOutputValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         if proposal.proposal_id in store.proposals:
             raise HTTPException(status_code=409, detail="이미 등록된 proposal_id입니다.")
         if any(
