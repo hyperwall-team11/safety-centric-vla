@@ -4,9 +4,6 @@
 실행:
     cd backend
     python3 -m pytest -v -rx tests/test_sensor_coverage.py
-
-현재 Sensor 저장소와 안전 판정 연결은 미구현.
-XFAIL은 앞으로 구현해야 하는 계약을 표현한다.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -28,11 +25,9 @@ POSE = {
 
 @pytest.fixture
 def client(monkeypatch):
+    monkeypatch.setenv("BACKEND_PERCEPTION_SAFETY_ENABLED", "1")
     store.reset()
     seed_rules()
-
-    # 테스트 전용 가상 센서 저장소
-    monkeypatch.setattr(store, "sensors", {}, raising=False)
 
     c = TestClient(app)
 
@@ -65,6 +60,7 @@ def client(monkeypatch):
     })
     assert r.status_code == 201, r.text
 
+    put_workers(c, [])
     return c
 
 
@@ -84,6 +80,19 @@ def sensor(sensor_id, status, covered_zones, *, age_seconds=0):
         ),
         "calibrated": True,
     })
+
+
+def put_workers(client, workers):
+    response = client.put("/workers/snapshot", json={
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "workers": workers,
+    })
+    assert response.status_code == 200, response.text
+
+
+def register_sensor(client, value):
+    response = client.put(f"/sensors/{value.sensor_id}", json=value.model_dump(mode="json"))
+    assert response.status_code == 200, response.text
 
 
 def assess(client, *, expected_status, expected_sensor_rule_passed):
@@ -146,6 +155,7 @@ def assess(client, *, expected_status, expected_sensor_rule_passed):
         rules["rule-observation-gap"]["passed"]
         is expected_sensor_rule_passed
     )
+    return proposal_id, log
 
 
 # S00. 센서 객체의 스키마 필드 검증
@@ -157,11 +167,6 @@ def test_00_sensor_schema_fields_exist():
     assert s.last_frame_at is not None
 
 
-# 미구현 기능: 구현 전에는 XFAIL 예상
-@pytest.mark.xfail(
-    strict=True,
-    reason="Sensor 연결 및 OBSERVATION_GAP 규칙 미구현",
-)
 def test_s01_no_sensor_must_reject(client):
     assess(
         client,
@@ -170,14 +175,10 @@ def test_s01_no_sensor_must_reject(client):
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Sensor 연결 및 OBSERVATION_GAP 규칙 미구현",
-)
 def test_s02_offline_covering_sensor_must_reject(client):
-    store.sensors["cctv-01"] = sensor(
+    register_sensor(client, sensor(
         "cctv-01", "OFFLINE", ["A구역"]
-    )
+    ))
     assess(
         client,
         expected_status="REJECTED",
@@ -185,14 +186,10 @@ def test_s02_offline_covering_sensor_must_reject(client):
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Sensor 연결 및 OBSERVATION_GAP 규칙 미구현",
-)
 def test_s03_online_sensor_in_other_zone_must_reject(client):
-    store.sensors["cctv-01"] = sensor(
+    register_sensor(client, sensor(
         "cctv-01", "ONLINE", ["B구역"]
-    )
+    ))
     assess(
         client,
         expected_status="REJECTED",
@@ -200,14 +197,10 @@ def test_s03_online_sensor_in_other_zone_must_reject(client):
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Sensor 연결 및 OBSERVATION_GAP 규칙 미구현",
-)
 def test_s04_online_covering_sensor_should_approve(client):
-    store.sensors["cctv-01"] = sensor(
+    register_sensor(client, sensor(
         "cctv-01", "ONLINE", ["A구역"]
-    )
+    ))
     assess(
         client,
         expected_status="APPROVED",
@@ -215,17 +208,13 @@ def test_s04_online_covering_sensor_should_approve(client):
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Sensor 연결 및 OBSERVATION_GAP 규칙 미구현",
-)
 def test_s05_one_of_two_covering_sensors_online_should_approve(client):
-    store.sensors["cctv-01"] = sensor(
+    register_sensor(client, sensor(
         "cctv-01", "OFFLINE", ["A구역"]
-    )
-    store.sensors["cctv-02"] = sensor(
+    ))
+    register_sensor(client, sensor(
         "cctv-02", "ONLINE", ["A구역"]
-    )
+    ))
     assess(
         client,
         expected_status="APPROVED",
@@ -233,14 +222,10 @@ def test_s05_one_of_two_covering_sensors_online_should_approve(client):
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Sensor 연결 및 OBSERVATION_GAP 규칙 미구현",
-)
 def test_s06_only_degraded_sensor_must_reject(client):
-    store.sensors["cctv-01"] = sensor(
+    register_sensor(client, sensor(
         "cctv-01", "DEGRADED", ["A구역"]
-    )
+    ))
     assess(
         client,
         expected_status="REJECTED",
@@ -248,19 +233,61 @@ def test_s06_only_degraded_sensor_must_reject(client):
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="프레임 2초 무수신 시 DEGRADED 전환 규칙 미구현",
-)
 def test_s07_stale_online_sensor_must_not_count_as_online(client):
-    store.sensors["cctv-01"] = sensor(
+    register_sensor(client, sensor(
         "cctv-01",
         "ONLINE",
         ["A구역"],
         age_seconds=5,
-    )
+    ))
     assess(
         client,
         expected_status="REJECTED",
         expected_sensor_rule_passed=False,
     )
+
+@pytest.mark.parametrize(("worker_y", "expected_decision"), [(1.0, "ESTOP"), (2.0, "REJECT")])
+def test_worker_distance_distinguishes_estop_and_rejection(client, worker_y, expected_decision):
+    register_sensor(client, sensor("cctv-01", "ONLINE", ["A구역"]))
+    put_workers(client, [{
+        "worker_id": "worker-01",
+        "pose": {**POSE, "position": {"x": 1, "y": worker_y, "z": 0}},
+        "current_zone_id": "A구역",
+        "safety_status": "SAFE",
+        "last_seen_at": datetime.now(timezone.utc).isoformat(),
+        "confidence": 1,
+    }])
+
+    _, log = assess(client, expected_status="REJECTED", expected_sensor_rule_passed=True)
+    assert log["decision"] == expected_decision
+    assert store.robots["robot-01"].status == ("ESTOP" if expected_decision == "ESTOP" else "IDLE")
+    assert any(
+        rule["rule_id"] == "rule-safety-distance" and not rule["passed"]
+        for rule in log["rule_results"]
+    )
+
+
+def test_missing_worker_snapshot_fails_closed(client):
+    register_sensor(client, sensor("cctv-01", "ONLINE", ["A구역"]))
+    with store.lock:
+        store.workers_observed_at = None
+    _, log = assess(client, expected_status="REJECTED", expected_sensor_rule_passed=True)
+    assert log["decision"] == "REJECT"
+
+
+def test_sensor_update_is_rechecked_before_dispatch(client):
+    register_sensor(client, sensor("cctv-01", "ONLINE", ["A구역"]))
+    proposal_id, _ = assess(client, expected_status="APPROVED", expected_sensor_rule_passed=True)
+    register_sensor(client, sensor("cctv-01", "OFFLINE", ["A구역"]))
+    response = client.post(f"/action-proposals/{proposal_id}/execute")
+    assert response.status_code == 409
+    assert store.logs[-1].decision == "REJECT"
+    assert store.robots["robot-01"].status == "IDLE"
+
+
+def test_outdated_empty_snapshot_cannot_replace_newer_observation(client):
+    response = client.put("/workers/snapshot", json={
+        "observed_at": (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat(),
+        "workers": [],
+    })
+    assert response.status_code == 409, response.text

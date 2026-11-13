@@ -2,7 +2,7 @@
 
 ## CV 프로토타입
 
-`mujoco-demo/`에는 MuJoCo 가상 CCTV 장면과 Florence-2 작업자 탐지 예제가 있습니다. 현재 확인한 범위는 합성 이미지 두 장에서 `person`을 찾는 단계입니다. `Observation` 변환, 구역 침입 판정, `HazardEvent` 생성 및 로봇 정지는 아직 구현하지 않았습니다.
+`mujoco-demo/`에는 MuJoCo 가상 CCTV 장면과 Florence-2 작업자 탐지 예제가 있습니다. 합성 이미지의 `person` 탐지와 카메라 메타데이터를 이용한 오프라인 `Observation` 변환 기반이 있습니다. 신뢰도 점수가 없는 탐지는 `pending_confidence`로 보류합니다. 실제 사람 영상의 성능 평가, 서버 등록, 구역 침입 판정, `HazardEvent` 생성 및 로봇 정지 연동은 후속 작업입니다.
 
 - [실행 안내](mujoco-demo/README.md)
 - [2026-10-09 진행 기록](docs/멘토링_진행공유_2026-10-09.md)
@@ -141,9 +141,9 @@ VLA(Vision-Language-Action) 모델은 자연어와 시각 정보를 바탕으로
 | 역할 | 담당 | 주요 책임 |
 |---|---|---|
 | CV | 강영한(팀장) | VLM 위험 감지, Worker·HazardEvent 갱신 |
-| NLP | 팀원 A | 자연어 명령 파싱, TaskOrder·VLA 인터페이스 |
-| ONT | 팀원 B | 온톨로지 스키마, Action 서버, Guardrail, 감사 로그 |
-| CTL | 팀원 C | ROS 2 제어, MuJoCo, 상태 동기화 |
+| NLP | 김경무 | 자연어 명령 파싱, TaskOrder·VLA 인터페이스 |
+| ONT | 임성현 | 온톨로지 스키마, Action 서버, Guardrail, 감사 로그 |
+| CTL | 최민서 | ROS 2 제어, MuJoCo, 상태 동기화 |
 
 모든 모듈은 온톨로지 API를 공통 인터페이스로 사용합니다. 초기 단계에서 스키마를 확정해 병렬 개발과 통합을 지원합니다.
 

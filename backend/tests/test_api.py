@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app, seed_rules
 from app.store import store
+from tests.zone_fixtures import register_work_zones
 
 
 ROBOT = {
@@ -26,6 +27,7 @@ class ApiTest(unittest.TestCase):
         store.reset()
         seed_rules()
         self.client = TestClient(app)
+        register_work_zones(self.client, "A구역")
         response = self.client.post("/robots", json=ROBOT)
         self.assertEqual(response.status_code, 201)
 

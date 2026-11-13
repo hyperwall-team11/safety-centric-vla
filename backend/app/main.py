@@ -1,15 +1,29 @@
 from __future__ import annotations
 
+import logging
+import threading
 from hashlib import sha256
+from os import getenv
+from pathlib import Path
 from time import perf_counter
 from typing import Annotated, Literal
 
 from fastapi import FastAPI, Header, HTTPException, Query, Response, status
-from pydantic import BaseModel
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import AwareDatetime, BaseModel
 
 from .action_planner import ActionPlanningError, RuleBasedActionPlanner
+from .ctl_bridge import (
+    CommandSerializationError,
+    DispatchError,
+    create_action_dispatcher,
+)
 from .models import (
     ActionProposal,
+    AdapterFailureCode,
+    AdapterResultReport,
+    AdapterResultStatus,
     Decision,
     ExecutionLog,
     HazardEvent,
@@ -23,7 +37,9 @@ from .models import (
     RequestValidationErrorResponse,
     Robot,
     RobotStatus,
+    RuleResult,
     SafetyRule,
+    Sensor,
     TaskOrder,
     TaskOrderPreview,
     TaskOrderPreviewBatchItem,
@@ -33,10 +49,11 @@ from .models import (
     TaskParseErrorResponse,
     TaskStatus,
     TriggerSource,
+    Worker,
     Zone,
     utc_now,
 )
-from .safety import default_rules, evaluate_proposal
+from .safety import WORKER_SNAPSHOT_MAX_AGE_SECONDS, default_rules, evaluate_proposal
 from .store import store
 from .task_parser import TaskParseError, parse_task_order, parse_task_order_preview
 
@@ -45,6 +62,12 @@ app = FastAPI(
     title="Safety-Centric VLA Ontology API",
     version="0.2.0",
     description="TaskOrder 변환과 최소 Action 안전 검증을 제공하는 MVP API",
+)
+CONSOLE_DIR = Path(__file__).resolve().parent / "static" / "console"
+app.mount(
+    "/console/assets",
+    StaticFiles(directory=CONSOLE_DIR),
+    name="console-assets",
 )
 planner = RuleBasedActionPlanner()
 ACTIVE_PROPOSAL_STATUSES = {
@@ -91,15 +114,129 @@ def make_request_fingerprint(request: BaseModel) -> str:
 
 def seed_rules() -> None:
     if not store.rules:
-        store.rules.update({rule.rule_id: rule for rule in default_rules()})
+        rules = default_rules(perception_enabled=getenv("BACKEND_PERCEPTION_SAFETY_ENABLED") == "1")
+        store.rules.update({rule.rule_id: rule for rule in rules})
 
 
 seed_rules()
 
 
+def apply_ctl_safety_event(event: dict) -> None:
+    """CTL의 HOLD·ESTOP을 더 낮은 안전 상태로 되돌리지 않고 반영한다."""
+    kind = event.get("kind")
+    robot_id = event.get("robot_id")
+    if kind not in {"HOLD", "ESTOP"} or not isinstance(robot_id, str):
+        return
+    with store.lock:
+        robot = store.robots.get(robot_id)
+        if robot is None:
+            return
+        proposal_id = event.get("proposal_id")
+        proposals = [
+            proposal
+            for proposal in store.proposals.values()
+            if proposal.robot_id == robot_id
+            and proposal.status == ProposalStatus.EXECUTING
+            and (proposal_id is None or proposal.proposal_id == proposal_id)
+        ]
+        robot.status = RobotStatus.ESTOP if kind == "ESTOP" else RobotStatus.HOLD
+        robot.updated_at = utc_now()
+        trigger_value = event.get("triggered_by", "RULE_ENGINE")
+        try:
+            triggered_by = TriggerSource(trigger_value)
+        except ValueError:
+            triggered_by = TriggerSource.RULE_ENGINE
+        for proposal in proposals:
+            proposal.status = ProposalStatus.HELD
+            task = store.tasks.get(proposal.task_id)
+            if task is not None:
+                task.status = TaskStatus.HELD
+            store.logs.append(
+                ExecutionLog(
+                    proposal_id=proposal.proposal_id,
+                    decision=Decision.ESTOP,
+                    rule_results=[],
+                    hazard_ids=[],
+                    robot_id=robot_id,
+                    result_message=f"CTL {kind} 이벤트 수신",
+                    triggered_by=triggered_by,
+                )
+            )
+
+
+LOGGER = logging.getLogger(__name__)
+
+
+def robots_to_stop(hazard: HazardEvent) -> list[str]:
+    """CRITICAL·OPEN HazardEvent와 연결된 로봇 중 승인 행동을 실행 중인 로봇. store.lock 안에서 호출한다."""
+    if hazard.severity != HazardSeverity.CRITICAL or hazard.status != HazardStatus.OPEN:
+        return []
+    # 기존 HAZARD_STATE 판정과 같은 연결 기준: related_robot_ids 또는 목적지 Zone 일치
+    related = set(hazard.related_robot_ids)
+    stop: set[str] = set()
+    for proposal in store.proposals.values():
+        if proposal.status != ProposalStatus.EXECUTING:
+            continue
+        task = store.tasks.get(proposal.task_id)
+        destination_zone_id = getattr(task.destination, "zone_id", None) if task else None
+        if proposal.robot_id in related or (
+            destination_zone_id is not None and destination_zone_id == hazard.zone_id
+        ):
+            stop.add(proposal.robot_id)
+    return sorted(stop)
+
+
+ESTOP_PUBLISH_LOCK = threading.Lock()
+
+
+def sync_estop(reason: str) -> None:
+    """저장소의 현재 정지 상태(estop_hazard_ids 유무)를 발행한다.
+
+    store.lock 밖에서 호출해 위험 등록·결과 반영을 막지 않는다. 발행은 ESTOP_PUBLISH_LOCK으로
+    직렬화하고 발행 직전에 상태를 다시 읽으므로, 등록·해제가 동시에 일어나도 마지막 발행은
+    항상 마지막 저장소 상태와 같다(Transient Local·Keep Last 1 latched 값 보장).
+    """
+    with ESTOP_PUBLISH_LOCK:
+        with store.lock:
+            active = bool(store.estop_hazard_ids)
+        _publish_estop(active, reason)
+
+
+def _publish_estop(active: bool, reason: str) -> None:
+    publisher = getattr(action_dispatcher, "publish_estop", None)
+    if publisher is None:
+        LOGGER.error("E-Stop을 발행할 수 없는 전송기입니다(%s): %s", action_dispatcher.name, reason)
+        return
+    try:
+        publisher(active, "RULE_ENGINE")
+        LOGGER.warning("E-Stop %s 발행: %s", "정지" if active else "해제", reason)
+    except DispatchError as exc:
+        LOGGER.error("E-Stop 발행 실패(%s): %s", reason, exc)
+
+
+action_dispatcher = create_action_dispatcher()
+if hasattr(action_dispatcher, "safety_event_handler"):
+    action_dispatcher.safety_event_handler = apply_ctl_safety_event
+
+
+@app.on_event("startup")
+def start_action_dispatcher() -> None:
+    action_dispatcher.start()
+
+
+@app.on_event("shutdown")
+def stop_action_dispatcher() -> None:
+    action_dispatcher.stop()
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/console", include_in_schema=False)
+def operator_console() -> FileResponse:
+    return FileResponse(CONSOLE_DIR / "index.html")
 
 
 @app.post("/robots", response_model=Robot, status_code=status.HTTP_201_CREATED)
@@ -437,6 +574,61 @@ def create_proposal(proposal: ActionProposal) -> ActionProposal:
         return proposal
 
 
+@app.put("/sensors/{sensor_id}", response_model=Sensor)
+def update_sensor(sensor_id: str, sensor: Sensor) -> Sensor:
+    if sensor_id != sensor.sensor_id:
+        raise HTTPException(status_code=422, detail="경로와 본문의 sensor_id가 다릅니다.")
+    with store.lock:
+        store.sensors[sensor_id] = sensor
+    return sensor
+
+
+class WorkerSnapshot(BaseModel):
+    observed_at: AwareDatetime
+    workers: list[Worker]
+
+
+@app.put("/workers/snapshot", response_model=WorkerSnapshot)
+def replace_worker_snapshot(snapshot: WorkerSnapshot) -> WorkerSnapshot:
+    workers = snapshot.workers
+    if len({worker.worker_id for worker in workers}) != len(workers):
+        raise HTTPException(status_code=422, detail="worker_id가 중복되었습니다.")
+    with store.lock:
+        if snapshot.observed_at > utc_now():
+            raise HTTPException(status_code=422, detail="미래 시각의 Worker 스냅샷입니다.")
+        previous_at = store.workers_observed_at
+        if previous_at is not None and snapshot.observed_at <= previous_at:
+            if snapshot.observed_at == previous_at and workers == store.workers:
+                return snapshot
+            raise HTTPException(status_code=409, detail="이미 저장된 스냅샷보다 최신이어야 합니다.")
+        store.workers = workers
+        store.workers_observed_at = snapshot.observed_at
+    return snapshot
+
+
+def evaluate_current_safety(
+    proposal: ActionProposal, task: TaskOrder, robot: Robot
+) -> tuple[list[RuleResult], list[str], bool]:
+    now = utc_now()
+    observed_at = store.workers_observed_at
+    workers = None
+    if observed_at is not None and (
+        0 <= (now - observed_at).total_seconds() < WORKER_SNAPSHOT_MAX_AGE_SECONDS
+    ):
+        workers = store.workers
+    return evaluate_proposal(
+        proposal,
+        task,
+        robot,
+        list(store.hazards.values()),
+        list(store.rules.values()),
+        list(store.zones.values()),
+        sensors=list(store.sensors.values()),
+        workers=workers,
+        now=now,
+    )
+
+
 @app.post("/action-proposals/{proposal_id}/evaluate", response_model=ActionProposal)
 def evaluate_action(proposal_id: str) -> ActionProposal:
     started_at = perf_counter()
@@ -449,19 +641,19 @@ def evaluate_action(proposal_id: str) -> ActionProposal:
 
         robot = store.robots[proposal.robot_id]
         task = store.tasks[proposal.task_id]
-        rule_results, hazard_ids = evaluate_proposal(
-            proposal,
-            task,
-            robot,
-            list(store.hazards.values()),
-            list(store.rules.values()),
-            list(store.zones.values()),
-        )
+        rule_results, hazard_ids, estop_requested = evaluate_current_safety(proposal, task, robot)
         approved = all(result.passed for result in rule_results)
         proposal.status = ProposalStatus.APPROVED if approved else ProposalStatus.REJECTED
+        decision = Decision.APPROVE if approved else Decision.REJECT
+        if estop_requested:
+            decision = Decision.ESTOP
+            task.status = TaskStatus.HELD
+            robot.status = RobotStatus.ESTOP
+            robot.updated_at = utc_now()
         log = ExecutionLog(
             proposal_id=proposal.proposal_id,
-            decision=Decision.APPROVE if approved else Decision.REJECT,
+            decision=decision,
+            triggered_by=TriggerSource.RULE_ENGINE if estop_requested else None,
             rule_results=rule_results,
             hazard_ids=hazard_ids,
             robot_id=proposal.robot_id,
@@ -484,24 +676,22 @@ def execute_action(proposal_id: str) -> ActionProposal:
 
         robot = store.robots[proposal.robot_id]
         task = store.tasks[proposal.task_id]
-        rule_results, hazard_ids = evaluate_proposal(
-            proposal,
-            task,
-            robot,
-            list(store.hazards.values()),
-            list(store.rules.values()),
-            list(store.zones.values()),
-        )
+        rule_results, hazard_ids, estop_requested = evaluate_current_safety(proposal, task, robot)
         evaluated_in_ms = (perf_counter() - started_at) * 1000
         if not all(result.passed for result in rule_results):
             proposal.status = ProposalStatus.HELD
+            perception_rules = {"rule-observation-gap", "rule-safety-distance"}
+            requires_estop = estop_requested or any(
+                not result.passed and result.rule_id not in perception_rules for result in rule_results
+            )
             task.status = TaskStatus.HELD
-            robot.status = RobotStatus.ESTOP
-            robot.updated_at = utc_now()
+            if requires_estop:
+                robot.status = RobotStatus.ESTOP
+                robot.updated_at = utc_now()
             store.logs.append(
                 ExecutionLog(
                     proposal_id=proposal.proposal_id,
-                    decision=Decision.ESTOP,
+                    decision=Decision.ESTOP if requires_estop else Decision.REJECT,
                     rule_results=rule_results,
                     hazard_ids=hazard_ids,
                     robot_id=proposal.robot_id,
@@ -511,6 +701,20 @@ def execute_action(proposal_id: str) -> ActionProposal:
                 )
             )
             raise HTTPException(status_code=409, detail="실행 직전 안전 재검증에 실패했습니다.")
+
+        try:
+            action_dispatcher.dispatch(
+                proposal,
+                robot,
+                list(store.zones.values()),
+            )
+        except CommandSerializationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except DispatchError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
 
         proposal.status = ProposalStatus.EXECUTING
         task.status = TaskStatus.RUNNING
@@ -523,20 +727,128 @@ def execute_action(proposal_id: str) -> ActionProposal:
                 rule_results=rule_results,
                 hazard_ids=hazard_ids,
                 robot_id=proposal.robot_id,
-                result_message=f"Mock adapter({robot.control_adapter})로 전달됨",
+                result_message=(
+                    f"{action_dispatcher.name} adapter({robot.control_adapter})로 전달됨"
+                ),
                 evaluated_in_ms=evaluated_in_ms,
             )
         )
         return proposal
 
 
-@app.post("/hazards", response_model=HazardEvent, status_code=status.HTTP_201_CREATED)
+@app.post("/action-proposals/{proposal_id}/result", response_model=ActionProposal)
+def report_action_result(
+    proposal_id: str,
+    report: AdapterResultReport,
+) -> ActionProposal:
+    with store.lock:
+        proposal = store.proposals.get(proposal_id)
+        if proposal is None:
+            raise HTTPException(status_code=404, detail="ActionProposal을 찾을 수 없습니다.")
+
+        previous_report = store.proposal_results.get(proposal_id)
+        if previous_report is not None:
+            if previous_report == report:
+                return proposal
+            raise HTTPException(
+                status_code=409,
+                detail="이미 다른 실행 결과가 기록된 ActionProposal입니다.",
+            )
+
+        if proposal.status != ProposalStatus.EXECUTING:
+            raise HTTPException(status_code=409, detail="EXECUTING 상태만 결과를 보고할 수 있습니다.")
+
+        task = store.tasks[proposal.task_id]
+        robot = store.robots[proposal.robot_id]
+        if task.status != TaskStatus.RUNNING or robot.status != RobotStatus.MOVING:
+            raise HTTPException(
+                status_code=409,
+                detail="TaskOrder와 Robot이 실행 중 상태가 아니어서 결과를 반영할 수 없습니다.",
+            )
+        if report.status == AdapterResultStatus.SUCCEEDED:
+            proposal.status = ProposalStatus.SUCCEEDED
+            task.status = TaskStatus.COMPLETED
+            robot.status = RobotStatus.IDLE
+            decision = Decision.COMPLETE
+            result_message = report.detail or "제어 어댑터 실행 완료"
+        else:
+            proposal.status = ProposalStatus.FAILED
+            decision = Decision.FAIL
+            reason_code = AdapterFailureCode(report.reason_code)
+            if reason_code == AdapterFailureCode.UNSUPPORTED:
+                task.status = TaskStatus.PLANNING
+                robot.status = RobotStatus.HOLD
+            elif reason_code == AdapterFailureCode.TIMEOUT:
+                task.status = TaskStatus.FAILED
+                robot.status = RobotStatus.HOLD
+            else:
+                task.status = TaskStatus.FAILED
+                robot.status = RobotStatus.ERROR
+            result_message = f"{reason_code.value}: {report.detail or '제어 어댑터 실행 실패'}"
+
+        robot.updated_at = utc_now()
+        store.proposal_results[proposal_id] = report
+        store.logs.append(
+            ExecutionLog(
+                proposal_id=proposal.proposal_id,
+                decision=decision,
+                rule_results=[],
+                hazard_ids=[],
+                robot_id=proposal.robot_id,
+                result_message=result_message,
+            )
+        )
+        return proposal
+
+
+
+@app.post(
+    "/hazards",
+    response_model=HazardEvent,
+    status_code=status.HTTP_201_CREATED,
+)
 def create_hazard(hazard: HazardEvent) -> HazardEvent:
     with store.lock:
+        # 1. HazardEvent ID 중복 검사
         if hazard.hazard_id in store.hazards:
-            raise HTTPException(status_code=409, detail="이미 등록된 hazard_id입니다.")
+            raise HTTPException(
+                status_code=409,
+                detail="이미 등록된 hazard_id입니다.",
+            )
+
+        # 2. 관련 Robot ID 존재 여부 검사
+        # 빈 배열은 전역 위험을 뜻하지 않으므로 허용
+        unknown_robot_ids = sorted(
+            set(hazard.related_robot_ids) - set(store.robots)
+        )
+
+        if unknown_robot_ids:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "등록되지 않은 related_robot_ids: "
+                    + ", ".join(unknown_robot_ids)
+                ),
+            )
+
+        # 3. Zone ID 존재 여부 검사
+        if hazard.zone_id not in store.zones:
+            raise HTTPException(
+                status_code=422,
+                detail=f"등록되지 않은 zone_id: {hazard.zone_id}",
+            )
+
+        # 4. 유효한 HazardEvent만 저장
+        # Observation, Worker는 현재 등록 저장소가 없어 검사 제외
         store.hazards[hazard.hazard_id] = hazard
-        return hazard
+        stop_robot_ids = robots_to_stop(hazard)
+        if stop_robot_ids:
+            store.estop_hazard_ids.add(hazard.hazard_id)
+
+    # 실행 중 로봇 즉시 정지. 상태 전이(Robot ESTOP, Proposal·Task HELD)는 CTL ESTOP 이벤트로 반영된다.
+    if stop_robot_ids:
+        sync_estop(f"{hazard.hazard_id} → {', '.join(stop_robot_ids)}")
+    return hazard
 
 
 @app.post("/hazards/{hazard_id}/resolve", response_model=HazardEvent)
@@ -558,7 +870,14 @@ def resolve_hazard(hazard_id: str, request: HazardResolveRequest) -> HazardEvent
         hazard.status = HazardStatus.RESOLVED
         hazard.resolved_at = utc_now()
         hazard.resolved_by = request.resolved_by
-        return hazard
+        release = hazard_id in store.estop_hazard_ids
+        store.estop_hazard_ids.discard(hazard_id)
+        release = release and not store.estop_hazard_ids
+
+    # 정지 신호만 푼다. 로봇은 ESTOP에 머물고 복귀는 승인된 RESUME으로 한다(제어 계약 6장).
+    if release:
+        sync_estop(f"{hazard_id} 해제")
+    return hazard
 
 
 @app.get("/safety-rules", response_model=list[SafetyRule])

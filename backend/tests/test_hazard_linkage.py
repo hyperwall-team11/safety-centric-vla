@@ -14,6 +14,7 @@ import unittest
 from fastapi.testclient import TestClient
 from app.main import app, seed_rules
 from app.store import store
+from tests.zone_fixtures import register_work_zones
 
 
 def robot_payload(robot_id):
@@ -37,6 +38,7 @@ class HazardLinkageTests(unittest.TestCase):
         store.reset()
         seed_rules()
         self.client = TestClient(app)
+        register_work_zones(self.client, "A구역", "B구역")
         for robot_id in ("robot-01", "robot-02"):
             response = self.client.post("/robots", json=robot_payload(robot_id))
             self.assertEqual(response.status_code, 201, response.text)
@@ -195,11 +197,7 @@ class HazardLinkageTests(unittest.TestCase):
         )
         for hazard_type in types:
             with self.subTest(hazard_type=hazard_type):
-                store.reset()
-                seed_rules()
-                for robot_id in ("robot-01", "robot-02"):
-                    response = self.client.post("/robots", json=robot_payload(robot_id))
-                    self.assertEqual(response.status_code, 201, response.text)
+                self.setUp()
                 hazard = self.add_hazard(
                     hazard_type=hazard_type, robots=["robot-01"], zone="A구역"
                 )

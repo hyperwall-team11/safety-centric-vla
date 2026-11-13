@@ -4,11 +4,15 @@
 
 1. 자연어 작업 명령을 검증해 `TaskOrder`로 변환
 2. `TaskOrder`를 공통 `ActionProposal`로 생성하거나 VLA 제안을 등록
-3. 최소 안전규칙(로봇 상태, 제어 어댑터, 기본·로봇·Zone 속도 상한, 연결된 CRITICAL 위험) 평가
-4. 승인된 제안만 mock 제어 어댑터에 전달
-5. 승인, 거절, 실행 판단을 `ExecutionLog`에 기록
+3. 최소 안전규칙(로봇 상태, 제어 어댑터, 기본·로봇·Zone 속도 상한, KEEP_OUT, 연결된 CRITICAL 위험) 평가
+4. 승인된 제안만 mock 또는 ROS 2 제어 어댑터에 전달
+5. 승인, 거절, 실행, 완료·실패 판단을 `ExecutionLog`에 기록
 
 현재 저장소는 시연용 인메모리 구현입니다. 프로세스를 재시작하면 데이터가 초기화되며, 이후 Redis 저장소로 교체할 수 있도록 파서·안전규칙·API를 분리했습니다.
+
+금지구역 이동 경로 검사는 기존 GeoJSON `Polygon/coordinates`와
+[Backend–CTL 계약](../docs/backend-ctl-contract-v0.1.md)의 `polygon/points`를 지원합니다.
+`points`의 마지막 점과 첫 점을 연결해 경계를 검사합니다.
 
 ## 실행
 
@@ -20,7 +24,38 @@ python3 -m uvicorn app.main:app --reload
 
 Swagger UI: <http://127.0.0.1:8000/docs>
 
+운영 콘솔: <http://127.0.0.1:8000/console>
+
+운영 콘솔에서는 별도 프론트엔드 빌드 없이 다음 흐름을 확인할 수 있습니다.
+
+1. 자연어 명령 미리보기와 `TaskOrder` 생성
+2. 로봇 빠른 등록과 현재 상태 확인
+3. `ActionProposal` 생성, 안전 평가, 승인 제안 실행
+4. 작업 상태 필터와 최근 `ExecutionLog` 확인
+
 현재 코드 기준 요청·응답, 상태 전이, 오류와 기준 문서 대비 차이는 [Backend API 명세 v0.2](../docs/backend-api-spec-v0.2.md)를 참고합니다.
+
+### ROS 2 제어 어댑터 연결
+
+기본 실행은 ROS 2가 없는 개발 환경에서도 쓸 수 있도록 mock 전송기를 사용합니다. 실제 CTL 어댑터와 연결할 때는 `control`의 ROS 2 환경을 활성화하고 아래처럼 실행합니다.
+
+```bash
+cd control
+pixi run build
+pixi shell
+source ros2_ws/install/setup.bash
+python -m pip install -r ../backend/requirements.txt
+cd ../backend
+BACKEND_CTL_ROS_ENABLED=1 python -m uvicorn app.main:app
+```
+
+다른 주소의 Backend 결과 API를 사용할 때는 `BACKEND_CTL_RESULT_API`를 지정합니다. 기본값은 `http://127.0.0.1:8000`입니다.
+
+ROS 2 모드에서는 실행 직전 재검증을 통과한 승인 스냅샷만 `/safety/approved_action`에 발행합니다. Backend의 `{x,y,z}` 좌표는 CTL의 `[x,y,z]` 좌표로 바꾸고, 발행 성공 후에만 Proposal을 `EXECUTING`으로 전이합니다. `/adapter/{robot_id}/result`의 `RESULT`는 표준 실패 코드로 정규화해 결과 API에 반영하며 `/safety/heartbeat`는 5 Hz로 발행합니다.
+
+실행 중인 로봇과 연결된 `CRITICAL` HazardEvent가 등록되면 `/safety/estop`(latched)에 정지 신호를 발행하고, 그 위험이 모두 해제되면 정지 신호를 풉니다. 로봇 복귀는 승인된 `RESUME`으로만 합니다.
+
+`ZONE` 목적지를 실제 실행하려면 해당 Zone의 `geometry.navigation_target`에 `{x,y,z}` 좌표가 있어야 합니다. 없으면 명령을 추측해 보내지 않고 `422`로 차단합니다.
 
 ## 테스트
 
@@ -76,9 +111,11 @@ curl -X POST http://127.0.0.1:8000/task-orders/{task_id}/action-proposals \
 
 `HELD` 작업은 일반 생성 API로 재개하지 않습니다. 관련 위험 해제까지 확인하는 별도 Resume 흐름이 팀 계약으로 추가되기 전에는 `409`를 반환합니다.
 
-평가 속도 상한은 `min(0.4, robot.motion_limits.max_speed, zone.max_speed)`이며 등록된 목적지 Zone에 `max_speed`가 없으면 Zone 항목은 제외합니다. 실행 직전 재검증이 실패하면 Proposal·TaskOrder를 `HELD`, Robot을 `ESTOP`으로 바꾸고 `RULE_ENGINE` 감사 로그를 남깁니다. 통과하면 Proposal은 `EXECUTING`, TaskOrder는 `RUNNING`, Robot은 `MOVING`으로 전이합니다.
+평가 속도 상한은 `min(0.4, robot.motion_limits.max_speed, zone.max_speed)`이며 등록된 목적지 Zone에 `max_speed`가 없으면 Zone 항목은 제외합니다. 실행 직전 재검증이 실패하면 Proposal·TaskOrder를 `HELD`, Robot을 `ESTOP`으로 바꾸고 `RULE_ENGINE` 감사 로그를 남깁니다. 통과하면 승인 명령 발행을 시도하고, 발행까지 성공한 뒤 Proposal은 `EXECUTING`, TaskOrder는 `RUNNING`, Robot은 `MOVING`으로 전이합니다. ROS 2 발행에 실패하면 기존 상태를 유지하고 `503`을 반환합니다.
 
 열린 CRITICAL 위험은 `related_robot_ids`에 대상 Robot이 있거나 Hazard의 Zone과 TaskOrder 목적지 Zone이 같을 때 차단합니다. 빈 `related_robot_ids` 자체는 전역 위험을 뜻하지 않습니다. CRITICAL 위험 해제는 `{"resolved_by":"OPERATOR"}` 요청만 허용하고, WARNING은 `SENSOR_AUTO`도 허용합니다.
+
+실행 중인 Proposal은 `POST /action-proposals/{proposal_id}/result`로 어댑터 결과를 보고합니다. `SUCCEEDED`는 TaskOrder를 `COMPLETED`, Robot을 `IDLE`로 돌립니다. `UNSUPPORTED`는 TaskOrder를 `PLANNING`으로 되돌려 재계획할 수 있고, `TIMEOUT`은 TaskOrder `FAILED`·Robot `HOLD`, `HW_ERROR`는 TaskOrder `FAILED`·Robot `ERROR`로 전이합니다. 같은 결과 재전송은 멱등 처리되어 감사 로그가 중복되지 않습니다.
 
 ## 구현된 최소 API
 
@@ -96,6 +133,7 @@ curl -X POST http://127.0.0.1:8000/task-orders/{task_id}/action-proposals \
 - `POST /action-proposals`
 - `POST /action-proposals/{proposal_id}/evaluate`
 - `POST /action-proposals/{proposal_id}/execute`
+- `POST /action-proposals/{proposal_id}/result`
 - `POST /hazards`
 - `POST /hazards/{hazard_id}/resolve`
 - `GET /safety-rules`

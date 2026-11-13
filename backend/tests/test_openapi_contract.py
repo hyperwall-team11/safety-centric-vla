@@ -17,6 +17,8 @@ class OpenApiContractTest(unittest.TestCase):
             ("GET", "/robots"),
             ("POST", "/zones"),
             ("GET", "/zones"),
+            ("PUT", "/sensors/{sensor_id}"),
+            ("PUT", "/workers/snapshot"),
             ("GET", "/task-orders"),
             ("POST", "/task-orders/preview"),
             ("POST", "/task-orders/preview/batch"),
@@ -27,6 +29,7 @@ class OpenApiContractTest(unittest.TestCase):
             ("POST", "/action-proposals"),
             ("POST", "/action-proposals/{proposal_id}/evaluate"),
             ("POST", "/action-proposals/{proposal_id}/execute"),
+            ("POST", "/action-proposals/{proposal_id}/result"),
             ("POST", "/hazards"),
             ("POST", "/hazards/{hazard_id}/resolve"),
             ("GET", "/safety-rules"),
@@ -34,7 +37,7 @@ class OpenApiContractTest(unittest.TestCase):
         }
 
         self.assertEqual(schema["info"]["version"], "0.2.0")
-        self.assertEqual(len(schema["paths"]), 16)
+        self.assertEqual(len(schema["paths"]), 19)
         self.assertEqual(actual_operations, expected_operations)
         list_operation = schema["paths"]["/task-orders"]["get"]
         self.assertEqual(

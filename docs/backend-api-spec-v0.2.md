@@ -30,7 +30,7 @@
 
 ## 2. 구현 엔드포인트
 
-현재 구현은 16개 path, 19개 HTTP operation으로 구성된다.
+현재 구현은 19개 path, 22개 HTTP operation으로 구성된다.
 
 | Method | Path | 성공 | 용도 |
 |---|---|---:|---|
@@ -39,6 +39,8 @@
 | `GET` | `/robots` | `200` | Robot 전체 조회 |
 | `POST` | `/zones` | `201` | Zone 등록 |
 | `GET` | `/zones` | `200` | Zone 전체 조회 |
+| `PUT` | `/sensors/{sensor_id}` | `200` | Sensor 등록·갱신 |
+| `PUT` | `/workers/snapshot` | `200` | 전체 Worker 관측 스냅샷 교체 |
 | `GET` | `/task-orders` | `200` | TaskOrder 필터·정렬·페이지 목록 조회 |
 | `POST` | `/task-orders/preview` | `200` | 자연어 명령 단건 비저장 검증 |
 | `POST` | `/task-orders/preview/batch` | `200` | 자연어 명령 1~50건 일괄 비저장 검증 |
@@ -49,6 +51,7 @@
 | `POST` | `/action-proposals` | `201` | 외부 VLA의 ActionProposal 직접 등록 |
 | `POST` | `/action-proposals/{proposal_id}/evaluate` | `200` | 안전 규칙 평가 |
 | `POST` | `/action-proposals/{proposal_id}/execute` | `200` | 실행 직전 재평가 후 Mock adapter 전달 |
+| `POST` | `/action-proposals/{proposal_id}/result` | `200` | 제어 어댑터 실행 결과 보고 |
 | `POST` | `/hazards` | `201` | HazardEvent 등록 |
 | `POST` | `/hazards/{hazard_id}/resolve` | `200` | HazardEvent 해제 |
 | `GET` | `/safety-rules` | `200` | 활성 안전 규칙 조회 |
@@ -238,7 +241,7 @@ TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 
 
 - `PROPOSED`만 평가할 수 있다.
 - 전 규칙 통과 시 `APPROVED`, 하나라도 실패하면 `REJECTED`로 변경한다.
-- 판정마다 `APPROVE` 또는 `REJECT` ExecutionLog를 남긴다.
+- 판정마다 `APPROVE`, `REJECT` 또는 `ESTOP` ExecutionLog를 남긴다.
 
 현재 실제 평가 항목:
 
@@ -246,6 +249,8 @@ TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 
 2. `control_adapter`가 공백이 아님
 3. Proposal 속도가 `min(0.4, Robot max_speed, 목적지 Zone max_speed)` 이하. Zone이 없거나 `max_speed`가 없으면 해당 항목은 제외
 4. 대상 로봇 또는 TaskOrder의 `ZONE` 목적지와 연결된 OPEN·CRITICAL HazardEvent가 없음
+5. `KEEP_OUT` 목적지 및 경로 제한 충족
+6. 관측 안전 규칙을 활성화한 경우 `OBSERVATION_GAP` 및 `SAFETY_DISTANCE` 통과
 
 빈 `related_robot_ids`는 전역 차단을 뜻하지 않는다. 로봇 ID가 명시적으로 연결되었거나 HazardEvent의 `zone_id`와 TaskOrder 목적지 Zone이 같을 때만 관련 위험으로 판단한다. 좌표 목적지는 Zone 연결을 추론하지 않는다.
 
@@ -253,9 +258,21 @@ TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 
 
 - `APPROVED`만 실행할 수 있다.
 - 실행 직전 같은 안전 규칙을 다시 평가한다.
-- 재평가 실패 시 Proposal과 TaskOrder를 `HELD`, Robot을 `ESTOP`으로 바꾸고 `triggered_by=RULE_ENGINE`인 `ESTOP` 로그를 남긴 뒤 `409`를 반환한다.
+- 재평가 실패 시 Proposal과 TaskOrder를 `HELD`로 바꾸고 `409`를 반환한다. 관측 공백 또는 최소 안전거리만 위반하면 `REJECT`를 기록한다. E-Stop 거리 위반 또는 기존 규칙 재평가 실패 시 Robot을 `ESTOP`으로 바꾸고 `triggered_by=RULE_ENGINE`인 `ESTOP` 로그를 남긴다.
 - 통과 시 Proposal을 `EXECUTING`, TaskOrder를 `RUNNING`, Robot을 `MOVING`으로 바꾸고 Mock adapter 전달을 나타내는 `EXECUTE` 로그를 남긴다.
 - 평가와 실행 직전 재평가 로그에는 `evaluated_in_ms`를 기록한다.
+
+`POST /action-proposals/{proposal_id}/result`
+
+- `EXECUTING` 상태에서만 최초 결과를 받을 수 있다.
+- TaskOrder가 `RUNNING`, Robot이 `MOVING`인 일관된 실행 상태에서만 결과를 반영한다. E-Stop 등으로 상태가 바뀐 뒤 도착한 지연 결과는 `409`로 거절해 안전 상태를 덮어쓰지 않는다.
+- 성공 본문은 `{"status":"SUCCEEDED","detail":"목적지 도착"}`이며 `reason_code`를 허용하지 않는다.
+- 실패 본문은 `{"status":"FAILED","reason_code":"UNSUPPORTED|TIMEOUT|HW_ERROR","detail":"선택 설명"}`이며 `reason_code`가 필수다.
+- 성공 시 Proposal `SUCCEEDED`, TaskOrder `COMPLETED`, Robot `IDLE`, `COMPLETE` 로그로 전이한다.
+- `UNSUPPORTED`는 Proposal `FAILED`, TaskOrder `PLANNING`, Robot `HOLD`로 바꿔 새 Proposal 재계획을 허용한다.
+- `TIMEOUT`은 Proposal·TaskOrder `FAILED`, Robot `HOLD`로 전이한다.
+- `HW_ERROR`는 Proposal·TaskOrder `FAILED`, Robot `ERROR`로 전이한다.
+- 동일한 결과 재전송은 저장 상태만 반환하고 로그를 중복 생성하지 않는다. 이미 기록된 결과와 다른 재전송은 `409`다.
 
 ### 3.6 HazardEvent
 
@@ -279,6 +296,8 @@ TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 
 
 `POST /hazards/{hazard_id}/resolve` 요청은 `{"resolved_by":"SENSOR_AUTO|OPERATOR"}`이다. `WARNING`은 두 주체 모두 해제할 수 있지만 `CRITICAL`은 `OPERATOR`만 허용한다. 성공 시 `status=RESOLVED`, `resolved_at`, `resolved_by`를 기록하며, 이미 해제된 이벤트나 허용되지 않은 자동 해제는 `409`를 반환한다. 인증 계층은 아직 없으므로 이 값은 호출자가 명시하는 감사 필드다.
 
+실행 중 로봇 즉시 정지: `OPEN` `CRITICAL` HazardEvent와 연결된(`related_robot_ids`에 있거나 Task 목적지 Zone이 `zone_id`와 같은) 로봇 중 `EXECUTING` Proposal을 가진 로봇이 있으면, 등록 직후 `/safety/estop`에 `{"active":true,"triggered_by":"RULE_ENGINE","issued_at":...}`를 발행한다. 상태 전이(Robot `ESTOP`, Proposal·Task `HELD`)는 CTL이 보내는 `ESTOP` 이벤트로 반영한다. 정지를 발행하게 한 HazardEvent가 모두 해제되면 `{"active":false}`를 발행하지만, 이는 정지 신호만 풀며 로봇 복귀는 승인된 `RESUME`으로만 한다. 발행은 저장소 잠금 밖에서 하되 전용 잠금으로 직렬화하고 발행 직전 저장소 상태를 다시 읽어 마지막 발행이 항상 마지막 상태와 같으며, 발행에 실패해도 등록은 성공하고 이후 평가·실행 직전 재검증 차단은 그대로 적용된다. `/safety/estop`은 전역 토픽이므로 연결된 어댑터가 모두 정지한다.
+
 ### 3.7 SafetyRule과 ExecutionLog
 
 `GET /safety-rules`는 현재 기본 규칙 두 개를 반환한다.
@@ -290,7 +309,16 @@ SafetyRule은 선택적인 `parameters`, `on_violation=REJECT|ESTOP`을 지원�
 
 `GET /execution-logs`는 평가·실행 순서대로 전체 로그를 반환한다. 로그는 기존 필드와 선택적인 `evaluated_in_ms`, `triggered_by=RULE_ENGINE|OPERATOR|HEARTBEAT_LOSS`를 포함한다.
 
-HTTP 등록 경로가 아직 없는 v1.1 객체도 Pydantic 모델 계약에는 다음 선택 필드를 반영한다: Sensor의 `covered_zone_ids`, `last_frame_at`, `calibrated`; Observation의 `ingested_at`, `bbox`, `position_source`; Worker의 `source_sensor_ids`.
+v1.1 객체의 Pydantic 모델 계약에는 다음 선택 필드를 반영한다: Sensor의 `covered_zone_ids`, `last_frame_at`, `calibrated`; Observation의 `ingested_at`, `bbox`, `position_source`; Worker의 `source_sensor_ids`.
+
+### 3.8 관측 기반 안전 검사
+
+서버 시작 시 `BACKEND_PERCEPTION_SAFETY_ENABLED=1`을 설정하면 관측 공백과 작업자 안전거리 검사를 적용한다. 기본값은 비활성화다. 활성화 시 목적지 Zone, 최신 센서 프레임, Worker 스냅샷 및 검증 가능한 이동 경로가 필요하다. `STOP`은 두 관측 규칙의 검사 대상에서 제외한다.
+
+- `PUT /sensors/{sensor_id}`는 기존 Sensor 모델 전체를 받는다. 센서 ID는 경로와 본문에서 일치해야 한다. 목적지 Zone을 감시하고 마지막 프레임의 나이가 2초 미만인 ONLINE 센서가 있어야 한다.
+- `PUT /workers/snapshot`은 `{"observed_at":"2026-11-05T12:00:00Z","workers":[]}` 형식으로 전체 Worker 목록을 교체한다. 빈 배열은 감지된 작업자가 없는 최신 관측을 뜻한다. 관측 시각은 시간대를 포함하며, 이전 관측보다 오래된 요청은 `409`다. 동일 스냅샷을 재전송해도 최신성은 관측 시각으로 계산한다.
+- Worker 스냅샷과 개별 Worker 위치는 현재 ONT MVP의 2초 최신성 정책을 적용한다. 안전거리 검사는 MOBILE 로봇의 XY 경로와 동일 좌표계의 작업자 위치를 비교한다.
+- 안전거리 위반의 백엔드 판정과 상태를 로그에 기록한다. 물리 E-Stop 신호 발행과 실행 중 연속 감시는 CTL 연동 범위다.
 
 ## 4. 상태 전이
 
@@ -303,9 +331,11 @@ ActionProposal: PROPOSED ── evaluate 통과 ──> APPROVED
                 PROPOSED ── evaluate 실패 ──> REJECTED
                 APPROVED ── execute 재검증 통과 ──> EXECUTING
                 APPROVED ── execute 재검증 실패 ──> HELD
+                EXECUTING ── 완료 보고 ──> SUCCEEDED
+                EXECUTING ── 실패 보고 ──> FAILED
 ```
 
-`COMPLETED`, `FAILED`, `SUCCEEDED`, ResumeTask와 실행 결과 보고 전이는 스키마에는 있으나 현재 HTTP MVP에는 구현되지 않았다.
+ResumeTask 전이와 실제 ROS 2 어댑터 결과 토픽 연결은 아직 구현하지 않았다. 현재 결과 API는 Mock adapter 및 연동 시험용 HTTP 경계다.
 
 ## 5. 기준 문서와 현재 구현의 차이
 
@@ -316,8 +346,9 @@ ActionProposal: PROPOSED ── evaluate 통과 ──> APPROVED
 | 객체 조회 | `GET /api/v1/objects/{type}` | Robot, TaskOrder, Proposal, Rule, Log의 개별 API 일부 |
 | ResumeTask | 관리자 승인 2단계 복귀 | 미구현, HELD 생성 요청은 `409` |
 | 인증·권한 | CRITICAL 해제와 Resume는 관리자 전용 | CRITICAL 해제 요청의 `resolved_by=OPERATOR` 검사 구현, 실제 인증·Resume는 미구현 |
-| 규칙 SR-01~06 | 속도·구역·거리·위험·상태·센서 공백 | SR-01 기본 0.4m/s·Robot·Zone 상한, 로봇 상태·adapter·관련 CRITICAL 위험 구현. 경로·거리·센서 공백은 미구현 |
-| E-Stop | ROS 2 latched 전용 경로 | 실행 재검증 실패 시 Robot ESTOP·Task HELD·감사 로그 구현, ROS 2 전용 신호는 미구현 |
+| 규칙 SR-01~06 | 속도·구역·거리·위험·상태·센서 공백 | SR-01 기본 0.4m/s·Robot·Zone 상한, 로봇 상태·adapter·관련 CRITICAL 위험 구현. KEEP_OUT 경로 검사를 구현하고 거리·센서 공백은 관측 안전 검사 활성화 시 적용 |
+| E-Stop | ROS 2 latched 전용 경로 | 실행 재검증 실패 시 Robot ESTOP·Task HELD·감사 로그 구현. `CRITICAL` HazardEvent가 실행 중 로봇과 연결되면 `/safety/estop` 발행(3.6절). 운영자 E-Stop API와 로봇별 정지는 미구현 |
+| 어댑터 실행 결과 | ROS 2 result 토픽으로 완료·실패 보고 | HTTP 결과 보고, 상태 전이, 멱등 감사 로그 구현. ROS 2 토픽 연결은 미구현 |
 | 상태 구독 | WebSocket `/ws/state` | 미구현 |
 | 영속 저장 | Redis 또는 ROS 2 상태 연동 | 인메모리 |
 | 판정 시간 | `evaluated_in_ms` 기록 | 평가·실행 직전 재평가 로그에 구현 |
@@ -333,4 +364,4 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q app tests
 ```
 
-OpenAPI 경로 수는 16개, operation 수는 19개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.
+OpenAPI 경로 수는 19개, operation 수는 22개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.

@@ -85,6 +85,26 @@ def test_worker_apply_moves_mocap(sim):
     assert sim.data.xpos[sim.model.body("worker").id][:2] == pytest.approx([x, y])
 
 
+def test_worker_parts_follow_path_and_stand_on_floor(sim):
+    """실사 작업자: 부위 mocap 이 작업자 위치를 따라가고, 발이 바닥 근처에 있다."""
+    worker = WorkerScript()
+    for t in (0.5, 2.5, 5.5):  # 정지, 이동, 금지구역 안 정지
+        sim.data.time = t
+        x, y, _ = worker.apply(sim.model, sim.data)
+        mujoco.mj_forward(sim.model, sim.data)
+        pelvis = sim.data.xpos[sim.model.body("worker_pelvis").id]
+        assert pelvis[:2] == pytest.approx([x, y], abs=0.05)
+        assert 0.85 < pelvis[2] < 1.0
+        feet = [sim.data.xpos[sim.model.body(f"worker_{s}_foot").id][2] for s in ("left", "right")]
+        assert min(feet) < 0.08
+
+
+def test_worker_skin_does_not_change_robot_state_size(sim):
+    """작업자 부위는 mocap 이라 qpos(keyframe) 길이에 영향이 없다."""
+    assert sim.model.nq == 36
+    assert sim.model.nskin == 7
+
+
 def test_camera_intrinsics_match_fovy(sim):
     fx, fy, cx, cy = camera_intrinsics(sim.model, "cctv_1", 640, 480)
     assert (cx, cy) == (320, 240)

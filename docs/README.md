@@ -16,7 +16,8 @@
 
 | 문서 | 버전 | 내용 |
 |---|---|---|
-| [backend-api-spec-v0.2.md](backend-api-spec-v0.2.md) | v0.2 (As-Built) | 현재 FastAPI 16개 path·19개 operation의 요청·응답·상태 전이·오류와 목표 인터페이스 대비 미구현 범위 |
+| [backend-api-spec-v0.2.md](backend-api-spec-v0.2.md) | v0.2 (As-Built) | 현재 FastAPI 17개 path·20개 operation의 요청·응답·상태 전이·오류와 목표 인터페이스 대비 미구현 범위 |
+| [backend-ctl-contract-v0.1.md](backend-ctl-contract-v0.1.md) | v0.1 Draft | 승인 Action ROS 2 전송, ACK·RESULT, E-Stop·Heartbeat, 상태 전이의 Backend–CTL 연동 계약 |
 
 기준 문서의 `/api/v1/...` 표는 목표 인터페이스이며, 현재 호출 가능한 경로는 구현 명세와 FastAPI `/openapi.json`을 기준으로 합니다.
 
@@ -25,6 +26,9 @@
 | 문서 | 내용 |
 |---|---|
 | [멘토링_진행공유_2026-10-09.md](멘토링_진행공유_2026-10-09.md) | MuJoCo 가상 CCTV 이미지로 Florence-2 작업자 탐지 확인 |
+| [cv-review-2026-10-30.md](cv-review-2026-10-30.md) | Observation 변환 CPU 검증과 실제 영상 연동의 미완료 범위 |
+| [cv-integration-checklist.md](cv-integration-checklist.md) | CV PR 순서, 실제 영상 실행 절차, 파트별 통합 과제 |
+| [프론트_유사서비스조사_2026-11-11.md](프론트_유사서비스조사_2026-11-11.md) | 운영 콘솔 설계 참고용 유사 서비스(rmf-web, Orbit, Formant 등) 비교와 적용 우선순위 |
 
 ## 변경 절차
 
