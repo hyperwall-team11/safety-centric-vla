@@ -1,6 +1,7 @@
 // export_scene.py가 만든 데이터를 헤드리스 Chromium의 Three.js로 렌더해 CCTV PNG·마스크를 저장한다.
 //
 //   node render.mjs --data ../../outputs/threejs_cctv/data --out ../../outputs/threejs_cctv [--frames 0:300]
+//   node render.mjs --ros [http://127.0.0.1:8765]   # 브리지 실시간 렌더 → /cctv_N/image_raw (#55)
 //
 // 출력: <out>/cctv_N/000000.png, <out>/cctv_N_mask/000000.png, <out>/frames.csv, <out>/cameras.json
 import http from 'node:http';
@@ -12,7 +13,9 @@ import { chromium } from 'playwright-core';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const arg = (name, def) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : def; };
-const dataDir = path.resolve(arg('data', path.join(here, '../../outputs/threejs_cctv/data')));
+const rosIdx = process.argv.indexOf('--ros');
+const rosUrl = rosIdx > 0 ? (process.argv[rosIdx + 1]?.startsWith('http') ? process.argv[rosIdx + 1] : 'http://127.0.0.1:8765') : null;
+const dataDir = path.resolve(arg('data', path.join(here, rosUrl ? '../../outputs/threejs_live/data' : '../../outputs/threejs_cctv/data')));
 const outDir = path.resolve(arg('out', path.join(here, '../../outputs/threejs_cctv')));
 const cams = arg('cameras', 'cctv_1,cctv_2').split(',');
 
@@ -38,6 +41,13 @@ function findChromium() {
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png',
   '.jpg': 'image/jpeg', '.gltf': 'model/gltf+json', '.bin': 'application/octet-stream', '.hdr': 'application/octet-stream' };
 const server = http.createServer((req, res) => {
+  if (rosUrl && req.url.startsWith('/ros/')) {   // 브리지 프레임·영상 중계 (같은 출처로 두려고 여기서 넘긴다)
+    const up = http.request(rosUrl + req.url.slice(4), { method: req.method, headers: req.headers }, r => {
+      res.writeHead(r.statusCode, r.headers); r.pipe(res); });
+    up.on('error', e => { res.writeHead(502).end(String(e.message)); });
+    req.pipe(up);
+    return;
+  }
   if (req.method === 'POST' && req.url.startsWith('/upload/')) {   // exportGLB 결과를 data 폴더에 저장
     const chunks = []; req.on('data', c => chunks.push(c));
     req.on('end', () => { fs.writeFileSync(path.join(dataDir, path.basename(req.url)), Buffer.concat(chunks)); res.writeHead(200).end(); });
@@ -61,6 +71,29 @@ if (!fs.existsSync(path.join(here, 'assets', 'manifest.json'))) {
 const browser = await chromium.launch({ executablePath: findChromium(),
   args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
 const page = await browser.newPage({ viewport: { width: 1300, height: 500 } });
+if (rosUrl) {   // 브리지가 scene.json을 쓴 뒤 렌더를 시작하고, 종료 신호까지 5초마다 처리율을 출력한다
+  const scene = path.join(dataDir, 'scene.json');
+  for (let i = 0; !fs.existsSync(scene) || !JSON.parse(fs.readFileSync(scene)).live; i++) {
+    if (i === 0) console.log(`브리지를 기다리는 중: ${scene}`);
+    await new Promise(r => setTimeout(r, 500));
+  }
+  page.on('pageerror', e => console.error('[page]', e.message));
+  await page.goto(`http://127.0.0.1:${port}/?ros`);
+  await page.waitForFunction(() => window.ready === true, null, { timeout: 300000 });
+  console.log(`Three.js 실시간 렌더 시작: ${rosUrl}`);
+  let prev = { frames: 0, images: 0 }, t = Date.now();
+  const timer = setInterval(async () => {
+    const s = await page.evaluate(() => window.rosStats).catch(() => null);
+    if (!s) return;
+    const dt = (Date.now() - t) / 1000; t = Date.now();
+    console.log(`프레임 ${((s.frames - prev.frames) / dt).toFixed(1)} Hz, 영상 ${((s.images - prev.images) / dt).toFixed(1)} 장/s, `
+      + `건너뜀 ${s.skipped}, 오류 ${s.errors}${s.lastError ? ` (${s.lastError})` : ''}`);
+    prev = s;
+  }, 5000);
+  const stop = async () => { clearInterval(timer); await browser.close(); server.close(); process.exit(0); };
+  process.on('SIGINT', stop); process.on('SIGTERM', stop);
+  await new Promise(() => {});
+}
 page.on('console', m => { if (m.type() === 'error' || process.argv.includes('--glb')) console.error('[page]', m.text()); });
 page.on('pageerror', e => console.error('[page]', e.message));
 await page.goto(`http://127.0.0.1:${port}/` + (process.argv.includes('--glb') ? '?nobake' : ''));

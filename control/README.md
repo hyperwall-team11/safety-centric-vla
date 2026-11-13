@@ -15,6 +15,7 @@ ROS 2 제어 어댑터, 안전 경로(HOLD·E-Stop), MuJoCo 시뮬레이션 환�
 | CT-02 | 시나리오 장면: 금지구역, A·B 작업대와 상자, CCTV 2대 + 머리 카메라, 작업자 접근 동작 | 완료 | `pixi run snapshot` |
 | CT-03 | Backend 승인 명령·RESULT 연동, `proposal_id` 중복 실행 방지 | 완료 | `pixi run test` |
 | #54 | MuJoCo ② 디지털 트윈 재구성: 온톨로지 상태(Robot·Worker 스냅샷·Zone)로 장면 생성, 정답 대비 위치 오차 | 완료 | `pixi run test` |
+| #55 | Three.js CCTV 실시간 발행: 브리지 MuJoCo 상태 → Three.js 렌더 → `/cctv_{n}/image_raw`(stamp = 시뮬레이션 시각) | 구현 (처리율 미확정) | `pixi run bridge-threejs` + `pixi run cctv-threejs` |
 
 다음 단계는 Backend와 TIAGo 어댑터를 함께 띄운 통합 시나리오 자동화입니다.
 
@@ -81,6 +82,7 @@ macOS에서는 같은 Mac 안의 노드끼리도 서로 못 찾는 문제가 있
 | `pixi run build` | `ros2_ws`를 colcon으로 빌드 |
 | `pixi run sim` / `sim-view` | 바퀴 로봇 전진·회전·정지 시험 / 뷰어로 보기 |
 | `pixi run bridge` / `bridge-view` | MuJoCo 브리지 실행 (카메라 포함) / 뷰어와 함께 실행 (카메라 끔) |
+| `pixi run bridge-threejs` / `cctv-threejs` | CCTV를 Three.js로 렌더하는 브리지 / 렌더러 (#55) |
 | `pixi run cmd-vel-demo` | 브리지를 띄우고 `/cmd_vel`로 전진·회전·정지 후 `/odom` 출력 |
 | `pixi run measure` | 브리지(물리 + 카메라 3대)를 띄우고 토픽 주기 1분 측정. 인자: `-- 초 카메라Hz 가로 세로` |
 | `pixi run snapshot` | 카메라 3대 이미지를 `outputs/snapshots/`에 PNG로 저장 |
@@ -110,6 +112,30 @@ ros2 topic pub -r 10 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.3}, angula
 
 멈추려면 `Ctrl+C`를 누릅니다. 브리지는 `/cmd_vel`이 0.5초 동안 들어오지 않으면 로봇을 세웁니다. 위치는 `ros2 run mujoco_bridge odom_echo` 또는 `ros2 topic echo /odom`으로 확인합니다.
 
+## Three.js CCTV 실시간 발행 (#55)
+
+브리지를 `cctv_renderer:=threejs`로 띄우면 고정 CCTV(`cctv_1`, `cctv_2`)를 MuJoCo 렌더 대신 Three.js(#45) 렌더로 발행합니다. 로봇 머리 카메라는 그대로 MuJoCo가 렌더합니다.
+
+```bash
+cd scripts/threejs_cctv && npm install && python fetch_assets.py   # 처음 한 번 (에셋은 커밋하지 않음)
+pixi run bridge-threejs     # 터미널 1: 브리지 (카메라 10Hz, 장면을 outputs/threejs_live/data에 씀)
+pixi run cctv-threejs       # 터미널 2: 헤드리스 Chromium 렌더러, 5초마다 처리율 출력
+```
+
+1. 브리지가 시작할 때 자기 장면(기본 `scenario_scene.xml`)을 `scene.json`·텍스처로 내보냅니다. 카메라 위치·방향·fovy는 장면의 `cctv_1`, `cctv_2`와 같습니다.
+2. `camera_hz`마다 MuJoCo 상태(geom 자세, 작업자 skin 정점)를 한 프레임으로 묶어 `http://127.0.0.1:8765/frame`에 둡니다(`threejs_live.py`). 프레임 형식은 오프라인 `export_scene.py`의 `FramePacker`와 같습니다.
+3. 렌더러(`node render.mjs --ros`)가 새 프레임을 롱폴링으로 받아 카메라마다 렌더하고, 오프라인 영상과 같은 CCTV 효과·JPEG 압축을 거친 rgb8을 돌려보냅니다.
+4. 브리지는 그 영상을 **렌더한 프레임의 시뮬레이션 시각**을 `header.stamp`로 붙여 발행합니다. 렌더가 밀리면 중간 프레임은 건너뛰고 최신 프레임만 렌더합니다.
+
+- 렌더러가 멈추면 영상이 끊기고, Backend는 `OBSERVATION_GAP`(2초)으로 실행을 거부합니다(제어 계약 3장).
+- 같은 ROS 도메인에서 `cctv_renderer:=mujoco` 브리지를 함께 띄우면 같은 토픽에 두 영상이 섞입니다. 하나만 띄웁니다.
+- 처리율: 아래 측정은 다른 브리지와 과열(`kernel_task` CPU 점유)이 겹친 Apple M3에서 잰 값이라 **기준값이 아닙니다**. 확정 측정은 남아 있습니다.
+
+| 조건 | 카메라당 발행 |
+|---|---|
+| 측정 1 (다른 브리지가 같은 토픽 발행 중) | 약 4.5 Hz (영상 합계 약 9장/s) |
+| 측정 2 (도메인 분리, 기계 과열) | 0.5 Hz 미만, 브리지 물리도 실시간 대비 0.35배 |
+
 ## 토픽
 
 | 토픽 | 방향 | QoS | 내용 |
@@ -117,7 +143,7 @@ ros2 topic pub -r 10 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.3}, angula
 | `/cmd_vel` | 외부 → 브리지 | 기본 | `geometry_msgs/Twist` (linear.x m/s, angular.z rad/s) |
 | `/odom` | 브리지 → 외부 | 기본, 50Hz | `nav_msgs/Odometry` (`odom` → `base_link`, TF 함께 발행) |
 | `/joint_states` | 브리지 → 외부 | 기본, 50Hz | `sensor_msgs/JointState`: 팔 7, 몸통, 머리 2, 그리퍼 2, 바퀴 2 (위치·속도) |
-| `/cctv_1/image_raw`, `/cctv_2/image_raw` | 브리지 → 외부 | sensor data, 15Hz | `sensor_msgs/Image` rgb8 640×480, frame_id `camera_cctv_1`·`camera_cctv_2` |
+| `/cctv_1/image_raw`, `/cctv_2/image_raw` | 브리지 → 외부 | sensor data, 15Hz | `sensor_msgs/Image` rgb8 640×480, frame_id `camera_cctv_1`·`camera_cctv_2`. `cctv_renderer:=threejs`이면 Three.js 렌더 영상, stamp는 시뮬레이션 시각 |
 | `/robot/head_camera/image_raw` | 브리지 → 외부 | sensor data, 15Hz | 로봇 머리 카메라, frame_id `camera_head_camera` |
 | `.../camera_info` | 브리지 → 외부 | sensor data, 15Hz | 각 카메라의 `CameraInfo` (fovy로 계산한 K·P, 왜곡 없음) |
 | `/sim/worker_pose` | 브리지 → 외부 | 기본, 50Hz | `geometry_msgs/PoseStamped` 작업자 실제 위치 (`world`) |

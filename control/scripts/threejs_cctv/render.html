@@ -24,8 +24,9 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { buildProp, floorTexture, backdrop, applyAssets, pbr, M, MODELS } from './props.js';
 
 const W = 640, H = 480;
+const ROS = new URLSearchParams(location.search).has('ros');   // 브리지 실시간 렌더 (#55): 프레임을 /ros/frame에서 받는다
 const meta = await (await fetch('/data/scene.json')).json();
-const frames = new Float32Array(await (await fetch('/data/frames.bin')).arrayBuffer());
+let frames = ROS ? new Float32Array(0) : new Float32Array(await (await fetch('/data/frames.bin')).arrayBuffer());
 const assets = await (await fetch('/assets/manifest.json')).json();
 // prop_* 대신 쓸 저장소 내 glTF 모델 (models/, 출처·라이선스는 README)
 for (const name of ['forklift'])
@@ -243,8 +244,8 @@ for (const [name, c] of Object.entries(meta.cameras)) {
 
 const q = new THREE.Quaternion(), v = new THREE.Vector3(), up = new THREE.Vector3();
 const hOff = new THREE.Vector3(...meta.helmet_offset);
-function setFrame(f) {
-  const base = f * frameLen, t = f / meta.fps;
+function setFrame(f, simTime) {
+  const base = f * frameLen, t = simTime ?? f / meta.fps;
   geomObjs.forEach((o, i) => {
     if (!o) return;
     const k = base + i * 12, p = frames.subarray(k, k + 3), R = frames.subarray(k + 3, k + 12);
@@ -350,6 +351,54 @@ if (location.search.includes('live')) {
   };
   loop();
 }
+// 브리지 실시간 렌더: render.html?ros (node render.mjs --ros). 최신 MuJoCo 프레임을 받아 카메라마다 렌더하고
+// 오프라인 영상과 같은 CCTV 효과·JPEG 압축을 거친 RGB(rgb8)를 그 프레임의 시뮬레이션 시각과 함께 돌려보낸다.
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const jpegRGB = (canvas, quality) => new Promise(res => {
+  const img = new Image();
+  img.onload = () => {
+    c2d.drawImage(img, 0, 0);
+    const d = c2d.getImageData(0, 0, W, H).data, rgb = new Uint8Array(W * H * 3);
+    for (let i = 0, j = 0; i < d.length; i += 4, j += 3) { rgb[j] = d[i]; rgb[j + 1] = d[i + 1]; rgb[j + 2] = d[i + 2]; }
+    res(rgb);
+  };
+  img.src = canvas.toDataURL('image/jpeg', quality);
+});
+window.rosStats = { frames: 0, images: 0, skipped: 0, errors: 0, lastError: '' };
+async function rosLoop() {
+  const camNames = Object.keys(meta.cameras);
+  maskRenderer.domElement.style.display = 'none';
+  let lastSeq = -1;
+  for (;;) {
+    try {
+      // 새 프레임이 나올 때까지 브리지가 응답을 붙잡는다(롱폴링). 204는 1초 동안 새 프레임 없음
+      const r = await fetch(`/ros/frame?after=${lastSeq}`, { cache: 'no-store' });
+      const buf = await r.arrayBuffer();
+      if (r.status === 204) continue;
+      if (r.status !== 200) throw new Error(`frame: HTTP ${r.status}`);
+      const seq = Number(r.headers.get('X-Seq'));
+      if (lastSeq >= 0 && seq > lastSeq + 1) window.rosStats.skipped += seq - lastSeq - 1;
+      lastSeq = seq;
+      const simTime = r.headers.get('X-Sim-Time');
+      frames = new Float32Array(buf);
+      if (frames.length !== frameLen) throw new Error(`frame length ${frames.length} != ${frameLen}`);
+      setFrame(0, Number(simTime));
+      for (const c of camNames) {
+        cctvPasses[c].uniforms.seed.value = (Number(simTime) * 70.1 + c.length) % 100;
+        composers[c].render();
+        const rgb = await jpegRGB(renderer.domElement, 0.72);
+        const p = await fetch(`/ros/image?cam=${c}&t=${simTime}`, { method: 'POST', body: rgb });
+        if (!p.ok) throw new Error(`image ${c}: HTTP ${p.status} ${await p.text()}`);
+        window.rosStats.images++;
+      }
+      window.rosStats.frames++;
+    } catch (e) {
+      window.rosStats.errors++; window.rosStats.lastError = String(e.message || e);
+      await sleep(200);
+    }
+  }
+}
+if (ROS) rosLoop();
 window.ready = true;
 </script>
 </body>
