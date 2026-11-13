@@ -356,12 +356,12 @@ if (location.search.includes('live')) {
 // 원시 RGB(921 KB)를 보내는 것보다 전송량이 약 20분의 1이고, 브라우저에서 픽셀을 읽는 단계도 없다.
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const jpegBlob = (canvas, quality) => new Promise(res => canvas.toBlob(res, 'image/jpeg', quality));
-// ms: 단계별 누적 시간(ms). wait=프레임 대기, scene=자세 반영, render=GPU 렌더, pixels=JPEG 인코딩, post=영상 전송
+// ms: 단계별 누적 시간(ms). wait=프레임 대기, scene=자세 반영, render=GPU 렌더, pixels=JPEG 인코딩 대기, post=직전 프레임 전송 대기
 window.rosStats = { frames: 0, images: 0, skipped: 0, errors: 0, lastError: '', ms: { wait: 0, scene: 0, render: 0, pixels: 0, post: 0 } };
 async function rosLoop() {
   const camNames = Object.keys(meta.cameras);
   maskRenderer.domElement.style.display = 'none';
-  let lastSeq = -1;
+  let lastSeq = -1, pending = Promise.resolve();
   for (;;) {
     try {
       // 새 프레임이 나올 때까지 브리지가 응답을 붙잡는다(롱폴링). 204는 1초 동안 새 프레임 없음
@@ -380,21 +380,29 @@ async function rosLoop() {
       lap('wait');
       setFrame(0, Number(simTime));
       lap('scene');
+      // toBlob은 호출한 순간의 캔버스를 복사해 다른 스레드에서 인코딩하므로, 인코딩을 기다리지 않고 다음 카메라를 렌더한다
+      const blobs = [];
       for (const c of camNames) {
         cctvPasses[c].uniforms.seed.value = (Number(simTime) * 70.1 + c.length) % 100;
         composers[c].render();
-        renderer.getContext().finish();
-        lap('render');
-        const jpeg = await jpegBlob(renderer.domElement, 0.72);
-        lap('pixels');
+        blobs.push(jpegBlob(renderer.domElement, 0.72));
+      }
+      lap('render');
+      const jpegs = await Promise.all(blobs);
+      lap('pixels');
+      // 전송은 다음 프레임 렌더와 겹친다. 밀리지 않게 직전 프레임 전송이 끝난 뒤에 보낸다
+      await pending;
+      lap('post');
+      pending = Promise.all(jpegs.map(async (jpeg, k) => {
+        const c = camNames[k];
         const p = await fetch(`/ros/image?cam=${c}&t=${simTime}`,
           { method: 'POST', body: jpeg, headers: { 'Content-Type': 'image/jpeg' } });
-        lap('post');
         if (!p.ok) throw new Error(`image ${c}: HTTP ${p.status} ${await p.text()}`);
         window.rosStats.images++;
-      }
+      }));
       window.rosStats.frames++;
     } catch (e) {
+      pending = Promise.resolve();
       window.rosStats.errors++; window.rosStats.lastError = String(e.message || e);
       await sleep(200);
     }

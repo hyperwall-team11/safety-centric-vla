@@ -38,6 +38,7 @@ from std_msgs.msg import Bool
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
 ANY_NUMBER = ParameterDescriptor(dynamic_typing=True)  # 15와 15.0을 모두 받는다
+DUPLICATE_CHECK_S = 5.0  # 카메라 토픽에 다른 발행자가 있는지 확인하는 주기
 MAX_CATCHUP_S = 0.1  # 한 번의 물리 타이머에서 따라잡을 최대 시뮬 시간 (밀리면 실시간보다 느려짐)
 
 
@@ -135,6 +136,10 @@ class MujocoBridge(Node):
             self.create_timer(1.0 / (self.camera_hz * len(self.rig_sensors)), self._render)
         if self.threejs_sensors:
             self._start_threejs(threejs_dir, threejs_data, threejs_port)
+        if self.sensors:
+            # 다른 브리지가 같은 도메인에서 같은 카메라 토픽을 발행하면 CV 입력에 두 영상이 섞인다
+            self.duplicate_topics = set()
+            self.create_timer(DUPLICATE_CHECK_S, self._check_duplicate_publishers)
         elif cctv_renderer == "threejs":
             raise RuntimeError("cctv_renderer:=threejs needs cameras:=true and fixed CCTV cameras in the scene")
 
@@ -263,6 +268,19 @@ class MujocoBridge(Node):
         image_pub, info_pub = self.image_pubs[sensor]
         image_pub.publish(img)
         info_pub.publish(info)
+
+    def _check_duplicate_publishers(self):
+        for sensor in self.sensors:
+            topic = f"{self.scn.CAMERAS[sensor][1]}/image_raw"
+            count = self.count_publishers(topic)
+            if count > 1 and topic not in self.duplicate_topics:
+                self.get_logger().error(
+                    f"{topic}에 이 브리지 말고도 발행자가 {count - 1}개 더 있습니다. 영상이 섞이므로 다른 브리지를 끄거나 "
+                    f"ROS_DOMAIN_ID를 나누세요")
+                self.duplicate_topics.add(topic)
+            elif count <= 1 and topic in self.duplicate_topics:
+                self.get_logger().info(f"{topic}: 다른 발행자가 없어졌습니다")
+                self.duplicate_topics.discard(topic)
 
     # ---- Three.js CCTV ----
     def _start_threejs(self, threejs_dir, data_dir, port):
