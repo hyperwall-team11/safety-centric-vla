@@ -37,6 +37,8 @@ class InMemoryStore:
             self.proposal_idempotency: dict[tuple[str, str], tuple[str, str]] = {}
             self.proposal_results: dict[str, AdapterResultReport] = {}
             self.hazards: dict[str, HazardEvent] = {}
+            # CRITICAL HazardEvent 중 E-Stop을 발행하게 한 hazard_id. 모두 해제되면 정지 신호를 푼다.
+            self.estop_hazard_ids: set[str] = set()
             self.logs: list[ExecutionLog] = []
             self.rules: dict[str, SafetyRule] = {}
 
