@@ -17,6 +17,13 @@ const destination = (p: TaskOrderPreview) =>
 const compose = (robotId?: string, zoneId?: string) =>
   `${robotId ? `${robotId} 로봇을 ` : ""}${zoneId ? `"${zoneId}"으로 ` : ""}이동해`;
 
+const COMMAND_PRESETS = [
+  { label: "A구역 이동", instruction: "robot-01 로봇을 A구역으로 이동해", rejected: false },
+  { label: "좌표 이동", instruction: "robot-01 로봇을 좌표 (1.5, -0.5, 0)로 이동해", rejected: false },
+  { label: "상자 운반", instruction: "robot-01 로봇이 상자3을 B작업대로 옮겨줘", rejected: false },
+  { label: "거부 예시", instruction: "robot-01 로봇을 A구역으로 이동하면 알려줘", rejected: true },
+] as const;
+
 const noop = () => Promise.resolve(undefined);
 
 /**
@@ -52,6 +59,14 @@ export function SiteWork() {
     setPickedZone(zoneId);
     setInstruction(compose(robotId, zoneId));
     setPreview(undefined);
+  };
+  const applyPreset = (instruction: string) => {
+    if (taskId) return;
+    setInstruction(instruction);
+    setPickedRobot(undefined);
+    setPickedZone(undefined);
+    setPreview(undefined);
+    setError(undefined);
   };
   const destZone = preview?.destination.type === "ZONE" ? preview.destination.zone_id : undefined;
 
@@ -109,6 +124,18 @@ export function SiteWork() {
             ? <button type="button" onClick={reset}>새 요청</button>
             : <button className="primary" disabled={busy || !instruction.trim()}>명령 해석</button>}
         </form>
+        {!taskId && (
+          <div className="command-presets" aria-label="명령 예시">
+            <span>예시 명령</span>
+            {COMMAND_PRESETS.map((preset) => (
+              <button key={preset.label} type="button" className="preset-chip"
+                      data-rejected={preset.rejected || undefined}
+                      onClick={() => applyPreset(preset.instruction)}>
+                {preset.label}
+              </button>
+            ))}
+          </div>
+        )}
         {error && <p className="error">{error}</p>}
 
         {preview && (
