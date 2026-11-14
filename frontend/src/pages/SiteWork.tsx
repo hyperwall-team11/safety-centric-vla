@@ -17,13 +17,6 @@ const destination = (p: TaskOrderPreview) =>
 const compose = (robotId?: string, zoneId?: string) =>
   `${robotId ? `${robotId} 로봇을 ` : ""}${zoneId ? `"${zoneId}"으로 ` : ""}이동해`;
 
-const COMMAND_PRESETS = [
-  { label: "A구역 이동", instruction: "robot-01 로봇을 A구역으로 이동해", rejected: false },
-  { label: "좌표 이동", instruction: "robot-01 로봇을 좌표 (1.5, -0.5, 0)로 이동해", rejected: false },
-  { label: "상자 운반", instruction: "robot-01 로봇이 상자3을 B작업대로 옮겨줘", rejected: false },
-  { label: "거부 예시", instruction: "robot-01 로봇을 A구역으로 이동하면 알려줘", rejected: true },
-] as const;
-
 const noop = () => Promise.resolve(undefined);
 
 /**
@@ -43,6 +36,8 @@ export function SiteWork() {
   const task = usePolling(() => (taskId ? api.task(taskId) : noop()), 2000);
   const proposals = usePolling(() => (taskId ? api.taskProposals(taskId) : noop()), 2000);
   const logs = usePolling(() => (taskId ? api.executionLogs() : noop()), 2000);
+  const robots = usePolling(api.robots, 5000);
+  const zones = usePolling(api.zones, 5000);
   // 실시간 모드에서는 상태 변경 때만 다시 조회하므로, 작업이 바뀌면 직접 한 번 조회한다
   // (작업 생성 직후의 변경 알림이 taskId 반영보다 먼저 올 수 있다).
   const { refresh: refreshTask } = task;
@@ -52,6 +47,26 @@ export function SiteWork() {
   const proposal = [...(proposals.data ?? [])].sort((a, b) => b.proposed_at.localeCompare(a.proposed_at))[0];
   const log = latestLog(logs.data, proposal?.proposal_id);
   const overlay = planOverlay(task.data, proposal, log);
+  const presetRobot = robots.data?.find((robot) => robot.status === "IDLE") ?? robots.data?.[0];
+  const navigableZones = (zones.data ?? []).filter((zone) =>
+    zone.zone_type !== "KEEP_OUT" && "navigation_target" in zone.geometry
+  ).slice(0, 2);
+  const commandPresets = presetRobot
+    ? [
+        ...navigableZones.map((zone) => ({
+          label: `${zone.zone_id} 이동`,
+          instruction: `${presetRobot.robot_id} 로봇을 "${zone.zone_id}"으로 이동해`,
+          rejected: false,
+        })),
+        ...(navigableZones[0]
+          ? [{
+              label: "해석 거부 예시",
+              instruction: `${presetRobot.robot_id} 로봇을 "${navigableZones[0].zone_id}"으로 이동하면 알려줘`,
+              rejected: true,
+            }]
+          : []),
+      ]
+    : [];
 
   const pick = (robotId?: string, zoneId?: string) => {
     if (taskId) return; // 진행 중인 작업이 있으면 지도 선택으로 명령을 바꾸지 않는다.
@@ -127,7 +142,8 @@ export function SiteWork() {
         {!taskId && (
           <div className="command-presets" aria-label="명령 예시">
             <span>예시 명령</span>
-            {COMMAND_PRESETS.map((preset) => (
+            {commandPresets.length === 0 && <small>등록된 로봇과 이동 가능 구역을 불러오면 예시가 표시됩니다.</small>}
+            {commandPresets.map((preset) => (
               <button key={preset.label} type="button" className="preset-chip"
                       data-rejected={preset.rejected || undefined}
                       onClick={() => applyPreset(preset.instruction)}>
