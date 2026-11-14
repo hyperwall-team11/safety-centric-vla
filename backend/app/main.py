@@ -723,6 +723,28 @@ class WorkerSnapshot(BaseModel):
     workers: list[Worker]
 
 
+@app.get(
+    "/workers/snapshot",
+    response_model=WorkerSnapshot,
+    responses={
+        status.HTTP_404_NOT_FOUND: {
+            "description": "저장된 Worker 관측 스냅샷 없음",
+        },
+    },
+)
+def get_worker_snapshot() -> WorkerSnapshot:
+    with store.lock:
+        if store.workers_observed_at is None or store.workers is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Worker 스냅샷을 찾을 수 없습니다.",
+            )
+        return WorkerSnapshot(
+            observed_at=store.workers_observed_at,
+            workers=list(store.workers),
+        )
+
+
 @app.put("/workers/snapshot", response_model=WorkerSnapshot)
 def replace_worker_snapshot(snapshot: WorkerSnapshot) -> WorkerSnapshot:
     workers = snapshot.workers
@@ -965,6 +987,27 @@ def report_action_result(
         )
         return proposal
 
+
+
+@app.get("/hazards", response_model=list[HazardEvent])
+def list_hazards(
+    hazard_status: Annotated[HazardStatus | None, Query(alias="status")] = None,
+    severity: Annotated[HazardSeverity | None, Query()] = None,
+    robot_id: Annotated[str | None, Query(min_length=1)] = None,
+) -> list[HazardEvent]:
+    with store.lock:
+        hazards = list(store.hazards.values())
+        if hazard_status is not None:
+            hazards = [hazard for hazard in hazards if hazard.status == hazard_status]
+        if severity is not None:
+            hazards = [hazard for hazard in hazards if hazard.severity == severity]
+        if robot_id is not None:
+            hazards = [
+                hazard
+                for hazard in hazards
+                if robot_id in hazard.related_robot_ids
+            ]
+        return hazards
 
 
 @app.post(
