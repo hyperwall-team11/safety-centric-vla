@@ -578,3 +578,4 @@ def evaluate_safety_distance(
         ),
         None,
     )
+    
