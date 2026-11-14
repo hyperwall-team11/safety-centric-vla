@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { ApiError, NetworkError, api } from "../api/client";
-import { explainTaskError, type TaskErrorView } from "../api/taskError";
+import { ApiError, api } from "../api/client";
 import type { TaskOrderPreview } from "../api/types";
 import { usePolling } from "../hooks/usePolling";
 import { ProposalReview, latestLog, planOverlay } from "../components/ProposalReview";
@@ -28,7 +27,7 @@ const noop = () => Promise.resolve(undefined);
 export function SiteWork() {
   const [instruction, setInstruction] = useState("");
   const [preview, setPreview] = useState<TaskOrderPreview>();
-  const [error, setError] = useState<TaskErrorView>();
+  const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [pickedRobot, setPickedRobot] = useState<string>();
   const [pickedZone, setPickedZone] = useState<string>();
@@ -56,25 +55,11 @@ export function SiteWork() {
   };
   const destZone = preview?.destination.type === "ZONE" ? preview.destination.zone_id : undefined;
 
-  const run = async (fn: () => Promise<unknown>, taskParsing = false) => {
+  const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     setError(undefined);
     try { await fn(); } catch (e) {
-      if (taskParsing && e instanceof ApiError) {
-        setError(explainTaskError(e.detail));
-      } else if (e instanceof ApiError) {
-        setError({
-          title: "요청을 완료하지 못했습니다",
-          message: typeof e.detail === "string" ? e.detail : `Backend 응답 오류(HTTP ${e.status})`,
-        });
-      } else if (e instanceof NetworkError) {
-        setError({ title: "연결을 확인해 주세요", message: e.message });
-      } else {
-        setError({
-          title: "예상하지 못한 오류가 발생했습니다",
-          message: "화면을 새로고침한 뒤 다시 시도해 주세요.",
-        });
-      }
+      setError(e instanceof ApiError ? JSON.stringify(e.detail) : String(e));
     } finally {
       setBusy(false);
       task.refresh(); proposals.refresh(); logs.refresh();
@@ -117,20 +102,14 @@ export function SiteWork() {
           </ol>
         </header>
 
-        <form className="command-bar" onSubmit={(e) => { e.preventDefault(); if (instruction.trim()) run(async () => setPreview(await api.previewTask(instruction)), true); }}>
+        <form className="command-bar" onSubmit={(e) => { e.preventDefault(); if (instruction.trim()) run(async () => setPreview(await api.previewTask(instruction))); }}>
           <input value={instruction} disabled={Boolean(taskId)} onChange={(e) => { setInstruction(e.target.value); setPreview(undefined); }}
                  placeholder="지도에서 로봇과 구역을 누르거나, 예: robot-01 로봇을 A구역으로 이동해" aria-label="자연어 명령" />
           {taskId
             ? <button type="button" onClick={reset}>새 요청</button>
             : <button className="primary" disabled={busy || !instruction.trim()}>명령 해석</button>}
         </form>
-        {error && (
-          <div className="error task-error" role="alert">
-            <strong>{error.title}</strong>
-            <p>{error.message}</p>
-            {error.hint && <small>{error.hint}</small>}
-          </div>
-        )}
+        {error && <p className="error">{error}</p>}
 
         {preview && (
           <div className="request-block">
