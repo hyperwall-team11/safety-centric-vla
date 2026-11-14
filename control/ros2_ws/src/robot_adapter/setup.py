@@ -9,6 +9,7 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
         (f"share/{package_name}", ["package.xml"]),
+        (f"share/{package_name}/launch", ["launch/arms.launch.py"]),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -19,6 +20,8 @@ setup(
         "console_scripts": [
             "mock_adapter = robot_adapter.mock_adapter_node:main",
             "tiago_adapter = robot_adapter.tiago_adapter_node:main",
+            "arm_adapter = robot_adapter.arm_adapter_node:main",
+            "arm_cycle_demo = robot_adapter.arm_cycle_demo:main",
         ],
     },
 )

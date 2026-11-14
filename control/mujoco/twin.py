@@ -7,7 +7,11 @@ MuJoCo ①(scenario_scene.xml)의 정답 좌표는 읽지 않는다. 정답은 `
 
     {"robots": [{"robot_id", "robot_type", "frame_id", "position": [x, y, z], "yaw_rad"}],
      "workers": {"observed_at": "...Z", "items": [{"worker_id", "frame_id", "position": [x, y, z]}]},
-     "zones": [{"zone_id", "zone_type", "frame_id", "geometry": {...}}]}
+     "zones": [{"zone_id", "zone_type", "frame_id", "geometry": {...}}],
+     "objects": [{"object_id", "frame_id", "position": [x, y, z], "size": [sx, sy, sz]}]}  # 선택 (#95)
+
+로봇 팔(``robot_model``이 ``arms.ARM_MODELS``에 있는 로봇)은 원기둥을 만들지 않는다.
+``twin_simulate``가 실제 팔 모델을 그 자리에 붙인다. ``objects``는 상자 장애물이며 MANIPULATE의 대상 물체도 여기 있다.
 
 Backend 형식(Robot.pose, Worker.pose, Zone.geometry)은 ``state_from_backend``로 바꾼다.
 좌표계는 ``world``(z 위), 단위는 m·rad.
@@ -23,6 +27,8 @@ from pathlib import Path
 from urllib import request
 
 import mujoco
+
+from arms import ARM_MODELS
 
 FRAME_ID = "world"
 # 작업자 위치 여유 반경: CV 바닥 투영 오차 중앙값 0.15~0.20 m(2026-11-05 측정) 이상 (스키마 v1.1 COLLISION 규칙)
@@ -149,6 +155,8 @@ def build_twin_xml(state, worker_margin=WORKER_MARGIN_M):
         rid = unique(f"robot:{robot['robot_id']}")
         _check_frame(robot, rid)
         x, y, _ = _xyz(robot.get("position"), rid)
+        if robot.get("robot_model") in ARM_MODELS:
+            continue  # 팔은 twin_simulate.attach_arms가 실제 모델로 붙인다
         shape = ROBOT_SHAPES.get(robot.get("robot_type"))
         if shape is None:
             raise TwinError(f"{rid}: unknown robot_type {robot.get('robot_type')!r}")
@@ -171,6 +179,17 @@ def build_twin_xml(state, worker_margin=WORKER_MARGIN_M):
         bodies.append(
             f'<body name="{wid}" mocap="true" pos="{x} {y} {WORKER_HEIGHT_M / 2}">'
             f'<geom name="{wid}" type="capsule" size="{radius} {half}" rgba="0.2 0.8 0.3 0.6"/></body>')
+
+    for obj in state.get("objects") or []:
+        oid = unique(f"object:{obj['object_id']}")
+        _check_frame(obj, oid)
+        x, y, z = _xyz(obj.get("position"), oid)
+        sx, sy, sz = _xyz(obj.get("size"), f"{oid}.size")
+        if min(sx, sy, sz) <= 0:
+            raise TwinError(f"{oid}: size must be > 0")
+        bodies.append(
+            f'<body name="{oid}" mocap="true" pos="{x} {y} {z}">'
+            f'<geom name="{oid}" type="box" size="{sx / 2} {sy / 2} {sz / 2}" rgba="0.85 0.5 0.15 1"/></body>')
 
     return (
         '<mujoco model="twin">'
