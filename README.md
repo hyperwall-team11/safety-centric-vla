@@ -1,18 +1,18 @@
 # Ontology-Driven Safety-Centric VLA
 
-## CV 프로토타입
-
-`mujoco-demo/`에는 MuJoCo 가상 CCTV 장면과 Florence-2 작업자 탐지 예제가 있습니다. 합성 이미지의 `person` 탐지와 카메라 메타데이터를 이용한 오프라인 `Observation` 변환 기반이 있습니다. 신뢰도 점수가 없는 탐지는 `pending_confidence`로 보류합니다. 실제 사람 영상의 성능 평가, 서버 등록, 구역 침입 판정, `HazardEvent` 생성 및 로봇 정지 연동은 후속 작업입니다.
-
-- [실행 안내](mujoco-demo/README.md)
-- [2026-10-09 진행 기록](docs/멘토링_진행공유_2026-10-09.md)
-- [기준 문서 목록 (개발계획서·스키마·사용자 정의서)](docs/README.md)
-
 온톨로지 기반 실행 거버넌스를 적용한 안전 중심 VLA 로봇 제어 플랫폼입니다.
 
 VLA(Vision-Language-Action) 모델은 자연어와 시각 정보를 바탕으로 로봇 행동을 제안할 수 있지만, 확률적 생성 특성 때문에 물리 제약을 위반하거나 위험한 궤적을 만들 수 있습니다. 이 프로젝트는 VLA의 출력을 곧바로 로봇에 전달하지 않고, 온톨로지와 Action 제출 기준으로 검증한 뒤 승인된 행동만 실행하는 구조를 구현합니다.
 
 > AI는 행동을 제안하고, 실행은 온톨로지가 승인합니다.
+>
+> 현장이 바뀌어도, 안전 검증 체계는 그대로.
+
+실제 CCTV 데이터가 없는 환경에서 MuJoCo + Three.js로 실사형 가상 CCTV를 만들고, CV·온톨로지·ROS 2를 통합한 안전 제어 파이프라인을 검증합니다. 전체 구조와 구현 상태는 [플랫폼 구조 v1.0](docs/platform-architecture-v1.0.md)을 기준으로 합니다.
+
+- [문서 목록 (스키마·개발계획서·사용자 정의서·구현 명세)](docs/README.md)
+- [제어·시뮬레이션 실행 안내](control/README.md)
+- [CV 탐지 실험](mujoco-demo/README.md)
 
 ## 프로젝트 목표
 
@@ -21,7 +21,7 @@ VLA(Vision-Language-Action) 모델은 자연어와 시각 정보를 바탕으로
 - 자연어 명령을 `TaskOrder` 객체로 변환
 - VLA 출력을 실행 명령이 아닌 `ActionProposal`로 저장
 - 로봇, 작업자, 금지구역, 위험 이벤트를 온톨로지 객체로 관리
-- 속도, 토크, 금지구역, 작업자 안전거리 기준으로 행동 검증
+- 이동 속도, 금지구역, 관측 공백, 작업자 안전거리 기준으로 행동 검증 (토크는 미결)
 - 위험 행동 거부와 `TriggerEStop`, `Hold State` 처리
 - 승인된 Action만 ROS 2 제어 노드로 전달
 - MuJoCo 시뮬레이션과 온톨로지 상태 동기화
@@ -32,29 +32,26 @@ VLA(Vision-Language-Action) 모델은 자연어와 시각 정보를 바탕으로
 ## 핵심 구조
 
 ```text
-자연어 명령 + 카메라 입력
-          │
+MuJoCo ① + Three.js 가상 CCTV (Ground Truth)
+          │ CCTV 영상 (/cctv_N/image_raw)
           ▼
-   TaskOrder 객체화
-          │
+CV: CCTV 2대 작업자 탐지·결합·바닥 좌표 추정
+          │ Sensor 상태 · Worker 스냅샷 · HazardEvent
           ▼
- VLA 행동 제안 생성
- ActionProposal(PROPOSED)
-          │
+Ontology: Worker · Robot · Zone(KEEP_OUT) · Sensor · HazardEvent
+          │ 온톨로지 상태 스냅샷
           ▼
- 온톨로지 Action 제출 기준
- 속도 · 토크 · 금지구역 · 안전거리 검사
-       ┌──┴──────────────┐
-       │                 │
-   APPROVED          REJECTED
-       │                 │
-       ▼                 ▼
- ROS 2 실행       TriggerEStop
- MuJoCo 동기화    Hold State
-       │
-       ▼
-     Audit Trail
+MuJoCo ②: 디지털 트윈 재구성 (계획)
+          ▼
+Safety Gate: 규칙 5종 + MuJoCo ② 사전 시뮬레이션(계획)
+  APPROVED / REJECTED / ESTOP, 실행 직전 재검증 실패 시 HELD
+          │ 승인된 Action만
+          ▼
+ROS 2 제어 → MuJoCo ① 로봇 이동 → 다음 CCTV 프레임
 ```
+
+- MuJoCo ①은 정답 좌표를 가진 가상 현장이고, CV와 MuJoCo ②는 정답 좌표를 읽지 않습니다.
+- 확인되지 않은 상태는 안전으로 보지 않습니다(Fail-Closed). 긴급 정지는 사전 검증 경로와 별도의 신속 경로를 둡니다.
 
 모든 상태 변경은 Action을 통해서만 일어납니다. VLA나 개별 모듈이 로봇 상태를 직접 변경하지 못하도록 실행 권한을 분리합니다.
 
@@ -64,14 +61,15 @@ VLA(Vision-Language-Action) 모델은 자연어와 시각 정보를 바탕으로
 
 현장에 무엇이 있는지를 표현합니다.
 
-- `Robot`: 관절 상태, 속도·토크 한계
+- `Robot`: 위치·상태, 이동 속도 한계
 - `Worker`: 위치, 안전거리
-- `KeepOutZone`: 금지구역 경계
+- `Zone`: 작업구역·금지구역(`zone_type=KEEP_OUT`), 최소 안전거리
+- `Sensor`: CCTV 상태, 감시 구역, 마지막 프레임 시각
 - `TaskOrder`: 사용자의 작업 명령
 - `ActionProposal`: VLA가 생성한 행동 제안
 - `HazardEvent`: 작업자 접근, 화재 등 위험 이벤트
 
-객체 사이의 관계는 `Link`로 관리하고, 센서와 VLM 결과에 따라 위치·상태 속성을 갱신합니다.
+객체 사이의 관계는 `Link`로 관리하고, CV 결과에 따라 위치·상태 속성을 갱신합니다. 객체명·열거값은 [스키마 v1.1](docs/ontology-schema-v1.1.md)이 기준입니다.
 
 ### Kinetic Layer
 
@@ -82,7 +80,7 @@ VLA(Vision-Language-Action) 모델은 자연어와 시각 정보를 바탕으로
 - `ResumeTask`
 - `ResolveHazard`
 
-각 Action에는 `Submission Criteria`가 연결됩니다. 기준을 통과한 Action은 `APPROVED`, 기준을 위반한 Action은 `REJECTED` 상태가 됩니다.
+각 Action에는 `Submission Criteria`가 연결됩니다. 현재 규칙은 `SPEED`(이동 속도 0.4 m/s), `HAZARD_STATE`, `KEEP_OUT`, `OBSERVATION_GAP`(2초 무수신), `SAFETY_DISTANCE`(1.2 m 거부, 0.6 m 긴급정지)입니다. 판정은 `APPROVED`, `REJECTED`, `ESTOP`이고, 실행 직전 재검증에 실패하면 `HELD`가 됩니다. 토크·관절 속도 검사는 미결입니다.
 
 ## 검증 시나리오
 
@@ -96,15 +94,17 @@ VLA(Vision-Language-Action) 모델은 자연어와 시각 정보를 바탕으로
 4. 제출 기준을 통과한 `ExecuteMotion`을 `APPROVED` 처리
 5. ROS 2로 실행하고 온톨로지 및 감사 로그에 결과 기록
 
-### Scenario 2. 실시간 위험 개입
+### Scenario 2. 작업자 위험구역 접근
 
-작업 도중 작업자가 접근하거나 화재가 감지되는 상황을 검증합니다.
-
-1. VLM이 위험을 감지하고 `HazardEvent` 생성
-2. 작업자 위치 또는 위험 상태 갱신
-3. `TriggerEStop` 발행과 진행 중 제안 거부
-4. 위험 해제 전까지 `Hold State` 유지
+1. MuJoCo ①에서 작업자가 로봇 작업구역에 접근
+2. 가상 CCTV 영상 생성 (Three.js는 계획, 현재는 MuJoCo 렌더링)
+3. CV가 연속 2프레임에서 금지구역 안 작업자를 보면 `CRITICAL` `WORKER_INTRUSION` HazardEvent 등록
+4. 이후 제안 거부와 `TriggerEStop` / `Hold State` (실행 중 로봇 즉시 정지는 미구현)
 5. `ResolveHazard`와 `ResumeTask` 승인 후 작업 재개
+
+### Scenario 3. 서로 다른 현장 구성 (계획)
+
+작업자 수, 카메라 배치, 금지구역 위치를 바꿔도 현장 배치와 카메라 보정만 다시 설정하면 같은 파이프라인이 동작하는지 검증합니다.
 
 ## 기능 요구사항
 
@@ -112,7 +112,7 @@ VLA(Vision-Language-Action) 모델은 자연어와 시각 정보를 바탕으로
 |---|---|---|---|
 | R1 | 명령·행동 제안 | `TaskOrder`와 `ActionProposal` 생성 | 객체 상태 확인 |
 | R2 | 현장 상태 인식 | 작업자 위치·위험 이벤트 갱신 | 10Hz 이상 탐지 목표 |
-| R3 | 행동 제출 검증 | 속도·토크·금지구역·안전거리 검사 | 위험 제안 차단 |
+| R3 | 행동 제출 검증 | 이동 속도·금지구역·관측 공백·안전거리 검사 (토크는 미결) | 위험 제안 차단 |
 | R4 | 정지·재개 통제 | E-Stop, Hold State, 안전한 재개 | 위험 개입 시연 |
 | R5 | 실행·감사 추적 | 승인 Action 실행 및 전체 이력 저장 | 정상 시연·로그 확인 |
 
@@ -140,19 +140,20 @@ VLA(Vision-Language-Action) 모델은 자연어와 시각 정보를 바탕으로
 
 | 역할 | 담당 | 주요 책임 |
 |---|---|---|
-| CV | 강영한(팀장) | VLM 위험 감지, Worker·HazardEvent 갱신 |
+| CV | 강영한(팀장) | CCTV 작업자 탐지·위치 추정, Worker·Sensor·HazardEvent 갱신 |
 | NLP | 김경무 | 자연어 명령 파싱, TaskOrder·VLA 인터페이스 |
-| ONT | 임성현 | 온톨로지 스키마, Action 서버, Guardrail, 감사 로그 |
-| CTL | 최민서 | ROS 2 제어, MuJoCo, 상태 동기화 |
+| ONT | 임성현 | 온톨로지 스키마, 안전 규칙·사전 시뮬레이션 판정 기준, Action 승인·거부, 감사 로그 |
+| CTL | 최민서 | MuJoCo ①/② 구성, Three.js CCTV 렌더링, 사전 시뮬레이션 서비스, ROS 2 제어 |
 
 모든 모듈은 온톨로지 API를 공통 인터페이스로 사용합니다. 초기 단계에서 스키마를 확정해 병렬 개발과 통합을 지원합니다.
 
 ## 기술 스택
 
-- AI: PyTorch, OpenVLA, LLaVA 또는 Florence-2, OpenCV
-- 온톨로지 백엔드: FastAPI, Redis, WebSocket 또는 gRPC
+- AI: PyTorch, OpenVLA, RT-DETR, Florence-2, OpenCV
+- 온톨로지 백엔드: FastAPI, REST (WebSocket `/ws/state`는 예정)
 - 로봇 제어: ROS 2 Humble/Jazzy
 - 시뮬레이션: MuJoCo 3.15.0 (ROS 2 브리지 직접 구현)
+- 실사형 렌더링: Three.js (계획), MPFB2 + Blender 작업자 모델
 - 모델·상태 연동: Object/Link/Action 스키마, MuJoCo 양방향 동기화
 
 ## 제약사항
