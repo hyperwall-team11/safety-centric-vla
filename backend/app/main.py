@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
+from math import dist
 from os import getenv
 from pathlib import Path
 from time import perf_counter
@@ -95,6 +96,8 @@ TASK_ORDER_RESPONSE_HEADERS = {
         "schema": {"type": "string", "enum": ["true", "false"]},
     },
 }
+# control/robot_adapter/diff_drive_core.py의 도착 판정 허용 오차와 동일하다.
+TRAJECTORY_START_TOLERANCE_M = 0.05
 
 
 def normalize_idempotency_key(idempotency_key: str | None) -> str | None:
@@ -109,6 +112,19 @@ def normalize_idempotency_key(idempotency_key: str | None) -> str | None:
 def make_request_fingerprint(request: BaseModel) -> str:
     canonical_request = request.model_dump_json(exclude_none=False)
     return sha256(canonical_request.encode("utf-8")).hexdigest()
+
+
+def trajectory_start_distance_m(robot: Robot, trajectory_start: dict) -> float | None:
+    position = trajectory_start.get("position")
+    if not isinstance(position, dict):
+        return None
+    try:
+        return dist(
+            (robot.pose.position.x, robot.pose.position.y, robot.pose.position.z),
+            (float(position["x"]), float(position["y"]), float(position["z"])),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def seed_rules() -> None:
@@ -633,14 +649,24 @@ def execute_action(proposal_id: str) -> ActionProposal:
             and proposal.model_name == planner.model_name
             and proposal.trajectory
         ):
+            start_distance_m = trajectory_start_distance_m(robot, proposal.trajectory[0])
             start_matches = (
                 robot.pose.frame_id == proposal.frame_id
-                and robot.pose.position.model_dump(mode="json") == proposal.trajectory[0].get("position")
+                and start_distance_m is not None
+                and start_distance_m <= TRAJECTORY_START_TOLERANCE_M
             )
             rule_results.append(RuleResult(
                 rule_id=start_rule_id,
                 passed=start_matches,
-                reason="경로 출발점 일치" if start_matches else "로봇 위치가 경로 출발점과 달라 재계획이 필요합니다.",
+                reason=(
+                    f"경로 출발점 허용 오차 이내({start_distance_m:.3f}m)"
+                    if start_matches
+                    else (
+                        "로봇 위치가 경로 출발점과 "
+                        f"{TRAJECTORY_START_TOLERANCE_M:.2f}m 넘게 다르거나 좌표계가 달라 "
+                        "재계획이 필요합니다."
+                    )
+                ),
             ))
 
         evaluated_in_ms = (perf_counter() - started_at) * 1000

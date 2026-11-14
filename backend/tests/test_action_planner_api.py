@@ -198,6 +198,29 @@ class ActionPlannerApiTest(unittest.TestCase):
         self.assertEqual(regenerated.status_code, 201, regenerated.text)
         self.assertEqual(regenerated.json()["trajectory"][0]["position"]["x"], 1.5)
 
+    def test_small_robot_position_noise_allows_dispatch(self) -> None:
+        task = self.create_task("robot-01 로봇을 좌표 (1, 2, 0)로 이동해")
+        created = self.generate(task["task_id"])
+        self.assertEqual(created.status_code, 201, created.text)
+        proposal_id = created.json()["proposal_id"]
+        evaluated = self.client.post(f"/action-proposals/{proposal_id}/evaluate")
+        self.assertEqual(evaluated.json()["status"], "APPROVED")
+
+        with store.lock:
+            store.robots["robot-01"].pose.position.x = 0.04
+        with patch("app.main.action_dispatcher.dispatch") as dispatch:
+            executed = self.client.post(f"/action-proposals/{proposal_id}/execute")
+
+        self.assertEqual(executed.status_code, 200, executed.text)
+        dispatch.assert_called_once()
+        start_rule = next(
+            result
+            for result in store.logs[-1].rule_results
+            if result.rule_id == "precondition-trajectory-start"
+        )
+        self.assertTrue(start_rule.passed)
+        self.assertIn("0.040m", start_rule.reason)
+
     def test_generates_contract_aligned_manipulate_proposal(self) -> None:
         task = self.create_task("robot-01 로봇으로 상자 3을 B 작업대로 옮겨")
         response = self.generate(task["task_id"], {"manipulation": "PLACE"})
