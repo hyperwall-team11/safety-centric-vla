@@ -23,7 +23,7 @@ const HINTS: Record<string, { title: string; hint: string }> = {
   },
   ROBOT_CONFLICT: {
     title: "선택한 로봇과 명령 속 로봇이 다릅니다",
-    hint: "지도 선택을 해제하거나 명령의 로봇 ID를 선택한 로봇과 맞춰 주세요.",
+    hint: "요청에 지정한 로봇 ID와 명령 속 로봇 ID가 같은지 확인해 주세요.",
   },
   ROBOT_REQUIRED: {
     title: "대상 로봇이 필요합니다",
@@ -77,11 +77,15 @@ export function explainTaskError(detail: unknown): TaskErrorView {
 
   if (Array.isArray(detail)) {
     const first = detail[0] as ValidationDetail | undefined;
-    const location = Array.isArray(first?.loc) ? first.loc.join(" → ") : "입력값";
+    const locationParts = Array.isArray(first?.loc) ? first.loc : [];
+    const location = locationParts.length > 0 ? locationParts.join(" → ") : "입력값";
+    const instructionError = locationParts.includes("instruction");
     return {
       title: "입력 형식이 올바르지 않습니다",
       message: typeof first?.msg === "string" ? `${location}: ${first.msg}` : "명령 입력값을 확인해 주세요.",
-      hint: "명령은 비워 둘 수 없으며 1,000자 이하여야 합니다.",
+      hint: instructionError
+        ? "명령은 비워 둘 수 없으며 1,000자 이하여야 합니다."
+        : undefined,
     };
   }
 
