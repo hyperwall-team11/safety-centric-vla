@@ -8,7 +8,9 @@
 4. 승인된 제안만 mock 또는 ROS 2 제어 어댑터에 전달
 5. 승인, 거절, 실행, 완료·실패 판단을 `ExecutionLog`에 기록
 
-현재 저장소는 시연용 인메모리 구현입니다. 프로세스를 재시작하면 데이터가 초기화되며, 이후 Redis 저장소로 교체할 수 있도록 파서·안전규칙·API를 분리했습니다.
+기본값은 로컬 개발용 인메모리 저장소입니다. `BACKEND_STORE=redis`를 지정하면
+Redis에 버전화된 상태 스냅샷을 저장해 프로세스 재시작 후에도 복구합니다.
+Redis 연결·잠금·저장이 실패하면 E-Stop을 발행하고 `503`을 반환합니다.
 
 금지구역 이동 경로 검사는 기존 GeoJSON `Polygon/coordinates`와
 [Backend–CTL 계약](../docs/backend-ctl-contract-v0.1.md)의 `polygon/points`를 지원합니다.
@@ -34,6 +36,41 @@ Swagger UI: <http://127.0.0.1:8000/docs>
 4. 작업 상태 필터와 최근 `ExecutionLog` 확인
 
 현재 코드 기준 요청·응답, 상태 전이, 오류와 기준 문서 대비 차이는 [Backend API 명세 v0.2](../docs/backend-api-spec-v0.2.md)를 참고합니다.
+
+### Redis 영속 저장소
+
+공유 시연 환경이나 재시작 복구가 필요하면 루트 디렉터리에서 Redis를 실행합니다.
+
+```bash
+docker compose up -d redis
+cd backend
+python3 -m pip install -r requirements.txt
+BACKEND_STORE=redis \
+BACKEND_REDIS_URL=redis://127.0.0.1:6379/0 \
+python3 -m uvicorn app.main:app --reload
+```
+
+`compose.yml`은 AOF를 `everysec`로 활성화하고 `redis-data` 볼륨에 저장합니다.
+`docker compose down`만 실행하면 볼륨은 남으며, `docker compose down -v`는 저장 데이터까지
+삭제하므로 필요할 때만 사용합니다.
+
+환경변수 예시는 루트의 `.env.example`에 있습니다.
+
+| 변수 | 기본값 | 설명 |
+|---|---|---|
+| `BACKEND_STORE` | `memory` | `redis`로 설정할 때만 Redis 사용 |
+| `BACKEND_REDIS_URL` | `redis://127.0.0.1:6379/0` | Redis 접속 URL |
+| `BACKEND_REDIS_KEY` | `safety-centric-vla:state:v1` | 공유 스냅샷 키. 환경별 분리 가능 |
+
+백업 파일을 즉시 생성하려면 다음을 실행합니다.
+
+```bash
+docker compose exec redis redis-cli BGSAVE
+```
+
+백엔드는 Redis 분산 잠금을 획득한 후 최신 스냅샷을 읽고 하나의 `SET`으로
+상태를 교체합니다. 이 방식은 현재 인메모리 API의 객체 수정 계약을 유지하면서
+재시작 복구와 다중 백엔드 프로세스 직렬화를 제공합니다.
 
 ### ROS 2 제어 어댑터 연결
 

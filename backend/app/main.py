@@ -8,8 +8,8 @@ from pathlib import Path
 from time import perf_counter
 from typing import Annotated, Literal
 
-from fastapi import FastAPI, Header, HTTPException, Query, Response, status
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, status
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import AwareDatetime, BaseModel
 
@@ -54,7 +54,7 @@ from .models import (
     utc_now,
 )
 from .safety import WORKER_SNAPSHOT_MAX_AGE_SECONDS, default_rules, evaluate_proposal
-from .store import store
+from .store import StoreUnavailableError, store
 from .task_parser import TaskParseError, parse_task_order, parse_task_order_preview
 
 
@@ -113,9 +113,12 @@ def make_request_fingerprint(request: BaseModel) -> str:
 
 
 def seed_rules() -> None:
-    if not store.rules:
-        rules = default_rules(perception_enabled=getenv("BACKEND_PERCEPTION_SAFETY_ENABLED") == "1")
-        store.rules.update({rule.rule_id: rule for rule in rules})
+    with store.lock:
+        if not store.rules:
+            rules = default_rules(
+                perception_enabled=getenv("BACKEND_PERCEPTION_SAFETY_ENABLED") == "1"
+            )
+            store.rules.update({rule.rule_id: rule for rule in rules})
 
 
 seed_rules()
@@ -229,8 +232,23 @@ def stop_action_dispatcher() -> None:
     action_dispatcher.stop()
 
 
+@app.exception_handler(StoreUnavailableError)
+def store_unavailable_handler(
+    _request: Request,
+    exc: StoreUnavailableError,
+) -> JSONResponse:
+    # 명령 발행 후 저장이 끊긴 경우까지 로봇이 계속 움직이지 않도록 즉시 정지한다.
+    with ESTOP_PUBLISH_LOCK:
+        _publish_estop(True, f"Redis 저장소 장애: {exc}")
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": str(exc)},
+    )
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
+    store.ensure_available()
     return {"status": "ok"}
 
 
@@ -250,7 +268,8 @@ def create_robot(robot: Robot) -> Robot:
 
 @app.get("/robots", response_model=list[Robot])
 def list_robots() -> list[Robot]:
-    return list(store.robots.values())
+    with store.lock:
+        return list(store.robots.values())
 
 
 @app.post("/zones", response_model=Zone, status_code=status.HTTP_201_CREATED)
@@ -264,7 +283,8 @@ def create_zone(zone: Zone) -> Zone:
 
 @app.get("/zones", response_model=list[Zone])
 def list_zones() -> list[Zone]:
-    return list(store.zones.values())
+    with store.lock:
+        return list(store.zones.values())
 
 
 @app.get(
@@ -431,10 +451,11 @@ def create_task_from_natural_language(
 
 @app.get("/task-orders/{task_id}", response_model=TaskOrder)
 def get_task(task_id: str) -> TaskOrder:
-    task = store.tasks.get(task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="TaskOrder를 찾을 수 없습니다.")
-    return task
+    with store.lock:
+        task = store.tasks.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="TaskOrder를 찾을 수 없습니다.")
+        return task
 
 
 @app.post(
@@ -702,6 +723,8 @@ def execute_action(proposal_id: str) -> ActionProposal:
             )
             raise HTTPException(status_code=409, detail="실행 직전 안전 재검증에 실패했습니다.")
 
+        # Redis 저장소가 끊긴 상태에서 캐시된 승인 명령을 로봇에 보내지 않는다.
+        store.ensure_available()
         try:
             action_dispatcher.dispatch(
                 proposal,
@@ -883,9 +906,11 @@ def resolve_hazard(hazard_id: str, request: HazardResolveRequest) -> HazardEvent
 @app.get("/safety-rules", response_model=list[SafetyRule])
 def list_safety_rules() -> list[SafetyRule]:
     seed_rules()
-    return list(store.rules.values())
+    with store.lock:
+        return list(store.rules.values())
 
 
 @app.get("/execution-logs", response_model=list[ExecutionLog])
 def list_execution_logs() -> list[ExecutionLog]:
-    return store.logs
+    with store.lock:
+        return list(store.logs)

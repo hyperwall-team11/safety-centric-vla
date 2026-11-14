@@ -18,7 +18,8 @@
 - 거리 단위는 m, 속도 단위는 m/s이다.
 - ID는 문자열이다. 서버 생성 ID는 `task-`, `proposal-`, `hazard-`, `log-` 접두사와 UUID를 사용한다.
 - 현재 인증·인가와 `/api/v1` 접두사는 구현하지 않았다.
-- 현재 저장소는 인메모리이므로 서버 재시작 시 등록 데이터가 사라진다.
+- 기본 저장소는 인메모리이다. `BACKEND_STORE=redis`를 지정하면 Redis에 상태를 영속 저장한다.
+- Redis 모드에서 연결, 분산 잠금, 스냅샷 읽기·쓰기가 실패하면 E-Stop을 발행하고 fail-closed로 `503`을 반환한다.
 
 ### 공통 오류
 
@@ -27,6 +28,7 @@
 | `404` | 요청한 Robot, TaskOrder, ActionProposal 또는 HazardEvent가 없음 | `{"detail":"...찾을 수 없습니다."}` |
 | `409` | 현재 상태에서 실행 불가, ID 중복, 활성 Proposal 또는 멱등성 충돌 | `{"detail":"..."}` |
 | `422` | JSON 스키마 위반, 자연어 해석 실패 또는 안전한 제안 생성 불가 | FastAPI 검증 오류 배열 또는 `{"detail":"..."}` |
+| `503` | Redis 저장소 또는 제어 어댑터를 안전하게 사용할 수 없음 | `{"detail":"..."}` |
 
 ## 2. 구현 엔드포인트
 
@@ -350,7 +352,7 @@ ResumeTask 전이와 실제 ROS 2 어댑터 결과 토픽 연결은 아직 구�
 | E-Stop | ROS 2 latched 전용 경로 | 실행 재검증 실패 시 Robot ESTOP·Task HELD·감사 로그 구현. `CRITICAL` HazardEvent가 실행 중 로봇과 연결되면 `/safety/estop` 발행(3.6절). 운영자 E-Stop API와 로봇별 정지는 미구현 |
 | 어댑터 실행 결과 | ROS 2 result 토픽으로 완료·실패 보고 | HTTP 결과 보고, 상태 전이, 멱등 감사 로그 구현. ROS 2 토픽 연결은 미구현 |
 | 상태 구독 | WebSocket `/ws/state` | 미구현 |
-| 영속 저장 | Redis 또는 ROS 2 상태 연동 | 인메모리 |
+| 영속 저장 | Redis 또는 ROS 2 상태 연동 | 인메모리 기본, Redis 스냅샷·분산 잠금 선택 가능 |
 | 판정 시간 | `evaluated_in_ms` 기록 | 평가·실행 직전 재평가 로그에 구현 |
 | 스키마 v1.1 선택 필드 | 모델에서 선택적으로 허용 | Robot, Sensor, Observation, Worker, Zone, SafetyRule, HazardEvent, ExecutionLog에 반영 |
 
