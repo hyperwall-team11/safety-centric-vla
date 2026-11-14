@@ -8,7 +8,7 @@
 4. 승인된 제안만 mock 또는 ROS 2 제어 어댑터에 전달
 5. 승인, 거절, 실행, 완료·실패 판단을 `ExecutionLog`에 기록
 
-현재 저장소는 시연용 인메모리 구현입니다. 프로세스를 재시작하면 데이터가 초기화되며, 이후 Redis 저장소로 교체할 수 있도록 파서·안전규칙·API를 분리했습니다.
+현재 저장소는 시연용 인메모리 구현입니다. 프로세스를 재시작하면 데이터가 초기화되며, 이후 Redis 저장소로 교체할 수 있도록 파서·안전규칙·API를 분리했습니다. 운영 화면은 `WS /ws/state`에서 연결 직후와 상태 변경 시 전체 상태 스냅샷을 구독할 수 있습니다. 연속 변경은 최소 200ms 간격으로 합쳐 전송하고 ExecutionLog는 최근 100건만 포함하며, 전체 로그는 `GET /execution-logs`로 조회합니다.
 
 금지구역 이동 경로 검사는 기존 GeoJSON `Polygon/coordinates`와
 [Backend–CTL 계약](../docs/backend-ctl-contract-v0.1.md)의 `polygon/points`를 지원합니다.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 from hashlib import sha256
@@ -8,7 +9,17 @@ from pathlib import Path
 from time import perf_counter
 from typing import Annotated, Literal
 
-from fastapi import FastAPI, Header, HTTPException, Query, Response, status
+from fastapi import (
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import AwareDatetime, BaseModel
@@ -54,6 +65,7 @@ from .models import (
     utc_now,
 )
 from .safety import WORKER_SNAPSHOT_MAX_AGE_SECONDS, default_rules, evaluate_proposal
+from .state_stream import state_broadcaster
 from .store import store
 from .task_parser import TaskParseError, parse_task_order, parse_task_order_preview
 
@@ -96,6 +108,107 @@ TASK_ORDER_RESPONSE_HEADERS = {
         "schema": {"type": "string", "enum": ["true", "false"]},
     },
 }
+STATE_HEARTBEAT_SECONDS = 15.0
+# UI 상태 스트림 부하 제한이며 ROS 2 안전 heartbeat·판정 주기와 무관하다.
+STATE_MIN_PUSH_INTERVAL_SECONDS = 0.2
+STATE_EXECUTION_LOG_LIMIT = 100
+NON_MUTATING_POST_PATHS = {
+    "/task-orders/preview",
+    "/task-orders/preview/batch",
+}
+
+
+class StateSnapshot(BaseModel):
+    type: Literal["STATE_SNAPSHOT"] = "STATE_SNAPSHOT"
+    revision: int
+    observed_at: AwareDatetime
+    workers_observed_at: AwareDatetime | None
+    robots: list[Robot]
+    sensors: list[Sensor]
+    workers: list[Worker] | None
+    zones: list[Zone]
+    task_orders: list[TaskOrder]
+    action_proposals: list[ActionProposal]
+    hazards: list[HazardEvent]
+    safety_rules: list[SafetyRule]
+    execution_logs: list[ExecutionLog]
+
+
+def make_state_snapshot() -> dict:
+    """Copy a consistent store view quickly, then validate and serialize unlocked."""
+    with store.lock:
+        snapshot_values = {
+            "revision": state_broadcaster.revision,
+            "observed_at": utc_now(),
+            "workers_observed_at": store.workers_observed_at,
+            "robots": list(store.robots.values()),
+            "sensors": list(store.sensors.values()),
+            "workers": None if store.workers is None else list(store.workers),
+            "zones": list(store.zones.values()),
+            "task_orders": list(store.tasks.values()),
+            "action_proposals": list(store.proposals.values()),
+            "hazards": list(store.hazards.values()),
+            "safety_rules": list(store.rules.values()),
+            "execution_logs": list(store.logs[-STATE_EXECUTION_LOG_LIMIT:]),
+        }
+    snapshot = StateSnapshot(**snapshot_values)
+    return snapshot.model_dump(mode="json")
+
+
+@app.middleware("http")
+async def publish_successful_state_writes(request: Request, call_next):
+    response = await call_next(request)
+    is_state_write = request.method in {"POST", "PUT", "PATCH", "DELETE"}
+    if (
+        is_state_write
+        and request.url.path not in NON_MUTATING_POST_PATHS
+        and 200 <= response.status_code < 400
+    ):
+        state_broadcaster.publish()
+    return response
+
+
+@app.websocket("/ws/state")
+async def stream_state(websocket: WebSocket) -> None:
+    await websocket.accept()
+    subscription = state_broadcaster.subscribe()
+    try:
+        loop = asyncio.get_running_loop()
+        if not await send_state_snapshot(websocket):
+            return
+        last_sent_at = loop.time()
+        while True:
+            try:
+                await asyncio.wait_for(
+                    subscription.event.wait(),
+                    timeout=STATE_HEARTBEAT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                pass
+            remaining_interval = (
+                STATE_MIN_PUSH_INTERVAL_SECONDS - (loop.time() - last_sent_at)
+            )
+            if remaining_interval > 0:
+                await asyncio.sleep(remaining_interval)
+            # Delay 중 발생한 변경도 이어지는 전체 스냅샷 하나로 합친다.
+            subscription.event.clear()
+            if not await send_state_snapshot(websocket):
+                return
+            last_sent_at = loop.time()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        state_broadcaster.unsubscribe(subscription.subscription_id)
+
+
+async def send_state_snapshot(websocket: WebSocket) -> bool:
+    snapshot = await asyncio.to_thread(make_state_snapshot)
+    try:
+        await websocket.send_json(snapshot)
+    except (WebSocketDisconnect, RuntimeError):
+        # send_json과 연결 종료가 경합하면 Starlette가 RuntimeError를 낼 수 있다.
+        return False
+    return True
 
 
 def normalize_idempotency_key(idempotency_key: str | None) -> str | None:
@@ -127,6 +240,7 @@ def apply_ctl_safety_event(event: dict) -> None:
     robot_id = event.get("robot_id")
     if kind not in {"HOLD", "ESTOP"} or not isinstance(robot_id, str):
         return
+    changed = False
     with store.lock:
         robot = store.robots.get(robot_id)
         if robot is None:
@@ -141,6 +255,7 @@ def apply_ctl_safety_event(event: dict) -> None:
         ]
         robot.status = RobotStatus.ESTOP if kind == "ESTOP" else RobotStatus.HOLD
         robot.updated_at = utc_now()
+        changed = True
         trigger_value = event.get("triggered_by", "RULE_ENGINE")
         try:
             triggered_by = TriggerSource(trigger_value)
@@ -162,6 +277,8 @@ def apply_ctl_safety_event(event: dict) -> None:
                     triggered_by=triggered_by,
                 )
             )
+    if changed:
+        state_broadcaster.publish()
 
 
 LOGGER = logging.getLogger(__name__)
