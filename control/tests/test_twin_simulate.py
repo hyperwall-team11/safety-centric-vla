@@ -1,3 +1,4 @@
+import math
 import json
 import threading
 from urllib import error, request
@@ -133,3 +134,21 @@ def test_http_endpoint(server):
     assert status == 400 and body["result"] == "ERROR"
     status, _ = post(f"{server}/other", req())
     assert status == 404
+
+
+@pytest.mark.parametrize("yaw", [0.0, 1.0, -2.5])
+def test_robot_away_from_origin_moves_to_world_target(yaw):
+    # 로봇이 원점이 아닌 곳에서 yaw로 돌아 있어도 목표는 월드 좌표다
+    r = req(target=(-1.0, -1.0), workers=())
+    r["state"]["zones"] = []
+    r["state"]["robots"][0].update(position=[-2.0, 0.0, 0.0], yaw_rad=yaw)
+    res = ts.simulate(r)
+    assert res["result"] == "PASS", res
+    assert res["simulated_horizon_s"] == pytest.approx(math.sqrt(2) / 0.3, abs=0.01)
+
+
+def test_worker_on_path_of_robot_away_from_origin_is_collision():
+    r = req(target=(-1.0, -1.0), workers=(("worker-01", -1.5, -0.5),))
+    r["state"]["zones"] = []
+    r["state"]["robots"][0].update(position=[-2.0, 0.0, 0.0], yaw_rad=0.7)
+    assert ts.simulate(r)["result"] == "COLLISION"

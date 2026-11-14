@@ -142,7 +142,20 @@ def _simulate(req, started):
     qx = model.joint(f"{name}:x").qposadr[0]
     qy = model.joint(f"{name}:y").qposadr[0]
     robot_radius = float(model.geom_size[geom_id][0])
-    start = (float(data.qpos[qx]), float(data.qpos[qy]))
+    # 슬라이드 관절 값은 로봇 바디(시작 위치·yaw로 놓임) 기준 상대 이동이므로 월드 좌표와 변환한다
+    body = model.body(name)
+    origin = (float(body.pos[0]), float(body.pos[1]))
+    yaw = 2 * math.atan2(float(body.quat[3]), float(body.quat[0]))
+    cos_y, sin_y = math.cos(yaw), math.sin(yaw)
+
+    def set_world(x, y):
+        dx, dy = x - origin[0], y - origin[1]
+        data.qpos[qx], data.qpos[qy] = cos_y * dx + sin_y * dy, -sin_y * dx + cos_y * dy
+
+    def world():
+        return (float(data.xpos[body.id][0]), float(data.xpos[body.id][1]))
+
+    start = world()
     workers = [(float(model.body(i).pos[0]), float(model.body(i).pos[1]))
                for i in range(model.nbody) if model.body(i).name.startswith("worker:")]
 
@@ -165,7 +178,7 @@ def _simulate(req, started):
         frac = min(speed * t / distance, 1.0) if distance > 0 else 1.0
         x = start[0] + (goal[0] - start[0]) * frac
         y = start[1] + (goal[1] - start[1]) * frac
-        data.qpos[qx], data.qpos[qy] = x, y
+        set_world(x, y)
         mujoco.mj_forward(model, data)
         g = gap(x, y)
         if g is not None:
@@ -174,7 +187,7 @@ def _simulate(req, started):
             return _response("COLLISION", snapshot_id, started, min_distance=min_gap, contact_at=t,
                              horizon=t)
 
-    reached = math.dist((float(data.qpos[qx]), float(data.qpos[qy])), goal) <= GOAL_TOLERANCE_M
+    reached = math.dist(world(), goal) <= GOAL_TOLERANCE_M
     if min_gap is not None and min_gap < UNSAFE_DISTANCE_M:
         result = "UNSAFE_DISTANCE"
     elif not reached:
