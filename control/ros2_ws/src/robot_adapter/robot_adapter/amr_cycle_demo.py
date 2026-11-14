@@ -7,6 +7,8 @@ Backend가 온톨로지 검증을 통과한 MOVE_TO·MANIPULATE만 /safety/appro
 
 로봇마다 PICK(팔레트가 있는 거치대) → MOVE_TO(반대쪽 정차 위치) → PLACE → 다음 회차는 반대 방향을 반복한다.
 E-Stop·HOLD 등으로 실패하면 그 로봇은 쉬었다가 같은 단계를 다시 보낸다.
+/odom이 잠깐 끊겨 어댑터가 ERROR(HW_ERROR)가 되면, 다음 시도 전에 승인된 RESUME을 한 번 보낸다.
+E-Stop·HOLD로 멈춘 경우에는 RESUME을 보내지 않는다(복귀는 운영자·검증 서버 몫).
 """
 import json
 import os
@@ -70,13 +72,17 @@ class AmrCycleDemo(Node):
         for rid, r in self.robots.items():
             if r["pending"] or now < r["next_at"]:
                 continue
-            action_type, params = cycle_step(r["layout"], r["at_warehouse"], STEPS[r["step"]])
+            if r.pop("resume", False):
+                action_type, params = "RESUME", {}
+            else:
+                action_type, params = cycle_step(r["layout"], r["at_warehouse"], STEPS[r["step"]])
             pid = f"demo-{uuid.uuid4().hex[:8]}"
             msg = {"proposal_id": pid, "task_id": "task-amr-cycle-demo", "robot_id": rid,
                    "action_type": action_type, "parameters": params, "trajectory": None, "frame_id": "world",
                    "speed_limit": self.speed, "model_name": "amr-cycle-demo", "model_version": "0",
                    "status": "APPROVED", "proposed_at": utc_iso(now)}
             r["pending"] = pid
+            r["resuming"] = action_type == "RESUME"
             self.action_pub.publish(String(data=json.dumps(msg)))
 
     def _on_result(self, rid, msg):
@@ -85,10 +91,15 @@ class AmrCycleDemo(Node):
         if event.get("kind") != "RESULT" or event.get("proposal_id") != r["pending"]:
             return
         r["pending"] = None
+        if r.pop("resuming", False):
+            r["next_at"] = time.time() + PAUSE_S
+            return
         step = STEPS[r["step"]]
         if not event.get("success"):
             self.get_logger().warning(f"{rid} {step} 실패: {event.get('reason_code')} {event.get('message')}")
             r["next_at"] = time.time() + RETRY_S
+            if event.get("reason_code") == "HW_ERROR" or "ERROR" in str(event.get("message", "")).split():
+                r["resume"] = True
             return
         self.get_logger().info(f"{rid} {step} 완료")
         r["step"] = (r["step"] + 1) % len(STEPS)
