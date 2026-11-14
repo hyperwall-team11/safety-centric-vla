@@ -261,6 +261,7 @@ TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 
 - 재평가 실패 시 Proposal과 TaskOrder를 `HELD`로 바꾸고 `409`를 반환한다. 관측 공백 또는 최소 안전거리만 위반하면 `REJECT`를 기록한다. E-Stop 거리 위반 또는 기존 규칙 재평가 실패 시 Robot을 `ESTOP`으로 바꾸고 `triggered_by=RULE_ENGINE`인 `ESTOP` 로그를 남긴다.
 - 통과 시 Proposal을 `EXECUTING`, TaskOrder를 `RUNNING`, Robot을 `MOVING`으로 바꾸고 Mock adapter 전달을 나타내는 `EXECUTE` 로그를 남긴다.
 - 평가와 실행 직전 재평가 로그에는 `evaluated_in_ms`를 기록한다.
+- KPI 9 proxy는 현재 명령 입력부터 이 API 응답까지 측정한다. 어댑터 ACK 시각은 Backend에 저장하지 않으므로 KPI 9의 최종 명령→ACK 지연에는 사용할 수 없다.
 
 `POST /action-proposals/{proposal_id}/result`
 
