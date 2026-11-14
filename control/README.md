@@ -147,6 +147,23 @@ pixi run cctv-threejs       # 터미널 2: 헤드리스 Chromium 렌더러, 5초
 
 `bridge-threejs`는 15Hz, `bridge-threejs-plant`는 10Hz로 띄웁니다. 그보다 높이면 렌더(GPU 제출)와 브리지 쪽 프레임 준비가 한계입니다. 렌더러는 5초마다 단계별 시간을 출력합니다.
 
+### 로봇 팔·AMR이 있는 현장
+
+브리지의 `arms:=true`·`amrs:=true`와 함께 쓰면 팔 4대·랙·팔레트·포장대·AMR 2대·거치대도 Three.js 영상에 나옵니다. 프레임은 모든 geom의 자세를 담으므로, 어댑터가 움직이는 팔 관절·AMR 차체·실린 팔레트가 그대로 따라 움직입니다.
+
+```bash
+pixi run bridge-threejs-amrs    # 터미널 1: 브리지 (plant_scene + AMR 2대, Three.js CCTV 5Hz)
+pixi run cctv-threejs           # 터미널 2: 렌더러
+pixi run amr-adapters           # 터미널 3: AMR 어댑터
+pixi run amr-cycle-demo         # 터미널 4: 순환 데모 (검증 서버 대역, 시험 전용)
+# 팔까지: 브리지에 -p arms:=true를 더하고 pixi run arm-adapters, pixi run arm-cycle-demo
+```
+
+- 오프라인 내보내기(`scripts/threejs_cctv/export_scene.py`)도 기본(`--plant full`)으로 팔 4대 + AMR 2대가 든 장면을 내보냅니다. ROS 없이 `mujoco/plant_demo.py`가 같은 궤적 계획·AMR 운동학으로 팔은 집기·놓기, AMR은 싣기 → 이동 → 내리기를 반복합니다. 예전 장면은 `--plant bare`입니다.
+- 팔·랙·AMR은 Three.js 설비 모델(`prop_*`)로 바꾸지 않고 MuJoCo 형상(팔은 Menagerie 메시)과 색 그대로 그립니다.
+- 바닥 라이트맵(`floor_bake.png`)은 이 구역이 없던 장면으로 구웠습니다. 구운 바닥을 쓰면 랙·받침대처럼 움직이지 않는 물체는 그림자가 없으므로, 새 장면에서는 다시 굽거나 `?nobake`로 봅니다.
+- 팔 4대를 켜면 브리지 물리가 실시간 대비 약 0.3배로 느려집니다(Apple M3, 2026-11-14). 이때 AMR `/odom` 간격이 0.5초를 넘어 AMR 어댑터가 `ERROR`가 될 수 있어, AMR 확인은 `amrs:=true`만 켜고 했습니다(실시간 대비 1.00배, Three.js 카메라당 5Hz).
+
 ## 토픽
 
 | 토픽 | 방향 | QoS | 내용 |
@@ -403,7 +420,8 @@ control/
 │   ├── twin_simulate.py            # MuJoCo ② 사전 시뮬레이션 서비스 POST /twin/simulate
 │   ├── manipulator.py              # Panda move_to·그리퍼·pick_and_place
 │   ├── arms.py                     # 로봇 팔 공통 계층: 모델 목록, 공구, 역기구학, PICK·PLACE 궤적, 현장 배치
-│   └── amr.py                      # 이동형 운반 로봇: 차체·팔레트·거치대, 운동학 이동·싣기·내리기, 현장 배치
+│   ├── amr.py                      # 이동형 운반 로봇: 차체·팔레트·거치대, 운동학 이동·싣기·내리기, 현장 배치
+│   └── plant_demo.py               # 팔 4대·AMR 2대 정해진 순서 재생 (Three.js 오프라인 내보내기용)
 ├── ros2_ws/src/
 │   ├── mujoco_bridge/              # ROS 2 ↔ MuJoCo 브리지, odom_echo, rate_monitor, cctv_stream(웹 MJPEG)
 │   ├── robot_adapter/              # 공통 Action → 로봇 명령 (Mock·TIAGo·팔·AMR 어댑터, 팔 4대·AMR 2대 launch)
