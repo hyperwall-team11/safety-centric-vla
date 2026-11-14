@@ -143,6 +143,10 @@ button:disabled { opacity: .38; cursor: not-allowed; }
 .loading-state::before { width: 7px; height: 7px; margin-right: 8px; content: ""; background: var(--blue); border-radius: 50%; animation: pulse 1.2s infinite ease-in-out; }
 @keyframes pulse { 50% { opacity: .22; transform: scale(.7); } }
 .error { margin: 0; padding: 13px 16px; color: #9f2119; background: var(--red-soft); border-radius: 12px; font-size: 11px; }
+.task-error { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
+.task-error strong { font-size: 14px; }
+.task-error p { margin: 0; line-height: 1.45; }
+.task-error small { color: #7d514d; font-size: 12px; line-height: 1.45; }
 .fields { display: grid; grid-template-columns: 120px minmax(0,1fr); margin: 0; border-top: 1px solid var(--line); }
 .fields dt, .fields dd { min-height: 48px; padding: 14px 10px; border-bottom: 1px solid var(--line-soft); line-height: 1.4; }
 .fields dt { color: var(--muted); font-size: 11px; font-weight: 560; }

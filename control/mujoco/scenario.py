@@ -31,6 +31,52 @@ JOINT_STATE_NAMES = [
     "wheel_left_joint", "wheel_right_joint",
 ]
 
+# 작업자 실사 모델: 부위별 mocap 바디(worker_<부위>)와 걷기 자세 데이터
+WORKER_DIR = Path(__file__).resolve().parent / "models" / "worker"
+WORKER_PARTS = [
+    "pelvis", "lower_torso", "chest", "head",
+    "right_upper_arm", "right_forearm", "left_upper_arm", "left_forearm",
+    "right_thigh", "right_shin", "right_foot", "left_thigh", "left_shin", "left_foot",
+]
+GAIT_FPS = 60          # walk.npy 프레임 속도
+GAIT_CYCLE = 66        # 보행 한 주기 프레임 수 (1.1 s)
+STAND_BLEND = 0.3      # 걷기 ↔ 서기 전환 시간 (s)
+
+
+class WorkerPoser:
+    """걷기 모션(walk.npy)을 작업자 이동 거리에 맞춰 재생하고, 부위별 mocap 위치·회전을 계산한다.
+
+    재생 프레임은 시간이 아니라 이동 거리로 정하므로 이동 속도가 달라도 발이 미끄러지지 않는다.
+    """
+
+    def __init__(self):
+        self.kin = mujoco.MjModel.from_xml_path(str(WORKER_DIR / "kinematics.xml"))
+        self.kd = mujoco.MjData(self.kin)
+        self.walk = np.load(WORKER_DIR / "walk.npy")
+        n = len(self.walk)
+        self.step_dist = (self.walk[-1, 0] - self.walk[0, 0]) / (n - 1)  # 프레임당 전진 거리 (m)
+        self.stand = self.walk[0].copy()
+        self.stand[7:] = 0.0
+        for side in ("right", "left"):  # 팔꿈치를 살짝 굽힌 선 자세
+            self.stand[self.kin.jnt_qposadr[self.kin.joint(f"{side}_elbow").id]] = 0.15
+        self.stand[2] = 0.945
+        self.stand[3:7] = [1, 0, 0, 0]
+        self.body_ids = [self.kin.body(b).id for b in WORKER_PARTS]
+
+    def pose(self, x, y, yaw, distance, stand_weight):
+        frame = self.walk[int(distance / self.step_dist) % GAIT_CYCLE]
+        q = (1 - stand_weight) * frame + stand_weight * self.stand
+        sway = frame[3:7] if stand_weight < 1 else self.stand[3:7]
+        qyaw = np.array([math.cos(yaw / 2), 0, 0, math.sin(yaw / 2)])
+        quat = np.zeros(4)
+        mujoco.mju_mulQuat(quat, qyaw, sway)
+        self.kd.qpos[:] = q
+        self.kd.qpos[:3] = [x, y, q[2]]
+        self.kd.qpos[3:7] = quat / np.linalg.norm(quat)
+        mujoco.mj_kinematics(self.kin, self.kd)
+        return self.kd.xpos[self.body_ids], self.kd.xquat[self.body_ids]
+
+
 # MuJoCo 카메라(-z 방향을 보고 +y가 위)를 ROS 광학 좌표계(+z 앞, +x 오른쪽, +y 아래)로 바꾸는 회전
 MJ_TO_OPTICAL = np.diag([1.0, -1.0, -1.0])
 
@@ -64,6 +110,7 @@ class WorkerScript:
                 self._segments.append((t, travel, here, nxt))
                 t += travel
         self.period = t
+        self._poser = None
 
     def position(self, sim_time: float) -> tuple[float, float, float]:
         """(x, y, 진행 방향 yaw rad)"""
@@ -87,11 +134,36 @@ class WorkerScript:
             return 0.0
         return math.atan2(b[1] - a[1], b[0] - a[0])
 
+    def gait_state(self, sim_time: float) -> tuple[float, float]:
+        """(누적 이동 거리 m, 서 있는 정도 0~1). 정지 구간 앞뒤 STAND_BLEND 초 동안 부드럽게 바뀐다."""
+        cycles, t = divmod(sim_time + self.start_offset, self.period)
+        per_cycle = sum(float(np.linalg.norm(b - a)) for _, _, a, b in self._segments)
+        dist = cycles * per_cycle
+        stand = 0.0
+        for start, duration, a, b in self._segments:
+            if t >= start + duration:
+                dist += float(np.linalg.norm(b - a))
+                continue
+            if np.allclose(a, b):
+                stand = min(1.0, (t - start) / STAND_BLEND, (start + duration - t) / STAND_BLEND)
+                stand = max(stand, 0.0)
+            else:
+                dist += float(np.linalg.norm(b - a)) * (t - start) / duration
+            break
+        return dist, stand
+
     def apply(self, model, data) -> tuple[float, float, float]:
         x, y, yaw = self.position(data.time)
         mocap = model.body_mocapid[model.body("worker").id]
         data.mocap_pos[mocap] = [x, y, 0.0]
         data.mocap_quat[mocap] = [math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2)]
+        if "worker_pelvis" in {model.body(i).name for i in range(model.nbody)}:
+            if self._poser is None:
+                self._poser = WorkerPoser()
+                self._part_mocap = [model.body_mocapid[model.body(f"worker_{b}").id] for b in WORKER_PARTS]
+            pos, quat = self._poser.pose(x, y, yaw, *self.gait_state(data.time))
+            data.mocap_pos[self._part_mocap] = pos
+            data.mocap_quat[self._part_mocap] = quat
         return x, y, yaw
 
 
