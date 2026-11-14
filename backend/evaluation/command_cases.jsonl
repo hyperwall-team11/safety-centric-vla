@@ -1,0 +1,100 @@
+{"id":"V001","instruction":"robot-01 로봇을 A구역으로 이동해","valid":true,"robot_id":"robot-01","action_type":"MOVE_TO","destination_type":"ZONE","destination_value":"A구역","object_id":null}
+{"id":"V002","instruction":"robot-02 로봇을 B구역으로 이동해","valid":true,"robot_id":"robot-02","action_type":"MOVE_TO","destination_type":"ZONE","destination_value":"B구역","object_id":null}
+{"id":"V003","instruction":"robot-01 로봇을 A구역으로 이동해줘","valid":true,"robot_id":"robot-01","action_type":"MOVE_TO"}
+{"id":"V004","instruction":"robot-01 로봇을 A구역으로 이동해 주세요","valid":true,"robot_id":"robot-01","action_type":"MOVE_TO"}
+{"id":"V005","instruction":"robot-02 로봇을 B지점으로 이동하세요","valid":true,"robot_id":"robot-02","action_type":"MOVE_TO","destination_value":"B지점"}
+{"id":"V006","instruction":"robot-01 로봇을 C창고로 이동시켜줘","valid":true,"action_type":"MOVE_TO","destination_value":"C창고"}
+{"id":"V007","instruction":"robot-02 로봇을 D작업대로 가","valid":true,"action_type":"MOVE_TO","destination_value":"D작업대"}
+{"id":"V008","instruction":"robot-01 로봇을 E대기실로 가줘","valid":true,"action_type":"MOVE_TO","destination_value":"E대기실"}
+{"id":"V009","instruction":"robot-02 로봇을 A구역까지 가주세요","valid":true,"action_type":"MOVE_TO","destination_value":"A구역"}
+{"id":"V010","instruction":"robot-01 로봇을 B구역에 가세요","valid":true,"action_type":"MOVE_TO","destination_value":"B구역"}
+{"id":"V011","instruction":"A구역으로부터 출발해 robot-01 로봇을 B구역까지 이동해","valid":true,"destination_value":"B구역"}
+{"id":"V012","instruction":"A구역에서 출발해 robot-02 로봇을 C구역에 이동해","valid":true,"destination_value":"C구역"}
+{"id":"V013","instruction":"robot-01 로봇을 상자3구역으로 이동해","valid":true,"destination_value":"상자3구역","object_id":null}
+{"id":"V014","instruction":"robot-02 로봇을 \"조립 라인 구역\"으로 이동해","valid":true,"destination_value":"조립라인구역"}
+{"id":"V015","instruction":"ROBOT-01 로봇을 A구역으로 이동해","valid":true,"robot_id":"robot-01","destination_value":"A구역"}
+{"id":"V016","instruction":"robot-01 로봇을 좌표: (1.5, -2)로 이동해","valid":true,"destination_type":"COORDINATE","destination_value":[1.5,-2.0,0.0]}
+{"id":"V017","instruction":"robot-02 로봇을 (1.5, -2, 0) 위치로 이동해","valid":true,"destination_type":"COORDINATE","destination_value":[1.5,-2.0,0.0]}
+{"id":"V018","instruction":"robot-01 로봇을 위치 x=1.5, y=-2, z=0 으로 이동해","valid":true,"destination_type":"COORDINATE","destination_value":[1.5,-2.0,0.0]}
+{"id":"V019","instruction":"robot-02 로봇을 좌표 (0, 0, 0)로 이동해","valid":true,"destination_value":[0.0,0.0,0.0]}
+{"id":"V020","instruction":"robot-01 로봇을 좌표 [-1, 2]로 이동해","valid":true,"destination_value":[-1.0,2.0,0.0]}
+{"id":"V021","instruction":"robot-02 로봇을 위치 3 4 0으로 이동해","valid":true,"destination_value":[3.0,4.0,0.0]}
+{"id":"V022","instruction":"robot-01 로봇을 위치 3, 4로 이동해줘","valid":true,"destination_value":[3.0,4.0,0.0]}
+{"id":"V023","instruction":"robot-02 로봇을 좌표 (2.25, -3.5, 1)로 이동해 주세요","valid":true,"destination_value":[2.25,-3.5,1.0]}
+{"id":"V024","instruction":"robot-01 로봇을 위치 x:0.5 y:1.5 z:0 으로 이동하세요","valid":true,"destination_value":[0.5,1.5,0.0]}
+{"id":"V025","instruction":"robot-02 로봇을 좌표 (1e1, -2e0, 0)로 이동해","valid":true,"destination_value":[10.0,-2.0,0.0]}
+{"id":"V026","instruction":"robot-01 로봇을 좌표 (.5, -.25)로 이동해","valid":true,"destination_value":[0.5,-0.25,0.0]}
+{"id":"V027","instruction":"robot-02 로봇을 위치 (+1, +2, +0)로 이동해","valid":true,"destination_value":[1.0,2.0,0.0]}
+{"id":"V028","instruction":"robot-01 로봇을 좌표 (5 6 0)로 이동해","valid":true,"destination_value":[5.0,6.0,0.0]}
+{"id":"V029","instruction":"robot-02 로봇을 좌표 [7, 8, 0]로 가","valid":true,"destination_value":[7.0,8.0,0.0]}
+{"id":"V030","instruction":"robot-01 로봇을 위치 9, 10에 이동해","valid":true,"destination_value":[9.0,10.0,0.0]}
+{"id":"V031","instruction":"robot-01 로봇으로 상자 3을 B 작업대로 옮겨","valid":true,"action_type":"MANIPULATE","destination_value":"B작업대","object_id":"상자3"}
+{"id":"V032","instruction":"robot-01 로봇으로 3번 상자를 B작업대로 옮겨","valid":true,"action_type":"MANIPULATE","object_id":"상자3"}
+{"id":"V033","instruction":"robot-02 로봇으로 상자 번호 4를 C작업대로 옮겨","valid":true,"object_id":"상자4","destination_value":"C작업대"}
+{"id":"V034","instruction":"robot-01 로봇으로 박스3을 B작업대로 옮겨","valid":true,"object_id":"박스3"}
+{"id":"V035","instruction":"robot-02 로봇으로 box-3을 B작업대로 옮겨","valid":true,"object_id":"box-3"}
+{"id":"V036","instruction":"robot-01 로봇으로 obj-7을 C창고로 옮겨줘","valid":true,"object_id":"obj-7","destination_value":"C창고"}
+{"id":"V037","instruction":"robot-02 로봇으로 상자3을 B작업대로 옮겨 주세요","valid":true,"action_type":"MANIPULATE"}
+{"id":"V038","instruction":"robot-01 로봇으로 상자3을 B작업대로 이동시켜줘","valid":true,"action_type":"MANIPULATE"}
+{"id":"V039","instruction":"robot-02 로봇으로 상자3을 B작업대로 운반해","valid":true,"action_type":"MANIPULATE"}
+{"id":"V040","instruction":"robot-01 로봇으로 상자3을 B작업대로 운반하세요","valid":true,"action_type":"MANIPULATE"}
+{"id":"V041","instruction":"robot-02 로봇으로 상자3을 B작업대로 이송해","valid":true,"action_type":"MANIPULATE"}
+{"id":"V042","instruction":"robot-01 로봇으로 상자3을 B작업대로 배달해","valid":true,"action_type":"MANIPULATE"}
+{"id":"V043","instruction":"robot-02 로봇으로 상자3을 B작업대로 보내줘","valid":true,"action_type":"MANIPULATE"}
+{"id":"V044","instruction":"robot-01 로봇으로 상자3을 B작업대로 가져다 놔","valid":true,"action_type":"MANIPULATE"}
+{"id":"V045","instruction":"robot-02 로봇으로 상자3을 B작업대로 가져다줘","valid":true,"action_type":"MANIPULATE"}
+{"id":"V046","instruction":"robot-01 로봇으로 상자3을 B작업대에 가져다 놓아","valid":true,"action_type":"MANIPULATE"}
+{"id":"V047","instruction":"robot-02 로봇으로 팔레트2를 C창고로 옮겨","valid":true,"object_id":"팔레트2"}
+{"id":"V048","instruction":"robot-01 로봇으로 물체9를 D지점으로 옮겨","valid":true,"object_id":"물체9"}
+{"id":"V049","instruction":"robot-02 로봇으로 12번 박스를 E대기실로 옮겨","valid":true,"object_id":"박스12"}
+{"id":"V050","instruction":"robot-01 로봇으로 box_item-2를 B작업대로 옮겨","valid":true,"object_id":"box_item-2"}
+{"id":"X001","instruction":"robot-01 로봇을 A구역으로 이동하지 마","valid":false}
+{"id":"X002","instruction":"robot-01 로봇을 A구역으로 이동해서는 안 돼","valid":false}
+{"id":"X003","instruction":"robot-01 로봇을 A구역으로 이동해선 안 돼","valid":false}
+{"id":"X004","instruction":"robot-01 로봇을 A구역으로 보내지 말고 B구역으로 이동해","valid":false}
+{"id":"X005","instruction":"robot-01 로봇 작업을 재개하지 마","valid":false}
+{"id":"X006","instruction":"robot-01 로봇을 A구역으로 이동하면 위험해","valid":false}
+{"id":"X007","instruction":"문이 열리면 robot-01 로봇을 A구역으로 이동해","valid":false}
+{"id":"X008","instruction":"위험이 없으면 robot-01 로봇을 A구역으로 이동해","valid":false}
+{"id":"X009","instruction":"작업자가 나가면 robot-01 로봇을 A구역으로 이동해","valid":false}
+{"id":"X010","instruction":"준비된다면 robot-01 로봇을 A구역으로 이동해","valid":false}
+{"id":"X011","instruction":"robot-01 로봇을 A구역으로 이동할까?","valid":false}
+{"id":"X012","instruction":"robot-01 로봇을 A구역으로 이동해볼까","valid":false}
+{"id":"X013","instruction":"robot-01 로봇을 A구역으로 이동해야 하나","valid":false}
+{"id":"X014","instruction":"robot-01 로봇을 A구역으로 이동해도 괜찮을까","valid":false}
+{"id":"X015","instruction":"robot-01 로봇을 A구역으로 이동해도 좋을지","valid":false}
+{"id":"X016","instruction":"robot-01 로봇을 A구역으로 이동했어","valid":false}
+{"id":"X017","instruction":"robot-01 로봇을 A구역으로 이동해 왔어","valid":false}
+{"id":"X018","instruction":"robot-01 로봇을 A구역으로 이동해 둔 상태야","valid":false}
+{"id":"X019","instruction":"robot-01 로봇을 A구역으로 이동해 봤어","valid":false}
+{"id":"X020","instruction":"robot-01 로봇을 A구역으로 이동해서 점검했다","valid":false}
+{"id":"X021","instruction":"robot-01 로봇과 robot-02 로봇을 A구역으로 이동해","valid":false}
+{"id":"X022","instruction":"robot-99 로봇을 A구역으로 이동해","valid":false}
+{"id":"X023","instruction":"robot-01 로봇을 A구역으로 B구역까지 이동해","valid":false}
+{"id":"X024","instruction":"robot-01 로봇을 A지점으로 B작업대까지 이동해","valid":false}
+{"id":"X025","instruction":"robot-01 로봇을 이동해","valid":false}
+{"id":"X026","instruction":"A구역으로 이동해","valid":false}
+{"id":"X027","instruction":"robot-01 로봇을 좌표 (1.5, -2 잘못된 입력으로 이동해","valid":false}
+{"id":"X028","instruction":"robot-01 로봇을 위치 1, 2garbage로 이동해","valid":false}
+{"id":"X029","instruction":"robot-01 로봇을 좌표 1, 2, 3, 4로 이동해","valid":false}
+{"id":"X030","instruction":"robot-01 로봇을 위치 1, 2미터로 이동해","valid":false}
+{"id":"X031","instruction":"robot-01 로봇을 위치 (1, 2)garbage로 이동해","valid":false}
+{"id":"X032","instruction":"robot-01 로봇을 좌표 (NaN, 2)로 이동해","valid":false}
+{"id":"X033","instruction":"robot-01 로봇을 좌표 (1, Infinity)로 이동해","valid":false}
+{"id":"X034","instruction":"robot-01 로봇을 사진 찍어","valid":false}
+{"id":"X035","instruction":"robot-01 로봇을 A구역으로 점검해","valid":false}
+{"id":"X036","instruction":"robot-01 로봇을 정지해","valid":false}
+{"id":"X037","instruction":"robot-01 로봇 작업을 재개해","valid":false}
+{"id":"X038","instruction":"robot-01 로봇을 멈춰","valid":false}
+{"id":"X039","instruction":"robot-01 로봇으로 상자3을 B작업대로 옮겨볼까","valid":false}
+{"id":"X040","instruction":"robot-01 로봇으로 상자3을 B작업대로 보내면 안 돼","valid":false}
+{"id":"X041","instruction":"robot-01 로봇으로 상자3을 B작업대로 옮겨줘서 고마워","valid":false}
+{"id":"X042","instruction":"robot-01 로봇으로 상자3과 박스4를 B작업대로 옮겨","valid":false}
+{"id":"X043","instruction":"robot-01 로봇으로 상자를B구역으로 보내줘","valid":false}
+{"id":"X044","instruction":"robot-01 로봇으로 상자3을B구역으로 보내줘","valid":false}
+{"id":"X045","instruction":"robot-01 로봇을 빨리A구역으로 이동해","valid":false}
+{"id":"X046","instruction":"robot-01 로봇을 조립 라인 구역으로 이동해","valid":false}
+{"id":"X047","instruction":"로봇을A구역으로 이동해","valid":false}
+{"id":"X048","instruction":"robot-01 로봇으로 B작업대로 옮겨","valid":false}
+{"id":"X049","instruction":"robot-01 로봇으로 상자3을 옮겨","valid":false}
+{"id":"X050","instruction":"robot-01 로봇을 A구역으로 이동해 그리고 사진 찍어","valid":false}
