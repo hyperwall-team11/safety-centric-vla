@@ -209,6 +209,11 @@ MANIPULATE 예:
 
 `GET /task-orders/{task_id}/action-proposals`는 해당 TaskOrder의 Proposal만 배열로 반환한다.
 
+외부 VLA가 `POST /action-proposals`로 등록하는 제안은 요청 모델 검증 후 TaskOrder 문맥과도
+대조한다. `action_type`, `robot_id`, `parameters.target_pose`, MANIPULATE의 `object_id`,
+`frame_id`가 TaskOrder·Robot과 다르면 모델이 작업 문맥을 바꾼 것으로 보고 `422`로 거부한다.
+속도·경로의 안전성은 이 문맥 검증에서 승인하지 않고 이후 Action 제출 기준 평가에서 판정한다.
+
 자동 생성한 `MOVE_TO`는 로봇의 현재 위치와 좌표 목적지 또는
 `Zone.geometry.navigation_target`을 잇는 직선 `trajectory`를 채운다.
 출발점과 목적지의 좌표계가 일치해야 한다. 목적지 좌표가 없거나 좌표계가
