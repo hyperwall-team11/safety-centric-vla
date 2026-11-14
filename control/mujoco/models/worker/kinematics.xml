@@ -1,0 +1,161 @@
+<!--
+  전신 휴머노이드 (키 약 1.75 m, 질량은 geom 부피 x 밀도로 자동 계산)
+  좌표계: x = 앞, y = 왼쪽, z = 위
+  관절 부호 규칙 (양수 방향):
+    *_hip_pitch, *_shoulder_pitch : 앞으로 들기(굴곡)
+    *_knee, *_elbow                : 굽히기
+    *_ankle_pitch                  : 발끝 들기(배측굴곡)
+    *_hip_roll, *_shoulder_roll    : 바깥으로 벌리기(외전)
+  충돌: 몸 geom은 바닥과만 충돌 (몸끼리 충돌은 끔)
+-->
+<mujoco model="human">
+  <compiler angle="degree" autolimits="true"/>
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast"/>
+
+  <visual>
+    <global offwidth="1280" offheight="720"/>
+    <quality shadowsize="4096"/>
+    <headlight ambient=".35 .35 .35" diffuse=".5 .5 .5" specular=".1 .1 .1"/>
+  </visual>
+
+  <asset>
+    <texture name="sky" type="skybox" builtin="gradient" rgb1=".55 .7 .9" rgb2=".95 .97 1" width="512" height="512"/>
+    <texture name="grid" type="2d" builtin="checker" rgb1=".62 .62 .6" rgb2=".55 .55 .53" width="512" height="512"/>
+    <material name="grid" texture="grid" texrepeat="40 40" reflectance=".02"/>
+    <material name="skin" rgba=".87 .72 .6 1"/>
+    <material name="shirt" rgba=".25 .4 .7 1"/>
+    <material name="pants" rgba=".2 .2 .25 1"/>
+    <material name="shoe" rgba=".1 .1 .1 1"/>
+  </asset>
+
+  <default>
+    <joint damping="1" armature="0.02" limited="true"/>
+    <geom contype="1" conaffinity="0" condim="3" friction="1 0.05 0.01" density="1000" material="skin"/>
+    <position kp="3000" kv="60" forcerange="-500 500"/>
+    <default class="arm">
+      <position kp="300" kv="10" forcerange="-150 150"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <light pos="0 0 4" dir="0 0 -1" directional="true" diffuse=".6 .6 .6"/>
+    <light pos="2 -4 3" dir="-0.3 0.7 -0.5" directional="true" diffuse=".5 .48 .45" castshadow="false"/>
+    <geom name="floor" type="plane" size="50 50 0.1" material="grid" contype="1" conaffinity="1"/>
+
+    <body name="pelvis" pos="0 0 0.97">
+      <freejoint name="root"/>
+      <camera name="track" mode="trackcom" pos="0 -3.5 0.3" xyaxes="1 0 0 0 0.2 1"/>
+      <geom name="pelvis" type="capsule" fromto="0 -0.08 0 0 0.08 0" size="0.1" material="pants"/>
+
+      <!-- ===== 상체 ===== -->
+      <body name="lower_torso" pos="0 0 0.08">
+        <joint name="abdomen_z" axis="0 0 1" range="-45 45"/>
+        <joint name="abdomen_y" axis="0 1 0" range="-30 60"/>
+        <joint name="abdomen_x" axis="1 0 0" range="-30 30"/>
+        <geom type="capsule" fromto="0 0 0 0 0 0.2" size="0.1" material="shirt"/>
+
+        <body name="chest" pos="0 0 0.22">
+          <geom type="capsule" fromto="0 -0.1 0.12 0 0.1 0.12" size="0.12" material="shirt"/>
+
+          <body name="head" pos="0 0 0.28">
+            <joint name="neck_y" axis="0 1 0" range="-40 50"/>
+            <joint name="neck_z" axis="0 0 1" range="-70 70"/>
+            <geom type="capsule" fromto="0 0 -0.06 0 0 0.04" size="0.045"/>
+            <geom name="head" type="sphere" pos="0.01 0 0.13" size="0.1"/>
+          </body>
+
+          <!-- 오른팔 -->
+          <body name="right_upper_arm" pos="0 -0.21 0.2">
+            <joint name="right_shoulder_pitch" axis="0 -1 0" range="-60 170"/>
+            <joint name="right_shoulder_roll" axis="-1 0 0" range="-30 170"/>
+            <joint name="right_shoulder_yaw" axis="0 0 1" range="-90 90"/>
+            <geom type="capsule" fromto="0 0 0 0 0 -0.27" size="0.045" material="shirt"/>
+            <body name="right_forearm" pos="0 0 -0.29">
+              <joint name="right_elbow" axis="0 -1 0" range="0 150"/>
+              <geom type="capsule" fromto="0 0 0 0 0 -0.23" size="0.038"/>
+              <geom name="right_hand" type="sphere" pos="0 0 -0.28" size="0.045"/>
+            </body>
+          </body>
+
+          <!-- 왼팔 -->
+          <body name="left_upper_arm" pos="0 0.21 0.2">
+            <joint name="left_shoulder_pitch" axis="0 -1 0" range="-60 170"/>
+            <joint name="left_shoulder_roll" axis="1 0 0" range="-30 170"/>
+            <joint name="left_shoulder_yaw" axis="0 0 1" range="-90 90"/>
+            <geom type="capsule" fromto="0 0 0 0 0 -0.27" size="0.045" material="shirt"/>
+            <body name="left_forearm" pos="0 0 -0.29">
+              <joint name="left_elbow" axis="0 -1 0" range="0 150"/>
+              <geom type="capsule" fromto="0 0 0 0 0 -0.23" size="0.038"/>
+              <geom name="left_hand" type="sphere" pos="0 0 -0.28" size="0.045"/>
+            </body>
+          </body>
+        </body>
+      </body>
+
+      <!-- ===== 오른다리 ===== -->
+      <body name="right_thigh" pos="0 -0.09 -0.05">
+        <joint name="right_hip_pitch" axis="0 -1 0" range="-30 120"/>
+        <joint name="right_hip_roll" axis="-1 0 0" range="-30 45"/>
+        <joint name="right_hip_yaw" axis="0 0 1" range="-45 45"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.065" material="pants"/>
+        <body name="right_shin" pos="0 0 -0.42">
+          <joint name="right_knee" axis="0 1 0" range="0 150"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.4" size="0.05" material="pants"/>
+          <body name="right_foot" pos="0 0 -0.43">
+            <joint name="right_ankle_pitch" axis="0 -1 0" range="-50 30"/>
+            <joint name="right_ankle_roll" axis="1 0 0" range="-25 25"/>
+            <geom name="right_foot" type="box" pos="0.05 0 -0.02" size="0.11 0.045 0.025" material="shoe"/>
+            <site name="right_sole" pos="0.05 0 -0.045"/>
+          </body>
+        </body>
+      </body>
+
+      <!-- ===== 왼다리 ===== -->
+      <body name="left_thigh" pos="0 0.09 -0.05">
+        <joint name="left_hip_pitch" axis="0 -1 0" range="-30 120"/>
+        <joint name="left_hip_roll" axis="1 0 0" range="-30 45"/>
+        <joint name="left_hip_yaw" axis="0 0 1" range="-45 45"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.065" material="pants"/>
+        <body name="left_shin" pos="0 0 -0.42">
+          <joint name="left_knee" axis="0 1 0" range="0 150"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.4" size="0.05" material="pants"/>
+          <body name="left_foot" pos="0 0 -0.43">
+            <joint name="left_ankle_pitch" axis="0 -1 0" range="-50 30"/>
+            <joint name="left_ankle_roll" axis="1 0 0" range="-25 25"/>
+            <geom name="left_foot" type="box" pos="0.05 0 -0.02" size="0.11 0.045 0.025" material="shoe"/>
+            <site name="left_sole" pos="0.05 0 -0.045"/>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <!-- 관절별 위치(PD) 액추에이터: ctrl = 목표 관절각(rad) -->
+  <actuator>
+    <position name="abdomen_z" joint="abdomen_z"/>
+    <position name="abdomen_y" joint="abdomen_y"/>
+    <position name="abdomen_x" joint="abdomen_x"/>
+    <position name="neck_y" joint="neck_y" class="arm"/>
+    <position name="neck_z" joint="neck_z" class="arm"/>
+    <position name="right_shoulder_pitch" joint="right_shoulder_pitch" class="arm"/>
+    <position name="right_shoulder_roll" joint="right_shoulder_roll" class="arm"/>
+    <position name="right_shoulder_yaw" joint="right_shoulder_yaw" class="arm"/>
+    <position name="right_elbow" joint="right_elbow" class="arm"/>
+    <position name="left_shoulder_pitch" joint="left_shoulder_pitch" class="arm"/>
+    <position name="left_shoulder_roll" joint="left_shoulder_roll" class="arm"/>
+    <position name="left_shoulder_yaw" joint="left_shoulder_yaw" class="arm"/>
+    <position name="left_elbow" joint="left_elbow" class="arm"/>
+    <position name="right_hip_pitch" joint="right_hip_pitch"/>
+    <position name="right_hip_roll" joint="right_hip_roll"/>
+    <position name="right_hip_yaw" joint="right_hip_yaw"/>
+    <position name="right_knee" joint="right_knee"/>
+    <position name="right_ankle_pitch" joint="right_ankle_pitch"/>
+    <position name="right_ankle_roll" joint="right_ankle_roll"/>
+    <position name="left_hip_pitch" joint="left_hip_pitch"/>
+    <position name="left_hip_roll" joint="left_hip_roll"/>
+    <position name="left_hip_yaw" joint="left_hip_yaw"/>
+    <position name="left_knee" joint="left_knee"/>
+    <position name="left_ankle_pitch" joint="left_ankle_pitch"/>
+    <position name="left_ankle_roll" joint="left_ankle_roll"/>
+  </actuator>
+</mujoco>

@@ -1,0 +1,12 @@
+{
+  "name": "threejs-cctv",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "render": "node render.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "1.58.2",
+    "three": "0.170.0"
+  }
+}
