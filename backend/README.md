@@ -53,6 +53,8 @@ BACKEND_CTL_ROS_ENABLED=1 python -m uvicorn app.main:app
 
 ROS 2 모드에서는 실행 직전 재검증을 통과한 승인 스냅샷만 `/safety/approved_action`에 발행합니다. Backend의 `{x,y,z}` 좌표는 CTL의 `[x,y,z]` 좌표로 바꾸고, 발행 성공 후에만 Proposal을 `EXECUTING`으로 전이합니다. `/adapter/{robot_id}/result`의 `RESULT`는 표준 실패 코드로 정규화해 결과 API에 반영하며 `/safety/heartbeat`는 5 Hz로 발행합니다.
 
+실행 중인 로봇과 연결된 `CRITICAL` HazardEvent가 등록되면 `/safety/estop`(latched)에 정지 신호를 발행하고, 그 위험이 모두 해제되면 정지 신호를 풉니다. 로봇 복귀는 승인된 `RESUME`으로만 합니다.
+
 `ZONE` 목적지를 실제 실행하려면 해당 Zone의 `geometry.navigation_target`에 `{x,y,z}` 좌표가 있어야 합니다. 없으면 명령을 추측해 보내지 않고 `422`로 차단합니다.
 
 ## 테스트
