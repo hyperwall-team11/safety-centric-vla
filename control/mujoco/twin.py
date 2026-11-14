@@ -11,7 +11,9 @@ MuJoCo ①(scenario_scene.xml)의 정답 좌표는 읽지 않는다. 정답은 `
      "objects": [{"object_id", "frame_id", "position": [x, y, z], "size": [sx, sy, sz]}]}  # 선택 (#95)
 
 로봇 팔(``robot_model``이 ``arms.ARM_MODELS``에 있는 로봇)은 원기둥을 만들지 않는다.
-``twin_simulate``가 실제 팔 모델을 그 자리에 붙인다. ``objects``는 상자 장애물이며 MANIPULATE의 대상 물체도 여기 있다.
+``twin_simulate``가 실제 팔 모델을 그 자리에 붙인다.
+이동형 운반 로봇(``robot_model`` ``"amr"``)은 차체 크기의 원기둥이고, ``holding_object_id``가 있으면
+실린 팔레트·상자까지 덮는 크기로 키운다(``amr.footprint_radius``·``footprint_height``). ``objects``는 상자 장애물이며 MANIPULATE의 대상 물체도 여기 있다.
 
 Backend 형식(Robot.pose, Worker.pose, Zone.geometry)은 ``state_from_backend``로 바꾼다.
 좌표계는 ``world``(z 위), 단위는 m·rad.
@@ -28,6 +30,7 @@ from urllib import request
 
 import mujoco
 
+import amr
 from arms import ARM_MODELS
 
 FRAME_ID = "world"
@@ -104,7 +107,9 @@ def state_from_backend(robots, worker_snapshot, zones):
     state = {
         "robots": [{"robot_id": r["robot_id"], "robot_type": r["robot_type"],
                     "frame_id": r["pose"]["frame_id"], "position": pose_xyz(r["pose"]),
-                    "yaw_rad": _quat_to_yaw(r["pose"].get("orientation") or {})} for r in robots],
+                    "yaw_rad": _quat_to_yaw(r["pose"].get("orientation") or {}),
+                    **{k: r[k] for k in ("robot_model", "holding_object_id") if r.get(k) is not None}}
+                   for r in robots],
         "workers": None,
         "zones": [{"zone_id": z["zone_id"], "zone_type": z["zone_type"], "frame_id": z["frame_id"],
                    "geometry": z["geometry"]} for z in zones],
@@ -115,6 +120,14 @@ def state_from_backend(robots, worker_snapshot, zones):
             "items": [{"worker_id": w["worker_id"], "frame_id": w["pose"]["frame_id"],
                        "position": pose_xyz(w["pose"])} for w in worker_snapshot["workers"]]}
     return state
+
+
+def robot_shape(robot):
+    """(반경, 높이). AMR은 실린 팔레트 포함 크기, 나머지는 robot_type별 형상. 모르는 종류면 None."""
+    if robot.get("robot_model") == amr.ROBOT_MODEL:
+        loaded = robot.get("holding_object_id") is not None
+        return amr.footprint_radius(loaded), amr.footprint_height(loaded)
+    return ROBOT_SHAPES.get(robot.get("robot_type"))
 
 
 def build_twin_xml(state, worker_margin=WORKER_MARGIN_M):
@@ -157,7 +170,7 @@ def build_twin_xml(state, worker_margin=WORKER_MARGIN_M):
         x, y, _ = _xyz(robot.get("position"), rid)
         if robot.get("robot_model") in ARM_MODELS:
             continue  # 팔은 twin_simulate.attach_arms가 실제 모델로 붙인다
-        shape = ROBOT_SHAPES.get(robot.get("robot_type"))
+        shape = robot_shape(robot)
         if shape is None:
             raise TwinError(f"{rid}: unknown robot_type {robot.get('robot_type')!r}")
         radius, height = shape

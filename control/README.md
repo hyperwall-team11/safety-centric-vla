@@ -17,6 +17,7 @@ ROS 2 제어 어댑터, 안전 경로(HOLD·E-Stop), MuJoCo 시뮬레이션 환�
 | #54 | MuJoCo ② 디지털 트윈 재구성: 온톨로지 상태(Robot·Worker 스냅샷·Zone)로 장면 생성, 정답 대비 위치 오차 | 완료 | `pixi run test` |
 | #53 | MuJoCo ② 사전 시뮬레이션 서비스 `POST /twin/simulate`: `MOVE_TO` 경로 접촉·안전거리·목표 도달 판정 (판정 수치는 #50 확정 전 잠정값) | 완료 | `pixi run test`, `pixi run twin-sim` |
 | #95 | 로봇 팔 공통 어댑터(UR5e·UR10e·iiwa14·Panda), 창고형 적재·포장 구역, `MANIPULATE` 사전 시뮬레이션 (요청 형식 잠정) | 완료 | `pixi run arms-demo`, `pixi run test` |
+| AMR | 이동형 운반 로봇(AMR) 2대: 창고 ↔ TIAGo 작업 셀 팔레트 운반, `MOVE_TO`·`MANIPULATE`(싣기·내리기) 어댑터, 사전 시뮬레이션 차체 크기에 실린 팔레트 반영 | 완료 | `pixi run amr-demo`, `pixi run test` |
 
 다음 단계는 Backend와 TIAGo 어댑터를 함께 띄운 통합 시나리오 자동화입니다.
 
@@ -288,7 +289,47 @@ pixi run arm-cycle-demo   # 데모: 4대가 상자를 계속 옮김 (검증 서�
 - 파지는 물리 접촉 대신 운동학적으로 붙입니다(집으면 상자가 TCP를 따라감). 그리퍼 마찰·미끄러짐·하중은 다루지 않습니다.
 - 사전 시뮬레이션에서 들고 있는 상자와 다른 물체 사이의 접촉은 검사하지 않습니다(둘 다 고정 물체로 둠). 팔·공구의 접촉만 봅니다.
 - 브리지에서 팔은 위치 액추에이터로 움직이므로 빠른 동작에서 관절이 목표보다 늦습니다(측정 최대 약 0.2 rad, 0.25 m/s). 놓기 전 0.5 s 멈춰 이 차이를 줄입니다.
-- 이동형 운반 로봇(팔레트를 싣고 통로를 오가는 AMR)은 이 범위에 없습니다.
+- 이동형 운반 로봇은 다음 절(AMR)에서 다룹니다.
+
+## 이동형 운반 로봇 (AMR)
+
+낮은 사각 차체(롤러 상판, 높이 0.30 m) 위에 팔레트(1.1 × 0.84 m, 상자 더미 포함 높이 약 0.74 m)를 싣고, 창고 랙 구역 서쪽 끝 거치대와 TIAGo 작업 셀(테이블 A·B 바깥쪽) 거치대 사이를 오갑니다. 코드는 `mujoco/amr.py`입니다.
+
+```bash
+pixi run amr-demo         # 팔레트를 실은 AMR 2대가 통로를 지나는 장면 → outputs/amr/ (CCTV 2대·근접 시점)
+pixi run bridge-plant     # 브리지: plant_scene + 팔 4대 + AMR 2대 (arms:=true amrs:=true)
+pixi run amr-adapters     # AMR 어댑터 2개 (ros2 launch robot_adapter amrs.launch.py)
+pixi run amr-cycle-demo   # 데모: 2대가 팔레트를 계속 나름 (검증 서버 대역, 시험 전용)
+```
+
+**현장 배치** (`amr.PLANT_AMRS`): 통로 2개(y = ±1.75)는 작업자 1의 경로점 (3.4, ±1.8)을 지나므로 AMR이 작업자 통로를 가로지릅니다. 북쪽 통로는 UR10e 팔레트와 iiwa14 팔레트 사이입니다.
+
+| `robot_id` | 창고 정차 위치 (x, y) → 거치대 | 작업 셀 정차 위치 → 거치대 | 팔레트 `object_id` |
+|---|---|---|---|
+| `amr-01` | (3.70, 1.75) → (4.72, 1.75) | (2.05, 1.75) → (1.03, 1.75) | `pallet:amr-01` |
+| `amr-02` | (3.70, -1.75) → (4.72, -1.75) | (2.05, -1.75) → (1.03, -1.75) | `pallet:amr-02` |
+
+- 거치대는 상판과 같은 높이(0.30 m)입니다. AMR이 거치대를 바라보고 서면 팔레트를 앞쪽으로 밀어 싣거나 내립니다(롤러 이송 2초). `target_pose.position`은 거치대 위 팔레트 바닥 중심 `[x, y, 0.30]`입니다.
+- 장면은 `plant_scene.xml`을 바꾸지 않고 MjSpec으로 더합니다(`arms.build_plant_with_arms(extras=(amr.add_plant_amrs,))`). 브리지에서 `amrs:=true`일 때만 쓰며 `arms:=true`와 따로 켤 수 있습니다.
+
+**어댑터** (`robot_adapter/amr_core.py`, `amr_adapter_node.py`): TIAGo 어댑터(`DiffDriveCore`)의 규약과 `MOVE_TO` 제어기(제자리 회전 → 직진)를 그대로 씁니다. `robot_type`은 `MOBILE`, 상태에 `robot_model: "amr"`과 `holding_object_id`(실린 팔레트)를 더합니다.
+- `MOVE_TO`: 직선 이동. 속도 상한 `min(0.4 m/s, speed_limit)`(SR-01 기본값).
+- `MANIPULATE` `PICK`(싣기): 빈 차체일 때만. 팔레트가 차체 앞 거치대 자리(0.15 m 안)에 없으면 브리지가 `INVALID`로 돌려줍니다.
+- `MANIPULATE` `PLACE`(내리기): 같은 `object_id`를 싣고 있을 때만. 내릴 위치가 차체 앞 거치대 자리가 아니면 `INVALID`.
+- E-Stop·HOLD·STOP: 차체에 0 속도를 계속 보내고, 이송 중이면 `CANCEL`을 보내 팔레트를 그 자리에 멈춥니다. 이때 싣기는 완료되지 않은 것으로 봅니다.
+
+| 토픽 (`<seg>`: `amr-01` → `amr_01`) | 방향 | 형식 |
+|---|---|---|
+| `/<seg>/cmd_vel` | 어댑터 → 브리지 | `geometry_msgs/Twist` |
+| `/<seg>/odom` | 브리지 → 어댑터 | `nav_msgs/Odometry` (world 좌표) |
+| `/<seg>/amr/load_command` | 어댑터 → 브리지 | `std_msgs/String` JSON `{command_id, manipulation: PICK·PLACE·CANCEL, object_id, target_pose}` |
+| `/<seg>/amr/load_result` | 브리지 → 어댑터 | `std_msgs/String` JSON `{command_id, success, reason_code, message}` |
+
+**사전 시뮬레이션**: `MOVE_TO`는 기존 원기둥 판정을 그대로 씁니다. `state.robots[]`에 `"robot_model": "amr"`이 있으면 원기둥 크기를 차체 기준(반경 0.558 m, 높이 0.30 m)으로, `holding_object_id`가 있으면 실린 팔레트까지 덮는 크기(반경 0.692 m, 높이 1.04 m)로 둡니다. AMR의 `MANIPULATE` 사전 시뮬레이션은 아직 없습니다(`ERROR`).
+
+한계:
+- 차체 이동과 팔레트 싣기·내리기는 운동학입니다(바퀴 마찰·미끄러짐·하중 없음). 브리지 장면에서 AMR·팔레트는 충돌하지 않는 mocap 바디라 TIAGo·작업자와 겹쳐도 밀지 않습니다. 접촉 판정은 사전 시뮬레이션이 합니다.
+- 경로는 직선 `MOVE_TO`만 따라가며 장애물 회피는 하지 않습니다.
 
 ## 어댑터 동작 규칙
 
@@ -327,10 +368,11 @@ control/
 │   ├── twin.py                     # MuJoCo ② 디지털 트윈: 온톨로지 상태 → 장면, 정답 대비 위치 오차
 │   ├── twin_simulate.py            # MuJoCo ② 사전 시뮬레이션 서비스 POST /twin/simulate
 │   ├── manipulator.py              # Panda move_to·그리퍼·pick_and_place
-│   └── arms.py                     # 로봇 팔 공통 계층: 모델 목록, 공구, 역기구학, PICK·PLACE 궤적, 현장 배치
+│   ├── arms.py                     # 로봇 팔 공통 계층: 모델 목록, 공구, 역기구학, PICK·PLACE 궤적, 현장 배치
+│   └── amr.py                      # 이동형 운반 로봇: 차체·팔레트·거치대, 운동학 이동·싣기·내리기, 현장 배치
 ├── ros2_ws/src/
 │   ├── mujoco_bridge/              # ROS 2 ↔ MuJoCo 브리지, odom_echo, rate_monitor, cctv_stream(웹 MJPEG)
-│   ├── robot_adapter/              # 공통 Action → 로봇 명령 (Mock·TIAGo·팔 어댑터, 팔 4대 launch)
+│   ├── robot_adapter/              # 공통 Action → 로봇 명령 (Mock·TIAGo·팔·AMR 어댑터, 팔 4대·AMR 2대 launch)
 │   └── safety_control/             # HOLD·E-Stop 판단(gate), 토픽·QoS, 시험 하네스
 ├── tests/                          # pytest 단위 테스트
 ├── scripts/                        # cmd_vel_demo.sh, roundtrip.sh, measure_rates.sh, fetch_models.sh
