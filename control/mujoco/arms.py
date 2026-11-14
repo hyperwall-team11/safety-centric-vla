@@ -474,11 +474,16 @@ def _keyframe_by_name(path: Path):
     return qpos, ctrl
 
 
-def build_plant_with_arms(arms=PLANT_ARMS):
-    """plant_scene.xml에 팔 4대를 더한 (model, data, {robot_id: ArmKinematics})."""
+def build_plant_with_arms(arms=PLANT_ARMS, extras=()):
+    """plant_scene.xml에 팔 4대를 더한 (model, data, {robot_id: ArmKinematics}).
+
+    extras: 장면 spec을 받아 더 붙이는 함수들 (예: amr.add_plant_amrs).
+    """
     plant = mujoco.MjSpec.from_file(str(PLANT_SCENE))
     root = scene_root(plant)
     homes = add_plant_arms(root, arms)
+    for extra in extras:
+        extra(root)
     model = root.compile()
     data = mujoco.MjData(model)
     key_qpos, key_ctrl = _keyframe_by_name(PLANT_SCENE)  # TIAGo home 자세·제어값
