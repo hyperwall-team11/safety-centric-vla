@@ -10,12 +10,16 @@ cd control/scripts/threejs_cctv
 npm install
 python fetch_assets.py          # Poly Haven CC0 텍스처·HDRI·glTF 약 50 MB → assets/ (커밋하지 않음)
 # 1) MuJoCo 30초 실행 → 장면·프레임·정답 내보내기 (pixi 환경의 python)
-python export_scene.py --out ../../outputs/threejs_cctv/data --duration 30 --fps 10
+python export_scene.py --out ../../outputs/threejs_cctv/data --duration 30 --fps 10   # 팔 4대 + AMR 2대 (--plant bare: 예전 장면)
 # 2) 헤드리스 Chromium + Three.js 렌더 (Playwright 캐시의 Chromium 사용, 없으면 CHROMIUM_PATH 지정)
 node render.mjs --data ../../outputs/threejs_cctv/data --out ../../outputs/threejs_cctv
 ```
 
 300프레임 × 카메라 2대 렌더는 Apple M3에서 약 70초 걸린다.
+
+### 브리지 실시간 렌더 → ROS 2 토픽 (#55)
+
+`node render.mjs --ros [http://127.0.0.1:8765]`는 브리지(`cctv_renderer:=threejs`)가 내보낸 장면(`outputs/threejs_live/data`)을 열고, 브리지의 최신 MuJoCo 프레임을 받아 렌더한 rgb8을 브리지로 돌려보냅니다. 브리지가 `/cctv_{n}/image_raw`로 발행합니다. 사용법은 [control/README.md](../../README.md)의 "Three.js CCTV 실시간 발행"을 봅니다.
 
 ### 지게차 모델
 
