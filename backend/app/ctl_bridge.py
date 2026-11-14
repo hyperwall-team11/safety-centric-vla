@@ -20,6 +20,7 @@ LOGGER = logging.getLogger(__name__)
 CONTRACT_VERSION = "backend-ctl/0.1"
 APPROVED_ACTION_TOPIC = "/safety/approved_action"
 HEARTBEAT_TOPIC = "/safety/heartbeat"
+ESTOP_TOPIC = "/safety/estop"
 LOCAL_FAILURE_CODES = {
     "UNSUPPORTED": "UNSUPPORTED",
     "NOT_APPROVED": "UNSUPPORTED",
@@ -55,6 +56,17 @@ class ActionDispatcher(Protocol):
         robot: Robot,
         zones: list[Zone],
     ) -> dict[str, Any] | None: ...
+
+    def publish_estop(self, active: bool, triggered_by: str = "RULE_ENGINE") -> dict[str, Any]: ...
+
+
+def build_estop_command(active: bool, triggered_by: str = "RULE_ENGINE") -> dict[str, Any]:
+    """제어 계약 6장 E-Stop 명령. 해제(`active=false`)는 정지 신호만 풀고 복귀는 RESUME으로 한다."""
+    return {
+        "active": bool(active),
+        "triggered_by": triggered_by,
+        "issued_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
 
 
 def topic_segment(robot_id: str) -> str:
@@ -174,6 +186,9 @@ class MockActionDispatcher:
 
     name = "mock"
 
+    def __init__(self) -> None:
+        self.estop_commands: list[dict[str, Any]] = []
+
     def start(self) -> None:
         return None
 
@@ -187,6 +202,11 @@ class MockActionDispatcher:
         zones: list[Zone],
     ) -> None:
         return None
+
+    def publish_estop(self, active: bool, triggered_by: str = "RULE_ENGINE") -> dict[str, Any]:
+        command = build_estop_command(active, triggered_by)
+        self.estop_commands.append(command)
+        return command
 
 
 class Ros2ActionDispatcher:
@@ -219,7 +239,7 @@ class Ros2ActionDispatcher:
         try:
             import rclpy
             from rclpy.node import Node
-            from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+            from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
             from std_msgs.msg import String
         except ImportError as exc:
             raise DispatchError(
@@ -240,6 +260,14 @@ class Ros2ActionDispatcher:
         self._node = node
         self._action_publisher = node.create_publisher(String, APPROVED_ACTION_TOPIC, qos)
         self._heartbeat_publisher = node.create_publisher(String, HEARTBEAT_TOPIC, qos)
+        # control safety_control.interfaces.ESTOP_QOS와 같아야 늦게 뜬 어댑터도 마지막 정지 상태를 받는다.
+        estop_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self._estop_publisher = node.create_publisher(String, ESTOP_TOPIC, estop_qos)
         node.create_timer(0.2, self._publish_heartbeat)
         self._executor_thread = threading.Thread(
             target=rclpy.spin,
@@ -283,6 +311,16 @@ class Ros2ActionDispatcher:
             message = self._string_type()
             message.data = json.dumps(command, ensure_ascii=False, separators=(",", ":"))
             self._action_publisher.publish(message)
+        return command
+
+    def publish_estop(self, active: bool, triggered_by: str = "RULE_ENGINE") -> dict[str, Any]:
+        if self._node is None:
+            raise DispatchError("ROS 2 브리지가 시작되지 않았습니다.")
+        command = build_estop_command(active, triggered_by)
+        message = self._string_type()
+        message.data = json.dumps(command, separators=(",", ":"))
+        with self._lock:
+            self._estop_publisher.publish(message)
         return command
 
     def _publish_heartbeat(self) -> None:

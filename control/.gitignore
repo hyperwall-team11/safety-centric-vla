@@ -9,3 +9,5 @@ mujoco/models/franka_emika_panda/
 
 # 스냅샷·측정 결과물
 outputs/
+node_modules/
+scripts/threejs_cctv/assets/

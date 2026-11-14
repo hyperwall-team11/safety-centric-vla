@@ -1,0 +1,165 @@
+<mujoco model="plant_scene">
+  <!--
+    공장 현장 장면: scenario_scene.xml의 로봇 작업 셀(TIAGo, 금지구역, A·B 작업대, 상자, 작업자)을 그대로 두고
+    주변 설비를 단순 형상(prop_*)으로 배치한다. MuJoCo는 위치·충돌·가림의 기준이고,
+    Three.js 렌더러(scripts/threejs_cctv)가 prop_<종류> geom을 실사형 설비 모델로 덮어 그린다.
+    작업자가 지나다니는 범위의 설비는 모두 여기 있어야 CCTV 가림과 마스크가 맞는다.
+  -->
+  <include file="pal_tiago/tiago.xml"/>
+  <compiler meshdir="pal_tiago/assets/"/>
+
+  <visual>
+    <global offwidth="640" offheight="480" azimuth="135" elevation="-25"/>
+    <headlight ambient="0.4 0.4 0.4" diffuse="0.6 0.6 0.6"/>
+  </visual>
+  <asset>
+    <texture name="floor_texture" type="2d" builtin="checker"
+             rgb1="0.65 0.65 0.65" rgb2="0.45 0.45 0.45" width="256" height="256"/>
+    <material name="floor_material" texture="floor_texture" texrepeat="6 6"/>
+    <material name="table_material" rgba="0.55 0.4 0.25 1"/>
+    <!-- 작업자 실사 텍스처 (MakeHuman CC0 에셋) -->
+    <texture name="worker_body" type="2d" file="worker/body.png"/>
+    <material name="worker_body" texture="worker_body" specular="0.2" shininess="0.2"/>
+    <texture name="worker_male_casualsuit04" type="2d" file="worker/male_casualsuit04.png"/>
+    <material name="worker_male_casualsuit04" texture="worker_male_casualsuit04" specular="0.2" shininess="0.2"/>
+    <texture name="worker_shoes06" type="2d" file="worker/shoes06.png"/>
+    <material name="worker_shoes06" texture="worker_shoes06" specular="0.2" shininess="0.2"/>
+    <texture name="worker_short02" type="2d" file="worker/short02.png"/>
+    <material name="worker_short02" texture="worker_short02" specular="0.2" shininess="0.2"/>
+    <texture name="worker_eyes" type="2d" file="worker/eyes.png"/>
+    <material name="worker_eyes" texture="worker_eyes" specular="0.2" shininess="0.2"/>
+    <texture name="worker_eyebrow001" type="2d" file="worker/eyebrow001.png"/>
+    <material name="worker_eyebrow001" texture="worker_eyebrow001" specular="0.2" shininess="0.2"/>
+    <texture name="worker_eyelashes01" type="2d" file="worker/eyelashes01.png"/>
+    <material name="worker_eyelashes01" texture="worker_eyelashes01" specular="0.2" shininess="0.2"/>
+  </asset>
+
+  <!-- 팔·머리·몸통은 위치 제어, 바퀴는 속도 제어 (원본 tiago_position.xml과 같은 값) -->
+  <default>
+    <default class="position">
+      <position dampratio="1"/>
+    </default>
+  </default>
+  <actuator>
+    <position class="position" name="arm_position_1_position" joint="arm_1_joint" inheritrange="1.0" kp="3000"/>
+    <position class="position" name="arm_position_2_position" joint="arm_2_joint" inheritrange="1.0" kp="3000"/>
+    <position class="position" name="arm_position_3_position" joint="arm_3_joint" inheritrange="1.0" kp="3000"/>
+    <position class="position" name="arm_position_4_position" joint="arm_4_joint" inheritrange="1.0" kp="3000"/>
+    <position class="position" name="arm_position_5_position" joint="arm_5_joint" inheritrange="1.0" kp="500"/>
+    <position class="position" name="arm_position_6_position" joint="arm_6_joint" inheritrange="1.0" kp="500"/>
+    <position class="position" name="arm_position_7_position" joint="arm_7_joint" inheritrange="1.0" kp="500"/>
+    <position class="position" name="gripper_left_finger_position" joint="gripper_left_finger_joint"
+      inheritrange="0.999" forcerange="-5.197 5.197" kp="1000" kv="80"/>
+    <position class="position" name="gripper_right_finger_position" joint="gripper_right_finger_joint"
+      inheritrange="0.999" forcerange="-5.197 5.197" kp="1000" kv="80"/>
+    <position class="position" name="head_1_joint_position" joint="head_1_joint" inheritrange="1.0" kp="20"/>
+    <position class="position" name="head_2_joint_position" joint="head_2_joint" inheritrange="1.0" kp="20"/>
+    <position class="position" name="torso_lift_joint_position" joint="torso_lift_joint" inheritrange="1.0" kp="30000"/>
+    <velocity name="wheel_left_joint_vel" joint="wheel_left_joint" ctrlrange="-5 5" kv="100"/>
+    <velocity name="wheel_right_joint_vel" joint="wheel_right_joint" ctrlrange="-5 5" kv="100"/>
+  </actuator>
+
+  <worldbody>
+    <light pos="1 -2 6" dir="0 0.3 -1"/>
+    <light pos="2 2 5" dir="0 -0.3 -1" diffuse="0.3 0.3 0.3"/>
+    <geom name="floor" type="plane" size="14 11 0.1" material="floor_material"
+          contype="1" conaffinity="1" group="0"/>
+
+    <!-- KeepOutZone: 로봇 작업 셀. 시각 표시만 하고 충돌·안전 판정은 하지 않는다. -->
+    <geom name="keep_out_zone" type="box" pos="1.2 0 0.003" size="0.7 0.6 0.002"
+          rgba="0.9 0.1 0.1 0.35" contype="0" conaffinity="0" group="0" mass="0"/>
+
+    <!-- A구역 작업대 + 부품 상자 -->
+    <geom name="zone_a_marking" type="box" pos="1.2 1.0 0.003" size="0.4 0.3 0.002"
+          rgba="0.2 0.4 0.9 0.35" contype="0" conaffinity="0" group="0" mass="0"/>
+    <body name="table_a" pos="1.2 1.0 0">
+      <geom name="table_a_top" type="box" pos="0 0 0.58" size="0.3 0.25 0.02" material="table_material"
+            contype="1" conaffinity="1" group="0" mass="10"/>
+      <geom name="table_a_leg" type="box" pos="0 0 0.28" size="0.05 0.05 0.28" material="table_material"
+            contype="1" conaffinity="1" group="0" mass="5"/>
+    </body>
+    <body name="part_box" pos="1.2 1.0 0.64">
+      <freejoint name="part_box_joint"/>
+      <!-- 그리퍼 최대 벌림 0.09 m보다 작은 폭 0.06 m -->
+      <geom name="part_box_geom" type="box" size="0.03 0.03 0.04" mass="0.2" rgba="0.95 0.6 0.15 1"
+            contype="1" conaffinity="1" group="0" condim="4" friction="1.5 0.01 0.001"/>
+    </body>
+
+    <!-- B 작업대 (A 작업대와 같은 높이 0.6 m) -->
+    <geom name="zone_b_marking" type="box" pos="1.2 -1.0 0.003" size="0.4 0.3 0.002"
+          rgba="0.2 0.8 0.3 0.35" contype="0" conaffinity="0" group="0" mass="0"/>
+    <body name="table_b" pos="1.2 -1.0 0">
+      <geom name="table_b_top" type="box" pos="0 0 0.58" size="0.3 0.25 0.02" material="table_material"
+            contype="1" conaffinity="1" group="0" mass="10"/>
+      <geom name="table_b_leg" type="box" pos="0 0 0.28" size="0.05 0.05 0.28" material="table_material"
+            contype="1" conaffinity="1" group="0" mass="5"/>
+    </body>
+
+    <!-- CCTV 2대: 서로 다른 방향에서 작업 셀 중심(work_area_center)을 바라본다 -->
+    <body name="work_area_center" pos="1.2 0 0.3"/>
+    <!-- 기둥 위 높은 위치에서 현장을 내려다본다 (실제 공장 CCTV 높이 6~7 m) -->
+    <camera name="cctv_1" pos="2.0 -8.5 6.5" mode="targetbody" target="work_area_center" fovy="60"/>
+    <camera name="cctv_2" pos="8.5 5.0 6.0" mode="targetbody" target="work_area_center" fovy="60"/>
+    <!-- 주변 설비 (정적, 충돌 있음): CCTV 기둥, 로봇 자동화 셀(펜스·로봇팔·조작반), 저장 탱크, 배관 랙,
+         지게차, 전기실, 밀폐공간 용기, 안전 난간. size는 box 반길이, cylinder (반지름, 반높이) -->
+    <geom name="prop_pole_1" type="cylinder" pos="2.0 -8.75 3.2" size="0.12 3.2" rgba="0.6 0.6 0.6 1" contype="1" conaffinity="1" group="0" mass="0"/>
+    <geom name="prop_pole_2" type="cylinder" pos="8.75 5.15 3.0" size="0.12 3.0" rgba="0.6 0.6 0.6 1" contype="1" conaffinity="1" group="0" mass="0"/>
+    <geom name="prop_fence_1" type="box" pos="-4.5 5.0 1.1" size="2.5 0.03 1.1" rgba="0.6 0.6 0.6 1" contype="1" conaffinity="1" group="0" mass="0"/>
+    <geom name="prop_fence_2" type="box" pos="-4.5 1.0 1.1" size="2.5 0.03 1.1" rgba="0.6 0.6 0.6 1" contype="1" conaffinity="1" group="0" mass="0"/>
+    <geom name="prop_fence_3" type="box" pos="-7.0 3.0 1.1" size="0.03 2.0 1.1" rgba="0.6 0.6 0.6 1" contype="1" conaffinity="1" group="0" mass="0"/>
+    <geom name="prop_fence_4" type="box" pos="-2.0 3.0 1.1" size="0.03 2.0 1.1" rgba="0.6 0.6 0.6 1" contype="1" conaffinity="1" group="0" mass="0"/>
+    <geom name="prop_arm_1" type="cylinder" pos="-5.8 3.8 1.0" size="0.35 1.0" rgba="0.6 0.6 0.6 1" contype="1" conaffinity="1" group="0" mass="0"/>
+    <geom name="prop_arm_2" type="cylinder" pos="-4.2 2.2 1.0" size="0.35 1.0" rgba="0.6 0.6 0.6 1" contype="1" conaffinity="1" group="0" mass="0"/>
+    <geom name="prop_arm_3" type="cylinder" pos="-3.2 4.0 1.0" size="0.35 1.0" rgba="0.6 0.6 0.6 1" contype="1" conaffinity="1" group="0" mass="0"/>
+    <geom name="prop_console_1" type="box" pos="-1.6 2.0 0.6" size="0.3 0.25 0.6" rgba="0.6 0.6 0.6 1" contype="1" conaffinity="1" group="0" mass="0"/>
+    <geom name="prop_tank_1" type="cylinder" pos="-3.5 -4.5 2.0" size="1.1 2.0" rgba="0.6 0.6 0.6 1" contype="1" conaffinity="1" group="0" mass="0"/>
+    <geom name="prop_tank_2" type="cylinder" pos="-0.8 -5.4 2.0" size="1.1 2.0" rgba="0.6 0.6 0.6 1" contype="1" conaffinity="1" group="0" mass="0"/>
+    <geom name="prop_piperack_1" type="box" pos="0.0 8.0 2.5" size="7.0 0.8 2.5" rgba="0.6 0.6 0.6 1" contype="1" conaffinity="1" group="0" mass="0"/>
+    <geom name="prop_forklift_1" type="box" pos="4.6 -3.0 1.1" size="1.3 0.6 1.1" rgba="0.6 0.6 0.6 1" contype="1" conaffinity="1" group="0" mass="0"/>
+    <geom name="prop_building_1" type="box" pos="9.2 -2.6 2.0" size="1.8 2.0 2.0" rgba="0.6 0.6 0.6 1" contype="1" conaffinity="1" group="0" mass="0"/>
+    <geom name="prop_drum_1" type="cylinder" pos="3.0 -5.2 0.8" size="0.8 0.6" euler="90 0 0" rgba="0.6 0.6 0.6 1" contype="1" conaffinity="1" group="0" mass="0"/>
+    <geom name="prop_rail_1" type="box" pos="-6.0 -2.0 0.55" size="2.0 0.04 0.55" rgba="0.6 0.6 0.6 1" contype="1" conaffinity="1" group="0" mass="0"/>
+    <geom name="prop_rail_2" type="box" pos="6.0 6.5 0.55" size="2.5 0.04 0.55" rgba="0.6 0.6 0.6 1" contype="1" conaffinity="1" group="0" mass="0"/>
+    <!-- 밀폐공간 맨홀 (바닥 표시, 충돌 없음) -->
+    <geom name="prop_manhole_1" type="cylinder" pos="1.6 -4.3 0.004" size="0.7 0.003" rgba="0.1 0.1 0.1 1" contype="0" conaffinity="0" group="0" mass="0"/>
+
+    <!-- 작업자 (mocap): simulation.WorkerScript가 경로점을 따라 위치를 갱신한다.
+         worker 는 발 아래 기준점이고, worker_* 부위 바디에 실사 피부·옷 skin(models/worker)이 붙는다.
+         WorkerScript.apply 가 걷기 자세(models/worker/walk.npy)를 순운동학으로 계산해 각 부위 mocap 을 갱신한다. -->
+    <body name="worker" mocap="true" pos="3.4 1.8 0"/>
+    <body name="worker_pelvis" mocap="true" pos="3.4 1.8 0.945"/>
+    <body name="worker_lower_torso" mocap="true" pos="3.4 1.8 1.025"/>
+    <body name="worker_chest" mocap="true" pos="3.4 1.8 1.245"/>
+    <body name="worker_head" mocap="true" pos="3.4 1.8 1.525"/>
+    <body name="worker_right_upper_arm" mocap="true" pos="3.4 1.59 1.445"/>
+    <body name="worker_right_forearm" mocap="true" pos="3.4 1.59 1.155"/>
+    <body name="worker_left_upper_arm" mocap="true" pos="3.4 2.01 1.445"/>
+    <body name="worker_left_forearm" mocap="true" pos="3.4 2.01 1.155"/>
+    <body name="worker_right_thigh" mocap="true" pos="3.4 1.71 0.895"/>
+    <body name="worker_right_shin" mocap="true" pos="3.4 1.71 0.475"/>
+    <body name="worker_right_foot" mocap="true" pos="3.4 1.71 0.045"/>
+    <body name="worker_left_thigh" mocap="true" pos="3.4 1.89 0.895"/>
+    <body name="worker_left_shin" mocap="true" pos="3.4 1.89 0.475"/>
+    <body name="worker_left_foot" mocap="true" pos="3.4 1.89 0.045"/>
+    <!-- 추가 작업자 2명 (mocap 기준점만). 실사 외형은 Three.js 렌더러가 작업자 1과 같은 skin으로 그린다. -->
+    <body name="worker_2" mocap="true" pos="-1.15 1.6 0"/>
+    <body name="worker_3" mocap="true" pos="6.6 0.0 0"/>
+  </worldbody>
+
+  <deformable>
+    <skin name="worker_body" file="../../worker/body.skn" material="worker_body"/>
+    <skin name="worker_male_casualsuit04" file="../../worker/male_casualsuit04.skn" material="worker_male_casualsuit04" inflate="0.001"/>
+    <skin name="worker_shoes06" file="../../worker/shoes06.skn" material="worker_shoes06" inflate="0.001"/>
+    <skin name="worker_short02" file="../../worker/short02.skn" material="worker_short02" inflate="0.001"/>
+    <skin name="worker_eyes" file="../../worker/eyes.skn" material="worker_eyes"/>
+    <skin name="worker_eyebrow001" file="../../worker/eyebrow001.skn" material="worker_eyebrow001" inflate="0.001"/>
+    <skin name="worker_eyelashes01" file="../../worker/eyelashes01.skn" material="worker_eyelashes01" inflate="0.001"/>
+  </deformable>
+
+  <keyframe>
+    <!-- TIAGo 29 (원본 home, 바닥 z=0 기준으로 베이스 높이만 0.005) + 상자 freejoint 7 -->
+    <key name="home" ctrl="0.2 -1.34 -0.2 1.94 -1.57 1.37 0 0 0 0 0 0.15 0 0"
+      qpos="0 0 0.005 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0.15 0 0 0.20 -1.34 -0.20 1.94 -1.57 1.37 0.0 0 0
+            1.2 1.0 0.64 1 0 0 0"/>
+  </keyframe>
+</mujoco>

@@ -98,6 +98,10 @@ docs(ont): ActionProposal 상태 전이 설명 추가
 - [ ] 온톨로지 스키마나 API가 바뀌었다면 문서에 반영했는가
 - [ ] 비밀키, 모델 가중치, 대용량 데이터가 커밋에 들어가지 않았는가
 
+### 자동 테스트 (CI)
+
+`develop`·`main` 대상 PR과 두 브랜치 push마다 [.github/workflows/tests.yml](.github/workflows/tests.yml)이 `backend`(`python -m pytest`, Python 3.11)와 `control`(`pixi run test`)을 돌립니다. 실패하면 PR 체크가 빨간색이 되며, 고친 뒤 다시 push합니다. Three.js 렌더·GPU가 필요한 측정은 CI 범위가 아니므로 로컬에서 확인합니다.
+
 ### PR 본문
 
 PR을 열면 [.github/pull_request_template.md](.github/pull_request_template.md)가 자동으로 채워집니다. 섹션 구조와 제목을 그대로 두고 내용만 작성하며, 해당 없는 섹션은 지우지 말고 `해당 없음`이라고 적습니다. `gh pr create --body`나 AI 도구로 본문을 직접 넣을 때도 이 템플릿 구조를 따릅니다(AI 도구용 규칙은 [AGENTS.md](AGENTS.md)).
