@@ -4,6 +4,7 @@ import asyncio
 import logging
 import threading
 from hashlib import sha256
+from math import dist
 from os import getenv
 from pathlib import Path
 from time import perf_counter
@@ -32,6 +33,7 @@ from .ctl_bridge import (
 )
 from .models import (
     ActionProposal,
+    ActionType,
     AdapterFailureCode,
     AdapterResultReport,
     AdapterResultStatus,
@@ -108,6 +110,8 @@ TASK_ORDER_RESPONSE_HEADERS = {
         "schema": {"type": "string", "enum": ["true", "false"]},
     },
 }
+# control/robot_adapter/diff_drive_core.py의 도착 판정 허용 오차와 동일하다.
+TRAJECTORY_START_TOLERANCE_M = 0.05
 STATE_HEARTBEAT_SECONDS = 15.0
 # UI 상태 스트림 부하 제한이며 ROS 2 안전 heartbeat·판정 주기와 무관하다.
 STATE_MIN_PUSH_INTERVAL_SECONDS = 0.2
@@ -223,6 +227,19 @@ def normalize_idempotency_key(idempotency_key: str | None) -> str | None:
 def make_request_fingerprint(request: BaseModel) -> str:
     canonical_request = request.model_dump_json(exclude_none=False)
     return sha256(canonical_request.encode("utf-8")).hexdigest()
+
+
+def trajectory_start_distance_m(robot: Robot, trajectory_start: dict) -> float | None:
+    position = trajectory_start.get("position")
+    if not isinstance(position, dict):
+        return None
+    try:
+        return dist(
+            (robot.pose.position.x, robot.pose.position.y, robot.pose.position.z),
+            (float(position["x"]), float(position["y"]), float(position["z"])),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def seed_rules() -> None:
@@ -625,7 +642,8 @@ def generate_action_proposal(
             )
 
         try:
-            proposal = planner.plan(task, robot, request)
+            destination_zone = store.zones.get(getattr(task.destination, "zone_id", None))
+            proposal = planner.plan(task, robot, request, destination_zone=destination_zone)
         except ActionPlanningError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -794,14 +812,44 @@ def execute_action(proposal_id: str) -> ActionProposal:
         robot = store.robots[proposal.robot_id]
         task = store.tasks[proposal.task_id]
         rule_results, hazard_ids, estop_requested = evaluate_current_safety(proposal, task, robot)
-        evaluated_in_ms = (perf_counter() - started_at) * 1000
-        if not all(result.passed for result in rule_results):
-            proposal.status = ProposalStatus.HELD
-            perception_rules = {"rule-observation-gap", "rule-safety-distance"}
-            requires_estop = estop_requested or any(
-                not result.passed and result.rule_id not in perception_rules for result in rule_results
+        start_rule_id = "precondition-trajectory-start"
+        if (
+            proposal.action_type == ActionType.MOVE_TO
+            and proposal.model_name == planner.model_name
+            and proposal.trajectory
+        ):
+            start_distance_m = trajectory_start_distance_m(robot, proposal.trajectory[0])
+            start_matches = (
+                robot.pose.frame_id == proposal.frame_id
+                and start_distance_m is not None
+                and start_distance_m <= TRAJECTORY_START_TOLERANCE_M
             )
-            task.status = TaskStatus.HELD
+            rule_results.append(RuleResult(
+                rule_id=start_rule_id,
+                passed=start_matches,
+                reason=(
+                    f"경로 출발점 허용 오차 이내({start_distance_m:.3f}m)"
+                    if start_matches
+                    else (
+                        "로봇 위치가 경로 출발점과 "
+                        f"{TRAJECTORY_START_TOLERANCE_M:.2f}m 넘게 다르거나 좌표계가 달라 "
+                        "재계획이 필요합니다."
+                    )
+                ),
+            ))
+
+        evaluated_in_ms = (perf_counter() - started_at) * 1000
+        failed_rule_ids = {result.rule_id for result in rule_results if not result.passed}
+        if failed_rule_ids:
+            requires_replan = failed_rule_ids == {start_rule_id}
+            if requires_replan:
+                proposal.status = ProposalStatus.REJECTED
+                task.status = TaskStatus.PLANNING
+            else:
+                proposal.status = ProposalStatus.HELD
+                task.status = TaskStatus.HELD
+            reject_only_rules = {"rule-observation-gap", "rule-safety-distance", start_rule_id}
+            requires_estop = estop_requested or bool(failed_rule_ids - reject_only_rules)
             if requires_estop:
                 robot.status = RobotStatus.ESTOP
                 robot.updated_at = utc_now()

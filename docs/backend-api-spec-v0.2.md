@@ -209,6 +209,17 @@ MANIPULATE 예:
 
 `GET /task-orders/{task_id}/action-proposals`는 해당 TaskOrder의 Proposal만 배열로 반환한다.
 
+자동 생성한 `MOVE_TO`는 로봇의 현재 위치와 좌표 목적지 또는
+`Zone.geometry.navigation_target`을 잇는 직선 `trajectory`를 채운다.
+출발점과 목적지의 좌표계가 일치해야 한다. 목적지 좌표가 없거나 좌표계가
+다르면 경로는 `null`이며, 경로 검사가 필요한 경우 안전 게이트가 거절한다.
+
+이 직선은 백엔드의 사전 검사에 사용하는 예상 경로다. 현재 CTL 이동 제어기는
+목표 좌표와 주행 중 `/odom`을 바탕으로 속도와 방향을 계산하므로 실제 궤적과의
+일치는 보장되지 않는다. 실행 직전 Robot 위치와 예상 경로 출발점은 CTL diff-drive의
+도착 판정과 같은 0.05m 허용 오차로 비교하며, 이를 넘으면 Proposal을 거절하고 재계획한다.
+CTL의 최종 실행 경로와 실시간 위치를 안전 검증에 반영하는 작업은 후속 연동 범위다.
+
 ### 3.4 ActionProposal
 
 | 필드 | 타입 | 규칙 |
@@ -263,6 +274,7 @@ TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 
 - `APPROVED`만 실행할 수 있다.
 - 실행 직전 같은 안전 규칙을 다시 평가한다.
 - 재평가 실패 시 Proposal과 TaskOrder를 `HELD`로 바꾸고 `409`를 반환한다. 관측 공백 또는 최소 안전거리만 위반하면 `REJECT`를 기록한다. E-Stop 거리 위반 또는 기존 규칙 재평가 실패 시 Robot을 `ESTOP`으로 바꾸고 `triggered_by=RULE_ENGINE`인 `ESTOP` 로그를 남긴다.
+- 자동 생성한 MOVE_TO의 출발 위치나 좌표계가 실행 직전 백엔드에 저장된 로봇 위치와 다르면 전송을 차단한다. 출발점만 불일치하면 Proposal을 `REJECTED`, TaskOrder를 `PLANNING`으로 바꿔 새 제안을 생성할 수 있다.
 - 통과 시 Proposal을 `EXECUTING`, TaskOrder를 `RUNNING`, Robot을 `MOVING`으로 바꾸고 Mock adapter 전달을 나타내는 `EXECUTE` 로그를 남긴다.
 - 평가와 실행 직전 재평가 로그에는 `evaluated_in_ms`를 기록한다.
 - KPI 9 proxy는 현재 명령 입력부터 이 API 응답까지 측정한다. 어댑터 ACK 시각은 Backend에 저장하지 않으므로 KPI 9의 최종 명령→ACK 지연에는 사용할 수 없다.
