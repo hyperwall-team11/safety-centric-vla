@@ -44,3 +44,8 @@ roundtrip = { cmd = "bash scripts/roundtrip.sh", depends-on = ["build"] }
 fetch-models = { cmd = "bash scripts/fetch_models.sh" }
 arm = { cmd = "python mujoco/manipulator.py", depends-on = ["fetch-models"] }
 arm-view = { cmd = "mjpython mujoco/manipulator.py --view", depends-on = ["fetch-models"] }
+# 로봇 팔 4대 (UR5e·UR10e·iiwa14·Panda, 이슈 #95)
+arms-demo = { cmd = "python mujoco/arms.py --snapshot outputs/arms", depends-on = ["fetch-models"] }
+bridge-arms = { cmd = "bash -c 'source ros2_ws/install/setup.bash && ros2 run mujoco_bridge bridge --ros-args -p arms:=true'", depends-on = ["build", "fetch-models"] }
+arm-adapters = { cmd = "bash -c 'source ros2_ws/install/setup.bash && ros2 launch robot_adapter arms.launch.py'", depends-on = ["build", "fetch-models"] }
+arm-cycle-demo = { cmd = "bash -c 'source ros2_ws/install/setup.bash && ros2 run robot_adapter arm_cycle_demo'", depends-on = ["build"] }

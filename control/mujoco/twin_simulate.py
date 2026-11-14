@@ -6,6 +6,10 @@ Backend가 보낸 후보 행동과 온톨로지 상태로 트윈(``twin.py``)을
     python mujoco/twin_simulate.py                       # http://127.0.0.1:8100/twin/simulate
     python mujoco/twin_simulate.py --request req.json    # 서버 없이 요청 한 건 판정
 
+MANIPULATE(이슈 #95)는 ``state.robots``에 ``robot_model``이 있는 로봇 팔만 받는다. 실제 팔 모델(arms.py)을
+그 위치에 붙여 PICK·PLACE 관절 궤적을 돌리고, 팔·공구가 장애물·물체·다른 로봇·작업자와 닿는지 본다.
+요청 형식은 control/README.md "MANIPULATE 사전 시뮬레이션 (잠정)"에 있다.
+
 결과는 시뮬레이션용 단순화 모델(로봇 원기둥, 정지한 작업자)의 접촉 검사다. 안전 보장으로 해석하지 않고,
 Safety Gate의 ``SAFETY_DISTANCE`` 판정을 대신하지 않는다.
 """
@@ -21,10 +25,13 @@ from pathlib import Path
 
 import mujoco
 
-from twin import ROBOT_SHAPES, WORKER_BODY_RADIUS_M, TwinError, build_twin
+import numpy as np
+
+import arms
+from twin import ROBOT_SHAPES, WORKER_BODY_RADIUS_M, WORKER_MARGIN_M, TwinError, build_twin, build_twin_xml
 
 CONTRACT_VERSION = "backend-ctl/0.2"
-SUPPORTED_ACTIONS = {"MOVE_TO"}  # 제어 계약 13.1: 첫 버전은 MOVE_TO만
+SUPPORTED_ACTIONS = {"MOVE_TO", "MANIPULATE"}  # MANIPULATE는 #95에서 추가 (형식은 잠정)
 DEFAULT_PORT = 8100  # 제어 계약 13장 기본 주소 http://127.0.0.1:8100
 
 # 아래 세 값은 #50(ONT 판정 기준·시간 제한)이 확정되기 전의 잠정값이다. 확정되면 그 값으로 바꾼다.
@@ -117,6 +124,8 @@ def _simulate(req, started):
     if not isinstance(state, dict):
         raise SimulationError("state is required")
     check_snapshot_fresh(req.get("snapshot_at"), state.get("workers"))
+    if action.get("action_type") == "MANIPULATE":
+        return _simulate_manipulate(action, state, snapshot_id, started)
 
     target = action.get("target_pose") or {}
     if target.get("frame_id") != "world":
@@ -195,6 +204,152 @@ def _simulate(req, started):
     else:
         result = "PASS"
     return _response(result, snapshot_id, started, min_distance=min_gap, horizon=t)
+
+
+OBJECT_MATCH_TOLERANCE_M = 0.05  # PICK target_pose와 state.objects 위치가 이만큼 넘게 다르면 판정 불가
+
+
+def _vec3(value, name):
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        raise SimulationError(f"{name} needs [x, y, z]")
+    out = [float(v) for v in value]
+    if not all(math.isfinite(v) for v in out):
+        raise SimulationError(f"{name} must be finite")
+    return out
+
+
+def build_manipulation_twin(state):
+    """트윈 장면에 robot_model이 있는 로봇 팔을 실제 모델로 붙인다. (model, data, {robot_id: ArmKinematics})."""
+    spec = mujoco.MjSpec.from_string(build_twin_xml(state))
+    root = arms.scene_root(spec)
+    homes = {}
+    for robot in state.get("robots") or []:
+        key = robot.get("robot_model")
+        if key in arms.ARM_MODELS:
+            pos = _vec3(robot.get("position"), f"robot {robot['robot_id']}.position")
+            homes[robot["robot_id"]] = (key, arms.attach_arm(root, key, f"robot:{robot['robot_id']}/", pos,
+                                                            float(robot.get("yaw_rad") or 0.0)))
+    model = root.compile()
+    data = mujoco.MjData(model)
+    kins = {}
+    for robot in state.get("robots") or []:
+        rid = robot["robot_id"]
+        if rid not in homes:
+            continue
+        key, home = homes[rid]
+        kin = arms.ArmKinematics(model, key, f"robot:{rid}/", home)
+        joints = robot.get("joint_positions")
+        if joints is None:
+            q = kin.home
+        elif isinstance(joints, (list, tuple)) and len(joints) == kin.dof:
+            q = np.array([float(v) for v in joints])
+        else:
+            raise SimulationError(f"robot {rid}: joint_positions needs {kin.dof} values")
+        kin.set(data, q)
+        kins[rid] = kin
+    mujoco.mj_forward(model, data)
+    return model, data, kins
+
+
+def _simulate_manipulate(action, state, snapshot_id, started):
+    robot_id = action.get("robot_id")
+    robots = {r.get("robot_id"): r for r in state.get("robots") or []}
+    if robot_id not in robots:
+        raise SimulationError(f"robot {robot_id!r} is not in state.robots")
+    robot = robots[robot_id]
+    if robot.get("robot_model") not in arms.ARM_MODELS:
+        raise SimulationError(f"robot {robot_id!r}: MANIPULATE needs robot_model in "
+                              f"{sorted(arms.ARM_MODELS)}")
+    params = action.get("parameters") or {}
+    manipulation = str(params.get("manipulation", "")).upper()
+    if manipulation not in ("PICK", "PLACE"):
+        raise SimulationError("parameters.manipulation must be PICK or PLACE")
+    object_id = params.get("object_id")
+    objects = {o.get("object_id"): o for o in state.get("objects") or []}
+    if object_id not in objects:
+        raise SimulationError(f"object {object_id!r} is not in state.objects")
+    target = params.get("target_pose") or action.get("target_pose") or {}
+    if target.get("frame_id") != "world":
+        raise SimulationError("target_pose.frame_id must be 'world'")
+    goal = _vec3(target.get("position"), "target_pose.position")
+    speed = float(action.get("speed_limit"))
+    if not (math.isfinite(speed) and speed > 0):
+        raise SimulationError("speed_limit must be finite and > 0")
+    holding = robot.get("holding_object_id")
+    if manipulation == "PICK":
+        if holding is not None:
+            raise SimulationError(f"robot {robot_id!r} already holds {holding!r}")
+        gap_to_object = math.dist(_vec3(objects[object_id].get("position"), "object.position"), goal)
+        if gap_to_object > OBJECT_MATCH_TOLERANCE_M:
+            raise SimulationError(f"target_pose is {gap_to_object:.3f} m from object {object_id!r}")
+    elif holding != object_id:
+        raise SimulationError(f"robot {robot_id!r} does not hold {object_id!r}")
+
+    robots_with_type = []
+    for r in state.get("robots") or []:
+        r = dict(r)
+        r.setdefault("robot_type", arms.ROBOT_TYPE if r.get("robot_model") in arms.ARM_MODELS
+                     else CONSERVATIVE_ROBOT_TYPE)
+        robots_with_type.append(r)
+    model, data, kins = build_manipulation_twin({**state, "robots": robots_with_type})
+    kin = kins[robot_id]
+    obj_mocap = model.body_mocapid[model.body(f"object:{object_id}").id]
+    obj_geom = model.geom(f"object:{object_id}").id
+    if manipulation == "PLACE":
+        data.mocap_pos[obj_mocap] = kin.tcp(data)  # 들고 있는 물체는 TCP에 있다
+        mujoco.mj_forward(model, data)
+    workers = [g for g in range(model.ngeom) if model.geom(g).name.startswith("worker:")]
+    fromto = np.zeros(6)
+
+    def gap():
+        # 팔·공구 표면과 작업자 몸 표면 사이 거리. 트윈의 작업자 캡슐에는 CV 여유 반경이 더해져 있어 다시 더한다
+        best = None
+        for g in kin.geom_ids:
+            for w in workers:
+                d = mujoco.mj_geomDistance(model, data, g, w, 10.0, fromto) + WORKER_MARGIN_M
+                best = d if best is None else min(best, d)
+        return best
+
+    def contact():
+        own = kin.body_ids
+        for c in data.contact[:data.ncon]:
+            b1, b2 = model.geom_bodyid[c.geom1], model.geom_bodyid[c.geom2]
+            mine1, mine2 = b1 in own, b2 in own
+            if mine1 == mine2:
+                continue  # 다른 물체끼리이거나 팔 자신의 링크끼리
+            other = c.geom2 if mine1 else c.geom1
+            if other == obj_geom:
+                continue  # 잡는 대상 물체와의 접촉은 정상
+            return True
+        return False
+
+    plan = arms.plan_manipulation(kin, data, kin.get(data), manipulation, goal, speed,
+                                  dt=float(model.opt.timestep), holding=manipulation == "PLACE")
+    min_gap = gap()
+    if contact():
+        return _response("COLLISION", snapshot_id, started, min_distance=min_gap, contact_at=0.0)
+    t = 0.0
+    for p in plan.points:
+        if p.t > MAX_HORIZON_S:
+            return _response("GOAL_NOT_REACHED", snapshot_id, started, min_distance=min_gap, horizon=t,
+                             detail=f"plan needs {plan.duration:.1f}s > {MAX_HORIZON_S}s")
+        t = p.t
+        kin.set(data, p.q)
+        mujoco.mj_kinematics(model, data)
+        if p.holding:
+            data.mocap_pos[obj_mocap] = kin.tcp(data)
+        mujoco.mj_forward(model, data)
+        g = gap()
+        if g is not None:
+            min_gap = g if min_gap is None else min(min_gap, g)
+        if contact():
+            return _response("COLLISION", snapshot_id, started, min_distance=min_gap, contact_at=t, horizon=t)
+    if min_gap is not None and min_gap < UNSAFE_DISTANCE_M:
+        return _response("UNSAFE_DISTANCE", snapshot_id, started, min_distance=min_gap, horizon=t)
+    if not plan.reached:
+        return _response("GOAL_NOT_REACHED", snapshot_id, started, min_distance=min_gap, horizon=t,
+                         detail=plan.reason)
+    return _response("PASS", snapshot_id, started, min_distance=min_gap, horizon=t)
 
 
 class Handler(BaseHTTPRequestHandler):

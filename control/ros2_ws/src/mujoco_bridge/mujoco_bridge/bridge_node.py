@@ -7,6 +7,11 @@
     ros2 run mujoco_bridge bridge --ros-args -p robot:=simple      # 단순 시험용 바퀴 로봇
     ros2 run mujoco_bridge bridge --ros-args -p worker_motion:=false -p camera_hz:=10.0
     mjpython <install>/lib/mujoco_bridge/bridge --ros-args -p viewer:=true   # 뷰어 (macOS)
+    ros2 run mujoco_bridge bridge --ros-args -p arms:=true         # 공장 현장 + 로봇 팔 4대 (이슈 #95)
+
+arms:=true이면 plant_scene.xml에 팔 4대(arms.PLANT_ARMS)를 더한 장면을 쓰고(model_path 무시), 팔마다
+/<seg>/arm/joint_command(JointState 위치 목표)·/<seg>/arm/gripper(Bool, 닫힘)를 구독해
+/<seg>/joint_states를 발행한다. <seg>는 robot_id의 토픽용 이름(arm-ur5e → arm_ur5e). 팔 명령은 robot_adapter의 arm_adapter가 보낸다.
 
 물리와 렌더는 타이머를 나눈다. 물리 타이머는 시뮬 시각이 실제 시각을 따라가도록 필요한 만큼 스텝을 돌리고
 (기본 timestep 0.002 s = 500Hz), 카메라 타이머는 camera_hz로 렌더한다. 모든 콜백은 rclpy.spin을 돌리는
@@ -45,6 +50,12 @@ def load_modules(mujoco_dir: str):
     return simulation, scenario
 
 
+def load_arms(mujoco_dir: str):
+    sys.path.insert(0, mujoco_dir)
+    import arms
+    return arms
+
+
 def make_tf(stamp, parent, child, pos, quat):
     tf = TransformStamped()
     tf.header.stamp = stamp
@@ -77,8 +88,17 @@ class MujocoBridge(Node):
         use_cameras = self.declare_parameter("cameras", True).value
         use_worker = self.declare_parameter("worker_motion", True).value
         use_viewer = self.declare_parameter("viewer", False).value
+        use_arms = self.declare_parameter("arms", False).value
 
-        self.sim = simulation.DiffDriveSim(robot, model_path)
+        self.plant_arms = None
+        if use_arms:
+            arms = load_arms(mujoco_dir)
+            model, data, kins = arms.build_plant_with_arms()
+            self.sim = simulation.DiffDriveSim(robot, model=model, data=data)
+            self.plant_arms = arms.PlantArms(model, data, kins)
+            model_path = arms.PLANT_SCENE.name + " + arms"
+        else:
+            self.sim = simulation.DiffDriveSim(robot, model_path)
         m = self.sim.model
         self.last_cmd_at = None
         self.wall_start = time.monotonic()
@@ -123,6 +143,17 @@ class MujocoBridge(Node):
             # 물리 타이머마다 그리면 카메라 렌더가 밀리므로 화면 갱신은 30Hz로 따로
             self.create_timer(1.0 / 30.0, self._sync_viewer)
 
+        self.arm_joint_pubs = {}
+        if self.plant_arms:
+            from safety_control.interfaces import topic_segment
+            for rid in self.plant_arms.kins:
+                seg = topic_segment(rid)  # arm-ur5e → arm_ur5e (ROS 토픽 이름 규칙)
+                self.create_subscription(JointState, f"/{seg}/arm/joint_command",
+                                         lambda msg, r=rid: self._on_arm_command(r, msg), 10)
+                self.create_subscription(Bool, f"/{seg}/arm/gripper",
+                                         lambda msg, r=rid: self._on_gripper(r, msg), 10)
+                self.arm_joint_pubs[rid] = self.create_publisher(JointState, f"/{seg}/joint_states", 10)
+
         self.create_subscription(Twist, "/cmd_vel", self._on_cmd_vel, 10)
         self.odom_pub = self.create_publisher(Odometry, "/odom", 10)
         self.joint_pub = self.create_publisher(JointState, "/joint_states", 10)
@@ -137,12 +168,22 @@ class MujocoBridge(Node):
             f"MuJoCo bridge ready: {robot} ({model_path or self.sim.spec.model_path.name}), "
             f"max linear {max_linear:.2f} m/s, joints {len(self.joint_names)}, "
             f"cameras {self.sensors or 'off'} @ {self.camera_hz} Hz {self.image_width}x{self.image_height}, "
-            f"worker motion {'on' if self.worker else 'off'}")
+            f"worker motion {'on' if self.worker else 'off'}, "
+            f"arms {sorted(self.plant_arms.kins) if self.plant_arms else 'off'}")
 
     # ---- 입력 ----
     def _on_cmd_vel(self, msg: Twist):
         self.sim.set_velocity(msg.linear.x, msg.angular.z)
         self.last_cmd_at = time.monotonic()
+
+    def _on_arm_command(self, robot_id, msg: JointState):
+        try:
+            self.plant_arms.set_target(self.sim.data, robot_id, list(msg.position))
+        except ValueError as exc:
+            self.get_logger().warning(str(exc))
+
+    def _on_gripper(self, robot_id, msg: Bool):
+        self.plant_arms.set_gripper(self.sim.data, robot_id, bool(msg.data))
 
     # ---- 물리 ----
     def _physics(self):
@@ -156,6 +197,8 @@ class MujocoBridge(Node):
             if self.worker:
                 self.worker.apply(self.sim.model, self.sim.data)
             self.sim.step(min(lag, MAX_CATCHUP_S))
+            if self.plant_arms:
+                self.plant_arms.after_step(self.sim.data)
         if now - self.last_rtf_log >= 10.0:
             rtf = (self.sim.time - self.sim_start) / (now - self.wall_start)
             self.get_logger().info(f"sim {self.sim.time:.1f} s / wall {now - self.wall_start:.1f} s "
@@ -193,6 +236,16 @@ class MujocoBridge(Node):
         js.position = [float(d.qpos[q]) for q, _ in self.joint_adr]
         js.velocity = [float(d.qvel[v_]) for _, v_ in self.joint_adr]
         self.joint_pub.publish(js)
+
+        for rid, pub in self.arm_joint_pubs.items():
+            q, dq = self.plant_arms.joint_state(d, rid)
+            kin = self.plant_arms.kins[rid]
+            arm_js = JointState()
+            arm_js.header.stamp = stamp
+            arm_js.name = kin.joint_names
+            arm_js.position = [float(v) for v in q]
+            arm_js.velocity = [float(v) for v in dq]
+            pub.publish(arm_js)
 
         if self.worker:
             m = self.sim.model

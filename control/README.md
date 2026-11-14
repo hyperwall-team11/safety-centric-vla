@@ -16,6 +16,7 @@ ROS 2 제어 어댑터, 안전 경로(HOLD·E-Stop), MuJoCo 시뮬레이션 환�
 | CT-03 | Backend 승인 명령·RESULT 연동, `proposal_id` 중복 실행 방지 | 완료 | `pixi run test` |
 | #54 | MuJoCo ② 디지털 트윈 재구성: 온톨로지 상태(Robot·Worker 스냅샷·Zone)로 장면 생성, 정답 대비 위치 오차 | 완료 | `pixi run test` |
 | #53 | MuJoCo ② 사전 시뮬레이션 서비스 `POST /twin/simulate`: `MOVE_TO` 경로 접촉·안전거리·목표 도달 판정 (판정 수치는 #50 확정 전 잠정값) | 완료 | `pixi run test`, `pixi run twin-sim` |
+| #95 | 로봇 팔 공통 어댑터(UR5e·UR10e·iiwa14·Panda), 창고형 적재·포장 구역, `MANIPULATE` 사전 시뮬레이션 (요청 형식 잠정) | 완료 | `pixi run arms-demo`, `pixi run test` |
 
 다음 단계는 Backend와 TIAGo 어댑터를 함께 띄운 통합 시나리오 자동화입니다.
 
@@ -201,7 +202,7 @@ pixi run twin-sim                                          # http://127.0.0.1:81
 python mujoco/twin_simulate.py --request req.json          # 서버 없이 요청 한 건 판정
 ```
 
-- 지원 범위: `MOVE_TO`만 받습니다. 다른 `action_type`은 `ERROR`입니다.
+- 지원 범위: `MOVE_TO`와 `MANIPULATE`(#95, 아래 "로봇 팔")를 받습니다. 다른 `action_type`은 `ERROR`입니다.
 - 동작: 로봇을 현재 위치에서 `target_pose`까지 `speed_limit`으로 직선 이동시키며 0.01 s마다 MuJoCo 접촉을 검사합니다. 작업자는 스냅샷 위치에 멈춰 있다고 가정합니다(이동 예측 없음).
 - `result` 우선순위: `COLLISION`(이동하는 로봇이 여유 반경 포함 작업자 캡슐이나 다른 로봇과 접촉) → `UNSAFE_DISTANCE`(몸 표면 사이 거리가 `UNSAFE_DISTANCE_M` 미만) → `GOAL_NOT_REACHED`(최대 구간 안에 목표 0.05 m 이내 미도달) → `PASS`.
 - `min_worker_distance_m`은 로봇과 작업자 **몸 표면 사이** 최소 거리입니다(CV 여유 반경 제외). 작업자가 없으면 `null`, 접촉이 없으면 `first_contact_at_s`가 `null`입니다. `snapshot_id`는 요청 값을 그대로 돌려줍니다.
@@ -217,14 +218,84 @@ python mujoco/twin_simulate.py --request req.json          # 서버 없이 요�
 위 값은 #50(ONT 판정 기준·시간 제한)이 확정되기 전의 **잠정값**입니다. 확정되면 상수를 바꿉니다. 요청 시간 제한과 시간 초과 처리는 Backend가 합니다(계약 13.2).
 
 한계: 로봇 원기둥과 정지한 작업자로 만든 단순화 모델의 검사입니다. 결과를 안전 보장으로 해석하지 않고, Safety Gate의 `SAFETY_DISTANCE` 판정을 대신하지 않습니다. Backend 호출·`snapshot_id` 계산·`ExecutionLog` 기록은 Backend 작업입니다.
-- 미구현: Backend에 Worker 조회 API(`GET /workers/snapshot`)가 없어 `--backend` 모드에서는 Worker 스냅샷을 파일로 넘깁니다. 작업자 이동 예측, 작업대·상자 등 PhysicalObject 반영도 아직 없습니다.
+- 미구현: Backend에 Worker 조회 API(`GET /workers/snapshot`)가 없어 `--backend` 모드에서는 Worker 스냅샷을 파일로 넘깁니다. 작업자 이동 예측은 아직 없습니다. 상자·작업대 같은 물체는 `state.objects`(#95)로 넣습니다.
+
+## 로봇 팔 (#95)
+
+로봇 종류가 달라도 같은 코드로 다룹니다. 로봇마다 다른 것은 `mujoco/arms.py`의 `ARM_MODELS` 한 줄(모델 파일, 관절 이름, 공구)뿐입니다.
+
+| `robot_model` | 로봇 | 축 | 공구 | 현장 역할 |
+|---|---|---|---|---|
+| `ur10e` | Universal Robots UR10e | 6 | 박스 클램프 (0.30 m 상자) | 적재 스테이션 A: 랙 ↔ 팔레트 |
+| `iiwa14` | KUKA LBR iiwa 14 | 7 | 박스 클램프 | 적재 스테이션 B: 랙 ↔ 팔레트 |
+| `ur5e` | Universal Robots UR5e | 6 | 평행 그리퍼 (0.10 m 부품 상자) | 포장대 |
+| `panda` | Franka Emika Panda | 7 | 평행 그리퍼 | 포장대 |
+
+모델은 MuJoCo Menagerie에서 받습니다(`pixi run fetch-models`, 약 105MB, 저장소 제외). 새 로봇은 끝단에 `attachment_site`가 있고 관절이 모두 회전 관절인 모델이면 `ARM_MODELS`에 한 줄을 더해 씁니다.
+
+```bash
+pixi run arms-demo        # 공장 현장에 4대를 두고 각자 집기·놓기 → outputs/arms/ (CCTV 2대·근접 시점)
+pixi run bridge-arms      # 브리지: plant_scene + 팔 4대, CCTV 영상에 팔이 나옴
+pixi run arm-adapters     # 팔 어댑터 4개 (ros2 launch robot_adapter arms.launch.py)
+pixi run arm-cycle-demo   # 데모: 4대가 상자를 계속 옮김 (검증 서버 대역, 시험 전용)
+```
+
+**현장 배치** (`arms.PLANT_ARMS`): `plant_scene.xml`의 TIAGo 작업 셀 동쪽 열린 바닥에 창고형 구역을 둡니다. CCTV 2대가 모두 보는 범위입니다.
+- 적재 스테이션 A·B: 오렌지 랙 아래 칸의 0.30 m 상자를 바닥 팔레트로 내리고 다시 올립니다. 팔레트 A는 작업자 1 경로점(3.4, 1.8) 옆이고, 랙 B 남쪽 끝은 작업자 3 통로 옆입니다.
+- 포장대: UR5e·Panda가 포장대 위 두 자리 사이로 부품 상자를 옮깁니다.
+- 이 장면은 `plant_scene.xml` 파일을 바꾸지 않고 MjSpec으로 더합니다. 브리지에서 `arms:=true`일 때만 쓰며, 기본 장면과 Three.js 렌더(#55)는 그대로입니다.
+
+**공통 어댑터** (`robot_adapter/arm_core.py`, `arm_adapter_node.py`): 같은 노드를 `robot_model`만 바꿔 띄웁니다. 검증 서버 쪽 토픽·규약(ACK·RESULT, 중복 실행 방지, E-Stop·HOLD)은 Mock·TIAGo 어댑터와 같습니다.
+- 지원 Action: `MANIPULATE`(`PICK`·`PLACE`)·`STOP`·`RESUME`. 고정형 팔이라 `MOVE_TO`는 `UNSUPPORTED`입니다.
+- 로봇마다 다른 부분은 궤적 계획기(`planner`) 하나입니다. 지금은 MuJoCo 운동학 모델(`arms.ArmPlanner`)이고, 실제 로봇은 같은 형태로 MoveIt 등을 감싼 계획기를 넣습니다.
+- 궤적: 현재 자세 → 대상 위(관절 보간) → 대상까지 TCP 직선 하강 → 파지·놓기 → 직선 상승. 그리퍼는 아래를 향합니다. TCP 속도 상한은 `min(0.25 m/s, speed_limit)`입니다.
+- 도달할 수 없는 목표는 움직이기 전에 `INVALID`로 거부합니다. `PICK`은 빈손일 때만, `PLACE`는 같은 `object_id`를 들고 있을 때만 받습니다.
+- E-Stop·HOLD·STOP: 마지막 관절 목표를 그대로 유지하고 그리퍼는 열지 않습니다(들고 있던 물체를 떨어뜨리지 않음).
+
+| 토픽 (`<seg>`: `arm-ur5e` → `arm_ur5e`) | 방향 | 형식 |
+|---|---|---|
+| `/<seg>/arm/joint_command` | 어댑터 → 브리지 | `sensor_msgs/JointState` 위치 목표 |
+| `/<seg>/arm/gripper` | 어댑터 → 브리지 | `std_msgs/Bool` (닫힘) |
+| `/<seg>/joint_states` | 브리지 → 어댑터 | `sensor_msgs/JointState` 실제 관절각 |
+| `/adapter/<seg>/state` | 어댑터 → 검증 서버 | 기존 상태에 `robot_model`, `joints`, `tcp_position`, `gripper_closed`, `holding_object_id` 추가 |
+
+**`MANIPULATE` 사전 시뮬레이션 (잠정)**: 제어 계약 13.1절은 대상 물체와 관절 초기 상태 형식을 정하지 않았습니다. 아래 형식은 CTL이 제안하는 **잠정 형식**이며 Backend·ONT 승인 후 계약에 넣습니다.
+
+```json
+{
+  "action": {"action_type": "MANIPULATE", "robot_id": "arm-ur10e", "speed_limit": 0.25,
+             "parameters": {"manipulation": "PICK", "object_id": "box-01",
+                            "target_pose": {"frame_id": "world", "position": [5.25, 2.6, 0.6]}}},
+  "state": {
+    "robots": [{"robot_id": "arm-ur10e", "robot_model": "ur10e", "frame_id": "world",
+                "position": [4.35, 2.6, 0.30], "yaw_rad": 0.0,
+                "joint_positions": null, "holding_object_id": null}],
+    "workers": {"observed_at": "...", "items": []},
+    "zones": [],
+    "objects": [{"object_id": "box-01", "frame_id": "world", "position": [5.25, 2.6, 0.6], "size": [0.3, 0.3, 0.3]}]
+  }
+}
+```
+
+- `parameters`는 계약 4.3절 `MANIPULATE`와 같습니다(`manipulation`, `object_id`, `target_pose`).
+- `robots[].robot_model`: `ARM_MODELS` 키. 이 값이 있는 로봇은 원기둥 대신 실제 팔 모델로 붙입니다. `position`은 베이스(받침대 윗면) 위치입니다.
+- `joint_positions`: 생략하거나 `null`이면 모델의 `home` 자세. `holding_object_id`: 들고 있는 물체(`PLACE`에 필요).
+- `objects`: 상자 장애물(중심, 크기 m). `MOVE_TO`에서도 장애물로 쓰입니다.
+- 판정: 팔·공구가 다른 물체·로봇·작업자와 닿으면 `COLLISION`(잡는 대상 물체와의 접촉은 제외), 팔·공구 표면과 작업자 몸 표면 사이가 `UNSAFE_DISTANCE_M` 미만이면 `UNSAFE_DISTANCE`, 경유점 TCP 오차가 0.02 m를 넘으면 `GOAL_NOT_REACHED`.
+- `ERROR`: `robot_model`이 없는 로봇, `PICK`/`PLACE`가 아님, 물체 없음, `PICK`의 `target_pose`가 물체에서 0.05 m 넘게 떨어짐, `PLACE`인데 그 물체를 들고 있지 않음, `joint_positions` 개수 불일치.
+
+한계:
+- 파지는 물리 접촉 대신 운동학적으로 붙입니다(집으면 상자가 TCP를 따라감). 그리퍼 마찰·미끄러짐·하중은 다루지 않습니다.
+- 사전 시뮬레이션에서 들고 있는 상자와 다른 물체 사이의 접촉은 검사하지 않습니다(둘 다 고정 물체로 둠). 팔·공구의 접촉만 봅니다.
+- 브리지에서 팔은 위치 액추에이터로 움직이므로 빠른 동작에서 관절이 목표보다 늦습니다(측정 최대 약 0.2 rad, 0.25 m/s). 놓기 전 0.5 s 멈춰 이 차이를 줄입니다.
+- 이동형 운반 로봇(팔레트를 싣고 통로를 오가는 AMR)은 이 범위에 없습니다.
 
 ## 어댑터 동작 규칙
 
 - `status=APPROVED`가 아닌 제안은 ACK 없이 `NOT_APPROVED`로 거부합니다.
 - 수신 즉시 ACK를 보내고, 완료·실패 시 RESULT를 보냅니다.
 - 같은 `proposal_id`와 같은 명령을 다시 받으면 동작을 반복하지 않고 기존 ACK 또는 최종 RESULT를 재전송합니다.
-- 지원하지 않는 Action(Mock은 `MANIPULATE`)은 `UNSUPPORTED`로 응답합니다.
+- 지원하지 않는 Action(Mock은 `MANIPULATE`, 고정형 팔은 `MOVE_TO`)은 `UNSUPPORTED`로 응답합니다.
 - 속도는 `min(로봇 max_speed, proposal.speed_limit, parameters.speed_limit)`로 제한합니다. 기본값은 SR-01의 0.4 m/s입니다.
 - `/safety/estop`의 `active=true`를 받으면 즉시 `ESTOP`으로 바꾸고 실행 중인 제안을 중단합니다. 해석할 수 없는 E-Stop 메시지도 정지로 처리합니다.
 - 하트비트가 1초(5주기) 동안 없으면 스스로 `HOLD`에 들어갑니다(`triggered_by=HEARTBEAT_LOSS`).
@@ -247,15 +318,19 @@ control/
 │   │   ├── pal_tiago/              # MuJoCo Menagerie TIAGo 모델 (Apache-2.0, 5.5MB)
 │   │   ├── diff_drive.xml          # 단순 시험용 바퀴 로봇
 │   │   ├── panda_scene.xml         # Panda 로봇 팔 + 작업자 + CCTV 장면
-│   │   └── franka_emika_panda/     # Panda 모델 (33MB, 저장소 제외 → fetch_models.sh로 받음)
+│   │   ├── franka_emika_panda/     # Panda 모델 (33MB, 저장소 제외 → fetch_models.sh로 받음)
+│   │   ├── universal_robots_ur5e/  # UR5e·UR10e·iiwa14 모델 (저장소 제외 → fetch_models.sh)
+│   │   ├── universal_robots_ur10e/
+│   │   └── kuka_iiwa_14/
 │   ├── simulation.py               # 차동 구동 시뮬레이션 (DiffDriveSim, 로봇 목록 ROBOTS)
 │   ├── scenario.py                 # 작업자 접근 동작, 카메라 렌더·내부 파라미터, 관절 목록, 스냅샷
 │   ├── twin.py                     # MuJoCo ② 디지털 트윈: 온톨로지 상태 → 장면, 정답 대비 위치 오차
 │   ├── twin_simulate.py            # MuJoCo ② 사전 시뮬레이션 서비스 POST /twin/simulate
-│   └── manipulator.py              # Panda move_to·그리퍼·pick_and_place
+│   ├── manipulator.py              # Panda move_to·그리퍼·pick_and_place
+│   └── arms.py                     # 로봇 팔 공통 계층: 모델 목록, 공구, 역기구학, PICK·PLACE 궤적, 현장 배치
 ├── ros2_ws/src/
 │   ├── mujoco_bridge/              # ROS 2 ↔ MuJoCo 브리지, odom_echo, rate_monitor, cctv_stream(웹 MJPEG)
-│   ├── robot_adapter/              # 공통 Action → 로봇 명령 (Mock 어댑터)
+│   ├── robot_adapter/              # 공통 Action → 로봇 명령 (Mock·TIAGo·팔 어댑터, 팔 4대 launch)
 │   └── safety_control/             # HOLD·E-Stop 판단(gate), 토픽·QoS, 시험 하네스
 ├── tests/                          # pytest 단위 테스트
 ├── scripts/                        # cmd_vel_demo.sh, roundtrip.sh, measure_rates.sh, fetch_models.sh

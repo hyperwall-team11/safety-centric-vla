@@ -80,7 +80,7 @@ def test_initial_contact_is_collision_at_zero():
 
 
 @pytest.mark.parametrize("change, message", [
-    (lambda r: r["action"].update(action_type="MANIPULATE"), "unsupported action_type"),
+    (lambda r: r["action"].update(action_type="STOP"), "unsupported action_type"),
     (lambda r: r["state"].update(workers=None), "worker snapshot is missing"),
     (lambda r: r["state"]["workers"].update(observed_at="2026-11-05T23:59:50Z"), "stale"),
     (lambda r: r["state"]["workers"].update(observed_at="2026-11-06T00:00:05Z"), "after snapshot_at"),
