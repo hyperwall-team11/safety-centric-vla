@@ -11,6 +11,8 @@ npm run build        # 타입 검사 + 빌드
 
 CCTV 영상은 `control`에서 `pixi run bridge`와 `pixi run cctv-stream`을 띄우면 현장 화면에 나옵니다(개발 서버가 `/cctv`를 `127.0.0.1:8081`로 프록시, 다르면 `VITE_CCTV_URL`). 스트림이 없으면 "영상 없음"을 보여 주고 5초마다 다시 연결합니다.
 
+현장 지도는 Backend의 Robot·Zone·Worker(온톨로지 상태) 위에, 같은 노드의 `GET /cctv/scene`으로 받은 **시뮬레이션 정답** 레이어(작업대, CCTV 위치·시야, 로봇 실제 위치, 작업자)를 겹쳐 그립니다. 범례의 체크박스로 끌 수 있고, Backend에 없는 구역은 "(미등록)" 점선으로 표시합니다. 지도 범위는 표시할 대상에 맞춰 자동으로 정합니다.
+
 Backend 주소가 다르면 `VITE_BACKEND_URL=http://host:8000 npm run dev`. Backend에 CORS 설정이 없어 개발 서버 프록시(`/api`)로 호출합니다.
 
 ## 화면과 사용자 흐름

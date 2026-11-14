@@ -188,6 +188,17 @@ tbody tr.selected { background: rgba(0, 113, 227, .07); box-shadow: inset 3px 0 
 .rule-checks .row { margin-top: 8px; }
 .proposal-card.is-shown { box-shadow: inset 3px 0 0 var(--blue); padding-left: 14px; }
 .muted { color: var(--muted); }
+.sim-camera .fov { fill: rgba(0,113,227,.035); stroke: rgba(0,113,227,.18); stroke-width: .02; stroke-dasharray: .08 .06; }
+.sim-camera circle { fill: #3a3a40; }
+.sim-camera text, .sim-zone text, .sim-worker text { fill: #6b6b72; font-weight: 600; }
+.sim-zone polygon { fill: none; stroke: #9aa0aa; stroke-width: .03; stroke-dasharray: .1 .07; }
+.sim-zone[data-type="KEEP_OUT"] polygon { stroke: var(--red); }
+.sim-table { fill: #c79a6b; fill-opacity: .55; stroke: #8b6a45; stroke-width: .02; }
+.sim-robot circle { fill: none; stroke: var(--blue); stroke-width: .05; stroke-dasharray: .08 .05; }
+.sim-robot line { stroke: var(--blue); stroke-width: .05; stroke-linecap: round; }
+.sim-worker circle { fill: rgba(31,143,74,.2); stroke: #1f8f4a; stroke-width: .05; }
+.sim-toggle { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; color: var(--muted); font-size: 11px; cursor: pointer; }
+.sim-toggle input { min-height: 0; width: 14px; height: 14px; flex: none; }
 .legend-hazard { display: inline-block; width: 9px; height: 9px; background: var(--red); border-radius: 50%; }
 @keyframes hazard-blink { 50% { fill-opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .zone[data-hazard="CRITICAL"] polygon { animation: none; } }
