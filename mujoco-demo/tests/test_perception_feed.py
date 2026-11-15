@@ -56,6 +56,26 @@ class PerceptionFeedTests(unittest.TestCase):
         self.assertEqual([zone_id for zone_id, _ in zone_rings([KEEP_OUT, point_zone, map_zone])],
                          ["keep-out"])
 
+    def test_contract_polygon_points_zone_is_used(self):
+        # 백엔드 계약 형식 polygon/points(열린 고리)도 GeoJSON과 같은 구역으로 읽는다.
+        contract = {"zone_id": "keep-out", "zone_type": "KEEP_OUT", "frame_id": "world",
+                    "geometry": {"type": "polygon", "points": [[0, 0], [1, 0], [1, 1], [0, 1]]}}
+        self.assertEqual(zone_rings([contract]), zone_rings([KEEP_OUT]))
+        fusion = WorkerFusion([contract], ["keep-out"])
+        fusion.update("cctv_1", at(0), [point(0.5, 0.5)])
+        worker = fusion.snapshot(at(0.1))["workers"][0]
+        self.assertEqual((worker["current_zone_id"], worker["safety_status"]), ("keep-out", "DANGER"))
+
+    def test_keep_out_wins_over_overlapping_zone_in_any_order(self):
+        square = [[-1, -1], [2, -1], [2, 2], [-1, 2], [-1, -1]]
+        overlap = dict(WORK, geometry={"type": "Polygon", "coordinates": [square]})
+        for zones in ([overlap, KEEP_OUT], [KEEP_OUT, overlap]):
+            fusion = WorkerFusion(zones, ["keep-out"])
+            fusion.update("cctv_1", at(0), [point(0.5, 0.5), point(1.5, 1.5)])
+            workers = fusion.snapshot(at(0.1))["workers"]
+            self.assertEqual([(w["current_zone_id"], w["safety_status"]) for w in workers],
+                             [("keep-out", "DANGER"), ("A", "UNKNOWN")])
+
     def test_cameras_seeing_the_same_worker_are_merged(self):
         fusion = WorkerFusion([KEEP_OUT, WORK], ["keep-out"])
         fusion.update("cctv_1", at(0.0), [point(0.4, 0.5)])
@@ -123,10 +143,40 @@ class PerceptionFeedTests(unittest.TestCase):
         sender.close()
         self.assertEqual(sent, ["first", "replaced-before-send"])
 
-        failing = LatestSender(send, lambda key, exc: errors.append(key))
+        failing = LatestSender(send, lambda key, exc: errors.append(key), retry_delay=0, max_retries=2)
         failing.submit("c", "bad")
         failing.close()
-        self.assertEqual((failing.failures, errors), (1, ["c"]))
+        self.assertEqual((failing.failures, errors), (3, ["c", "c", "c"]))
+
+    def test_sender_retries_a_failed_payload_until_it_goes_through(self):
+        attempts, sent = [], []
+
+        def send(value):
+            attempts.append(value)
+            if len(attempts) < 3:
+                raise RuntimeError("backend restarting")
+            sent.append(value)
+
+        sender = LatestSender(send, retry_delay=0, max_retries=2)
+        sender.submit("workers", "snapshot-1")
+        sender.close()
+        self.assertEqual((attempts, sent, sender.failures), (["snapshot-1"] * 3, ["snapshot-1"], 2))
+
+    def test_sender_sends_newer_value_instead_of_retrying_old_one(self):
+        first_failed, sent = threading.Event(), []
+
+        def send(value):
+            if value == "old":
+                first_failed.set()
+                raise RuntimeError("down")
+            sent.append(value)
+
+        sender = LatestSender(send, retry_delay=1.0, max_retries=2)
+        sender.submit("workers", "old")
+        first_failed.wait(5)
+        sender.submit("workers", "new")
+        sender.close()
+        self.assertEqual(sent, ["new"])
 
 
 if __name__ == "__main__":

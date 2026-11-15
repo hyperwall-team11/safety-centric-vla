@@ -32,8 +32,8 @@ from detectors import DETECTORS, WORKER_SCORE_THRESHOLD
 from florence_detect import percentile
 from hazard_reporter import (BackendClient, IntrusionTracker, build_hazard, camera_from_pose,
                              keep_out_ring, observation_id, workers_in_zone)
-from perception_feed import (FEED_INTERVAL_SECONDS, LatestSender, WorkerFusion, parse_utc,
-                             sensor_payload, utc_now)
+from perception_feed import (FEED_INTERVAL_SECONDS, SEND_MAX_RETRIES, LatestSender, WorkerFusion,
+                             parse_utc, sensor_payload, utc_now)
 
 
 DEFAULT_TOPIC = "/cctv_1/image_raw"
@@ -300,7 +300,9 @@ class CameraDetector(Node):
             # 종료하면 이 카메라로는 더 관측하지 않으므로 OFFLINE으로 알린다.
             for sensor_id, payload in self._sensor_payloads(offline=True):
                 self.sender.submit(f"sensor:{sensor_id}", "sensor", payload)
-            self.sender.close()
+            # 남은 요청(카메라별 Sensor + 작업자 스냅샷)이 각자 HTTP 시간 제한까지 걸려도 기다린다.
+            requests = len(self.backend["cameras"]) + 1
+            self.sender.close(timeout=self.backend["client"].timeout * requests * (1 + SEND_MAX_RETRIES))
         now = time.monotonic()
         per_topic = {stats.topic: stats.summary(now) for stats in self.topics}
         firsts = [s.frames.snapshot()["first_received_monotonic"] for s in self.topics]

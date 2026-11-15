@@ -38,13 +38,18 @@ def point_in_ring(x, y, ring):
 
 
 def keep_out_ring(zone):
-    """Validated outer ring of a world-frame KEEP_OUT Zone.
+    """Validated outer ring of a world-frame KEEP_OUT Zone (see ``zone_ring``)."""
+    if zone.get("zone_type") != "KEEP_OUT":
+        raise ValueError(f"Zone {zone.get('zone_id')} is not KEEP_OUT")
+    return zone_ring(zone)
+
+
+def zone_ring(zone):
+    """Validated outer ring of a world-frame Zone of any type.
 
     Accepts the GeoJSON ``Polygon/coordinates`` form and the Backend–CTL contract ``polygon/points``
     form (an open ring is closed here), matching what the backend safety gate accepts.
     """
-    if zone.get("zone_type") != "KEEP_OUT":
-        raise ValueError(f"Zone {zone.get('zone_id')} is not KEEP_OUT")
     if zone.get("frame_id") != "world":
         raise ValueError(f"Zone {zone.get('zone_id')} must use the world frame")
     geometry = zone.get("geometry") or {}

@@ -10,7 +10,7 @@ import math
 import threading
 from datetime import datetime, timezone
 
-from hazard_reporter import point_in_ring
+from hazard_reporter import point_in_ring, zone_ring
 
 
 # 스키마 v1.1 Sensor.last_frame_at: 2초 무수신 시 DEGRADED.
@@ -23,6 +23,9 @@ WORKER_FRAME_MAX_AGE_SECONDS = 1.0
 WORKER_MERGE_DISTANCE_M = 0.5
 # Florence-2 <OD>는 점수가 없어, 신뢰도 대신 카메라 최근 프레임 중 사람을 본 비율을 쓴다.
 SEEN_WINDOW_FRAMES = 5
+# 전송 실패 시 같은 키에 새 값이 없으면 이 간격으로 이 횟수까지 다시 보낸다. 2초 최신성 안에서 끝나도록 짧게 둔다.
+SEND_RETRY_DELAY_SECONDS = 0.25
+SEND_MAX_RETRIES = 2
 
 
 def rotation_to_quaternion(rotation):
@@ -69,20 +72,16 @@ def sensor_payload(sensor_id, topic, camera, covered_zone_ids, last_frame_at, no
 
 
 def zone_rings(zones):
-    """(zone_id, ring) for every world-frame single-ring Polygon Zone; other zones are skipped."""
+    """(zone_id, ring) for every world-frame Zone in either polygon form ``zone_ring`` accepts.
+
+    Zones in another frame or with unusable geometry are skipped.
+    """
     rings = []
     for zone in zones:
-        geometry = zone.get("geometry") or {}
-        coordinates = geometry.get("coordinates")
-        if (zone.get("frame_id") != "world" or geometry.get("type") != "Polygon"
-                or not isinstance(coordinates, list) or len(coordinates) != 1):
-            continue
         try:
-            ring = [(float(p[0]), float(p[1])) for p in coordinates[0]]
-        except (TypeError, ValueError, IndexError):
+            rings.append((zone["zone_id"], zone_ring(zone)))
+        except (KeyError, TypeError, ValueError):
             continue
-        if len(ring) >= 4 and ring[0] == ring[-1]:
-            rings.append((zone["zone_id"], ring))
     return rings
 
 
@@ -115,7 +114,9 @@ class WorkerFusion:
             return None if entry is None else entry[0]
 
     def _zone_of(self, x, y):
-        return next((zone_id for zone_id, ring in self.rings if point_in_ring(x, y, ring)), "")
+        """Zone containing the point; a KEEP_OUT zone wins over overlapping zones whatever their order."""
+        inside = [zone_id for zone_id, ring in self.rings if point_in_ring(x, y, ring)]
+        return next((zone_id for zone_id in inside if zone_id in self.keep_out_ids), inside[0] if inside else "")
 
     def snapshot(self, now):
         """``PUT /workers/snapshot`` body from fresh cameras, or None if nothing newer than the last one."""
@@ -162,11 +163,17 @@ class WorkerFusion:
 
 
 class LatestSender:
-    """Send the newest payload per key from one background thread; older unsent payloads are dropped."""
+    """Send the newest payload per key from one background thread; older unsent payloads are dropped.
 
-    def __init__(self, send, on_error=None):
+    A failed payload is retried a few times unless a newer one for the same key arrives first.
+    """
+
+    def __init__(self, send, on_error=None, retry_delay=SEND_RETRY_DELAY_SECONDS,
+                 max_retries=SEND_MAX_RETRIES):
         self.send = send
         self.on_error = on_error
+        self.retry_delay = retry_delay
+        self.max_retries = max_retries
         self.pending = {}
         self.condition = threading.Condition()
         self.closed = False
@@ -177,7 +184,7 @@ class LatestSender:
 
     def submit(self, key, *args):
         with self.condition:
-            self.pending[key] = args
+            self.pending[key] = (args, 0)
             self.condition.notify()
 
     def _run(self):
@@ -188,17 +195,23 @@ class LatestSender:
                 if not self.pending and self.closed:
                     return
                 key = next(iter(self.pending))
-                args = self.pending.pop(key)
+                args, retries = self.pending.pop(key)
             try:
                 self.send(*args)
                 self.sent += 1
-            except Exception as exc:  # 다음 주기에 새 값으로 다시 보낸다
+            except Exception as exc:
                 self.failures += 1
                 if self.on_error is not None:
                     self.on_error(key, exc)
+                with self.condition:
+                    # 그사이 새 값이 들어왔으면 새 값을 보내고, 아니면 같은 값을 잠시 뒤 다시 보낸다.
+                    if key not in self.pending and retries < self.max_retries:
+                        self.pending[key] = (args, retries + 1)
+                        if not self.closed:
+                            self.condition.wait(self.retry_delay)
 
     def close(self, timeout=3.0):
-        """Flush what is queued, then stop."""
+        """Flush what is queued (with retries), then stop; give ``timeout`` room for every request."""
         with self.condition:
             self.closed = True
             self.condition.notify()

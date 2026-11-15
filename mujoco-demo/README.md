@@ -119,8 +119,8 @@ python ros_camera_detect.py --topic /cctv_1/image_raw --topic /cctv_2/image_raw 
 
 - 0.5초마다 카메라별 Sensor를 `PUT /sensors/{sensor_id}`로 보냅니다. `last_frame_at`은 마지막으로 처리한 프레임의 수신 시각이고, 2초 넘게 처리한 프레임이 없으면 `DEGRADED`, 노드를 끝내면 `OFFLINE`으로 보냅니다. `covered_zone_ids`에는 `--covered-zone-id`를 넣으며 백엔드에 등록된 구역이어야 합니다.
 - 같은 주기로 `PUT /workers/snapshot`에 작업자 목록 전체를 보냅니다. 1초 이내 프레임이 있는 카메라만 쓰고, 서로 다른 카메라가 0.5m 안에서 본 사람은 한 명으로 합칩니다. `observed_at`은 포함한 카메라 프레임 중 가장 오래된 시각이며, 더 새 프레임이 없으면 보내지 않습니다. 아무도 안 보이면 빈 목록을 보냅니다.
-- 작업자 `worker_id`는 스냅샷마다 `worker-1`부터 매기는 번호이며 추적 ID가 아닙니다. 좌표계는 `world`, `current_zone_id`는 위치가 속한 구역(없으면 빈 문자열), `safety_status`는 KEEP_OUT 안이면 `DANGER`, 그 밖은 `UNKNOWN`입니다(거리 판정은 백엔드가 합니다). `confidence`는 모델 점수 대신 해당 카메라의 최근 5프레임 중 사람을 본 비율입니다.
-- 전송은 별도 스레드에서 최신 값만 보내므로 백엔드가 느려도 추론을 막지 않습니다. 요약에 `backend_feed_sent`·`backend_feed_failures`가 남습니다.
+- 작업자 `worker_id`는 스냅샷마다 `worker-1`부터 매기는 번호이며 추적 ID가 아닙니다. 좌표계는 `world`, `current_zone_id`는 위치가 속한 구역(없으면 빈 문자열)이며, 구역이 겹치면 목록 순서와 관계없이 KEEP_OUT 구역을 고릅니다. `safety_status`는 KEEP_OUT 안이면 `DANGER`, 그 밖은 `UNKNOWN`입니다(거리 판정은 백엔드가 합니다). 구역 모양은 `world` 좌표계의 GeoJSON `Polygon`(`coordinates`)과 제어 계약 형식 `polygon`(`points`)을 모두 읽고, 그 밖의 구역은 건너뜁니다. `confidence`는 모델 점수 대신 해당 카메라의 최근 5프레임 중 사람을 본 비율입니다.
+- 전송은 별도 스레드에서 최신 값만 보내므로 백엔드가 느려도 추론을 막지 않습니다. 전송에 실패하면 같은 종류의 새 값이 없을 때 0.25초 간격으로 2번까지 다시 보냅니다. 노드를 끝낼 때는 남은 요청이 HTTP 시간 제한까지 걸려도 기다린 뒤 종료합니다. 요약에 `backend_feed_sent`·`backend_feed_failures`(재시도 실패 포함)가 남습니다.
 
 **금지구역 HazardEvent** (`--hazard-zone-id`, `--robot-id`, 둘은 함께 지정):
 
