@@ -204,8 +204,13 @@ class PlantAmrs:
         if kind == "CANCEL":
             tr = self.transfer.pop(robot_id, None)
             if tr:
-                # 이송을 멈춘 자리에 둔다. 차체 위에 반쯤 걸쳤으면 들고 있는 것으로 보지 않는다
-                self.held.pop(robot_id, None)
+                # 이송 전 상태로 되돌린다: PICK 취소 → 팔레트는 거치대에(안 실음), PLACE 취소 → 상판 위에(실음).
+                # 어댑터는 실패한 싣기·내리기를 holding에 반영하지 않으므로 두 쪽 상태가 같게 남는다
+                pallet = self.pallets[tr["object_id"]]
+                if tr["kind"] == "PICK":
+                    data.mocap_pos[pallet] = tr["start"]
+                else:
+                    self._carry(data, robot_id)
                 self.results.append((robot_id, self._result(cid, False, "CANCELLED", "이송 취소")))
             return
         if robot_id in self.transfer:
