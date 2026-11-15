@@ -24,6 +24,15 @@ type SiteMapProps = {
   violation?: { zoneIds: string[]; workerIds: string[] };
 };
 
+// 시뮬레이션 동적 객체(로봇·작업자)가 이 시간(초) 넘게 갱신되지 않으면 오래된 관측으로 표시한다.
+const SIM_STALE_S = 2;
+
+/** 두 다각형이 같은 꼭짓점(순서 무관, 허용 오차 tol m)으로 이루어졌는지 */
+function sameRing(a: [number, number][], b: [number, number][], tol = 0.05) {
+  if (a.length !== b.length) return false;
+  return a.every(([x, y]) => b.some(([u, v]) => Math.abs(x - u) <= tol && Math.abs(y - v) <= tol));
+}
+
 const centroid = (pts: [number, number][]) => ({
   x: pts.reduce((a, p) => a + p[0], 0) / pts.length,
   y: pts.reduce((a, p) => a + p[1], 0) / pts.length,
@@ -44,9 +53,46 @@ export function SiteMap({ selectedRobotId, selectedZoneId, onRobotClick, onZoneC
   const sim = usePolling(fetchSimScene, 500, false);
   const [showSim, setShowSim] = useState(true);
   const simOn = showSim && sim.data !== undefined;
+  // 마지막 조회가 실패했으면(cctv_stream 종료·네트워크 단절) 이전 위치를 정답처럼 보이지 않도록 동적 객체를 숨긴다.
+  const simLost = sim.error !== undefined;
+  // 서버는 살아 있고 ROS 토픽만 끊긴 경우: 같은 서버 시계(observed_at) 기준으로 객체별 갱신 시각을 비교한다.
+  const simAge = (updatedAt: number) => sim.data!.observed_at - updatedAt;
+  const simStale = (updatedAt: number) => simAge(updatedAt) > SIM_STALE_S;
+  const simDynamicOn = simOn && !simLost;
   const flip = (y: number) => -y;
 
-  // 지도 범위: 등록된 구역·로봇·작업자와 시뮬레이션 장면을 모두 담도록 맞춘다(여백 0.8m).
+  // 계획 경로: trajectory가 있으면 그대로, 없으면 로봇 위치 → 목적지 구역 중심을 점선으로 잇는다.
+  let planPts: Point[] = [];
+  let planEstimated = false;
+  if (plan) {
+    planPts = plan.path;
+    if (planPts.length < 2) {
+      const robot = robots.data?.find((r) => r.robot_id === plan.robotId);
+      const zone = zones.data?.find((z) => z.zone_id === plan.toZoneId);
+      if (robot && zone && ring(zone).length > 0) {
+        planPts = [{ x: robot.pose.position.x, y: robot.pose.position.y }, centroid(ring(zone))];
+        planEstimated = true;
+      }
+    }
+  }
+  const planLine = planPts.length >= 2
+    ? { points: planPts.map((p) => `${p.x},${flip(p.y)}`).join(" "), estimated: planEstimated, end: planPts[planPts.length - 1] }
+    : undefined;
+
+  // CCTV 시야 삼각형. 작업 영역(구역·작업대) 중심을 조금 지나는 길이까지만 그린다.
+  const fovs = simOn ? (() => {
+    const pts = [...sim.data!.zones, ...sim.data!.tables].flatMap((z) => z.points);
+    const cx = pts.reduce((a, p) => a + p[0], 0) / Math.max(pts.length, 1);
+    const cy = pts.reduce((a, p) => a + p[1], 0) / Math.max(pts.length, 1);
+    return sim.data!.cameras.map((c) => {
+      const [x, y] = c.position;
+      const L = Math.hypot(cx - x, cy - y) * 1.25;
+      const a1 = c.yaw - c.hfov / 2, a2 = c.yaw + c.hfov / 2;
+      return { camera: c, tri: [[x, y], [x + L * Math.cos(a1), y + L * Math.sin(a1)], [x + L * Math.cos(a2), y + L * Math.sin(a2)]] as [number, number][] };
+    });
+  })() : [];
+
+  // 지도 범위: 등록된 구역·로봇·작업자, 시뮬레이션 장면(CCTV 시야 포함), 계획 경로를 모두 담도록 맞춘다(여백 0.8m).
   const xs: number[] = [], ys: number[] = [];
   const add = (x: number, y: number) => { xs.push(x); ys.push(y); };
   for (const z of zones.data ?? []) for (const [x, y] of ring(z)) add(x, y);
@@ -55,9 +101,13 @@ export function SiteMap({ selectedRobotId, selectedZoneId, onRobotClick, onZoneC
   if (simOn) {
     const b = sim.data!.bounds;
     if (b) { add(b[0], b[1]); add(b[2], b[3]); }
+    for (const f of fovs) for (const [x, y] of f.tri) add(x, y);
+  }
+  if (simDynamicOn) {
     for (const w of sim.data!.workers) add(...w.position);
     for (const r of sim.data!.robots) add(...r.position);
   }
+  for (const p of planPts) add(p.x, p.y);
   const isEmpty = xs.length === 0;
   const pad = 0.8;
   const view = isEmpty
@@ -65,22 +115,6 @@ export function SiteMap({ selectedRobotId, selectedZoneId, onRobotClick, onZoneC
     : { x: Math.min(...xs) - pad, y: -Math.max(...ys) - pad, w: Math.max(...xs) - Math.min(...xs) + 2 * pad, h: Math.max(...ys) - Math.min(...ys) + 2 * pad };
   // 글자·아이콘 크기를 지도 크기에 맞춘다(기준 8m)
   const k = Math.max(view.w, view.h) / 8;
-
-  // 계획 경로: trajectory가 있으면 그대로, 없으면 로봇 위치 → 목적지 구역 중심을 점선으로 잇는다.
-  let planLine: { points: string; estimated: boolean; end?: Point } | undefined;
-  if (plan) {
-    let pts = plan.path;
-    let estimated = false;
-    if (pts.length < 2) {
-      const robot = robots.data?.find((r) => r.robot_id === plan.robotId);
-      const zone = zones.data?.find((z) => z.zone_id === plan.toZoneId);
-      if (robot && zone && ring(zone).length > 0) {
-        pts = [{ x: robot.pose.position.x, y: robot.pose.position.y }, centroid(ring(zone))];
-        estimated = true;
-      }
-    }
-    if (pts.length >= 2) planLine = { points: pts.map((p) => `${p.x},${flip(p.y)}`).join(" "), estimated, end: pts[pts.length - 1] };
-  }
 
   const map = (
     <figure className={`map ${isEmpty ? "is-empty" : ""}`}>
@@ -95,28 +129,25 @@ export function SiteMap({ selectedRobotId, selectedZoneId, onRobotClick, onZoneC
         )}
         {simOn && (
           <g className="sim-layer" aria-label="시뮬레이션 장면">
-            {sim.data!.cameras.map((c) => {
-              // 시야는 작업 영역(구역·작업대) 중심을 조금 지나는 길이까지만 그린다
-              const pts = [...sim.data!.zones, ...sim.data!.tables].flatMap((z) => z.points);
-              const cx = pts.reduce((a, p) => a + p[0], 0) / Math.max(pts.length, 1);
-              const cy = pts.reduce((a, p) => a + p[1], 0) / Math.max(pts.length, 1);
-              const L = Math.hypot(cx - c.position[0], cy - c.position[1]) * 1.25;
-              const [x, y] = c.position;
-              const a1 = c.yaw - c.hfov / 2, a2 = c.yaw + c.hfov / 2;
+            {fovs.map(({ camera: c, tri }) => (
+              <g key={c.sensor_id} className="sim-camera">
+                <polygon className="fov" points={tri.map(([x, y]) => `${x},${flip(y)}`).join(" ")} />
+                <circle cx={c.position[0]} cy={flip(c.position[1])} r={0.12 * k} />
+                <text x={c.position[0] + 0.18 * k} y={flip(c.position[1]) + 0.06 * k} style={{ fontSize: 0.19 * k }}>{c.sensor_id}</text>
+              </g>
+            ))}
+            {sim.data!.zones.map((z) => {
+              // 등록된 구역과 겹쳐 그려 배치를 비교한다. 같으면 라벨을 생략하고, 다르면 불일치로 표시한다.
+              const registered = zones.data?.find((b) => b.zone_id === z.zone_id);
+              const mismatch = registered !== undefined && !sameRing(ring(registered), z.points);
+              const label = !registered ? `${z.zone_id} (미등록)` : mismatch ? `${z.zone_id} 시뮬레이션 배치 불일치` : undefined;
               return (
-                <g key={c.sensor_id} className="sim-camera">
-                  <polygon className="fov" points={`${x},${flip(y)} ${x + L * Math.cos(a1)},${flip(y + L * Math.sin(a1))} ${x + L * Math.cos(a2)},${flip(y + L * Math.sin(a2))}`} />
-                  <circle cx={x} cy={flip(y)} r={0.12 * k} />
-                  <text x={x + 0.18 * k} y={flip(y) + 0.06 * k} style={{ fontSize: 0.19 * k }}>{c.sensor_id}</text>
+                <g key={z.zone_id} className="sim-zone" data-type={z.zone_type} data-registered={registered ? true : undefined} data-mismatch={mismatch || undefined}>
+                  <polygon points={z.points.map(([x, y]) => `${x},${flip(y)}`).join(" ")} />
+                  {label && <text x={z.points[0][0]} y={flip(z.points[0][1]) + (registered ? 0.28 : -0.1) * k} style={{ fontSize: 0.19 * k }}>{label}</text>}
                 </g>
               );
             })}
-            {sim.data!.zones.filter((z) => !(zones.data ?? []).some((b) => b.zone_id === z.zone_id)).map((z) => (
-              <g key={z.zone_id} className="sim-zone" data-type={z.zone_type}>
-                <polygon points={z.points.map(([x, y]) => `${x},${flip(y)}`).join(" ")} />
-                <text x={z.points[0][0]} y={flip(z.points[0][1]) - 0.1 * k} style={{ fontSize: 0.19 * k }}>{z.zone_id} (미등록)</text>
-              </g>
-            ))}
             {sim.data!.tables.map((t) => (
               <polygon key={t.name} className="sim-table" points={t.points.map(([x, y]) => `${x},${flip(y)}`).join(" ")}><title>{t.name}</title></polygon>
             ))}
@@ -147,17 +178,17 @@ export function SiteMap({ selectedRobotId, selectedZoneId, onRobotClick, onZoneC
             <text x={r.pose.position.x + 0.32} y={flip(r.pose.position.y) + 0.06 * k} style={{ fontSize: 0.19 * k }}>{r.robot_id}</text>
           </g>
         ))}
-        {simOn && sim.data!.robots.map((r) => (
-          <g key={`sim-${r.robot_id}`} className="sim-robot">
+        {simDynamicOn && sim.data!.robots.map((r) => (
+          <g key={`sim-${r.robot_id}`} className="sim-robot" data-stale={simStale(r.updated_at) || undefined}>
             <circle cx={r.position[0]} cy={flip(r.position[1])} r={0.3} />
             <line x1={r.position[0]} y1={flip(r.position[1])} x2={r.position[0] + 0.45 * Math.cos(r.yaw)} y2={flip(r.position[1] + 0.45 * Math.sin(r.yaw))} />
-            <title>{r.robot_id} 시뮬레이션 실제 위치</title>
+            <title>{simStale(r.updated_at) ? `${r.robot_id} 마지막 관측 (${simAge(r.updated_at).toFixed(0)}초 전)` : `${r.robot_id} 시뮬레이션 실제 위치`}</title>
           </g>
         ))}
-        {simOn && sim.data!.workers.map((w) => (
-          <g key={`sim-${w.worker_id}`} className="sim-worker">
+        {simDynamicOn && sim.data!.workers.map((w) => (
+          <g key={`sim-${w.worker_id}`} className="sim-worker" data-stale={simStale(w.updated_at) || undefined}>
             <circle cx={w.position[0]} cy={flip(w.position[1])} r={0.22} />
-            <text x={w.position[0] + 0.3} y={flip(w.position[1]) + 0.06 * k} style={{ fontSize: 0.17 * k }}>{w.worker_id}</text>
+            <text x={w.position[0] + 0.3} y={flip(w.position[1]) + 0.06 * k} style={{ fontSize: 0.17 * k }}>{w.worker_id}{simStale(w.updated_at) && ` (마지막 관측 ${simAge(w.updated_at).toFixed(0)}초 전)`}</text>
           </g>
         ))}
         {(workers.data?.workers ?? []).map((w) => (
@@ -170,6 +201,7 @@ export function SiteMap({ selectedRobotId, selectedZoneId, onRobotClick, onZoneC
           <label className="sim-toggle">
             <input type="checkbox" checked={showSim} onChange={(e) => setShowSim(e.target.checked)} />
             시뮬레이션 정답 ({sim.data.source})
+            {simLost && <small className="sim-lost">연결 끊김 · 위치 숨김</small>}
           </label>
         )}
       </figcaption>

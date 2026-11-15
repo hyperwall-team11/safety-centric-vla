@@ -193,6 +193,12 @@ tbody tr.selected { background: rgba(0, 113, 227, .07); box-shadow: inset 3px 0 
 .sim-camera text, .sim-zone text, .sim-worker text { fill: #6b6b72; font-weight: 600; }
 .sim-zone polygon { fill: none; stroke: #9aa0aa; stroke-width: .03; stroke-dasharray: .1 .07; }
 .sim-zone[data-type="KEEP_OUT"] polygon { stroke: var(--red); }
+.sim-zone[data-registered] polygon { stroke-dasharray: .03 .07; stroke-opacity: .7; }
+.sim-zone[data-mismatch] polygon { stroke: #c77800; stroke-width: .04; stroke-dasharray: .12 .06; stroke-opacity: 1; }
+.sim-zone[data-mismatch] text { fill: #c77800; }
+.sim-robot[data-stale], .sim-worker[data-stale] { opacity: .35; }
+.sim-worker[data-stale] circle { fill: none; stroke-dasharray: .06 .05; }
+.sim-lost { color: var(--red); font-weight: 600; }
 .sim-table { fill: #c79a6b; fill-opacity: .55; stroke: #8b6a45; stroke-width: .02; }
 .sim-robot circle { fill: none; stroke: var(--blue); stroke-width: .05; stroke-dasharray: .08 .05; }
 .sim-robot line { stroke: var(--blue); stroke-width: .05; stroke-linecap: round; }
