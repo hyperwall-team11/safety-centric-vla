@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Protocol
+from collections.abc import Mapping
+from typing import Any, Protocol
 
 from pydantic import ValidationError
 
@@ -15,6 +16,7 @@ from .models import (
     Vector3,
     Zone,
 )
+from .vla_output import VlaOutputConversionError, convert_vla_output_to_proposal
 
 
 class ActionPlanningError(ValueError):
@@ -33,6 +35,56 @@ class ActionPlanner(Protocol):
         *,
         destination_zone: Zone | None = None,
     ) -> ActionProposal: ...
+
+
+class VlaOutputProvider(Protocol):
+    """TaskOrder 문맥으로 VLA 행동 JSON을 생성하는 추론 경계."""
+
+    model_name: str
+    model_version: str
+
+    def generate(
+        self,
+        task: TaskOrder,
+        robot: Robot,
+        request: ProposalGenerationRequest,
+        *,
+        destination_zone: Zone | None = None,
+    ) -> str | bytes | bytearray | Mapping[str, Any]: ...
+
+
+class VlaActionPlanner:
+    """VLA 추론 출력을 공통 ActionProposal로 변환하는 플래너."""
+
+    def __init__(self, provider: VlaOutputProvider) -> None:
+        self.provider = provider
+        self.model_name = provider.model_name
+        self.model_version = provider.model_version
+
+    def plan(
+        self,
+        task: TaskOrder,
+        robot: Robot,
+        request: ProposalGenerationRequest,
+        *,
+        destination_zone: Zone | None = None,
+    ) -> ActionProposal:
+        output = self.provider.generate(
+            task,
+            robot,
+            request,
+            destination_zone=destination_zone,
+        )
+        try:
+            return convert_vla_output_to_proposal(
+                output,
+                task,
+                robot,
+                model_name=self.model_name,
+                model_version=self.model_version,
+            )
+        except VlaOutputConversionError as exc:
+            raise ActionPlanningError(str(exc)) from exc
 
 
 class RuleBasedActionPlanner:

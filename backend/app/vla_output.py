@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
+from typing import Any
+
+from pydantic import ValidationError
+
 from .instruction_intent import IntentDetectionError, detect_requested_action
 from .models import (
     ActionProposal,
     ActionType,
     CoordinateDestination,
+    NonBlankString,
+    OntologyModel,
     Robot,
     TaskOrder,
 )
@@ -12,6 +20,67 @@ from .models import (
 
 class VlaOutputValidationError(ValueError):
     """VLA 제안이 TaskOrder 문맥과 일치하지 않을 때 발생한다."""
+
+
+class VlaOutputConversionError(ValueError):
+    """VLA 원시 출력을 ActionProposal로 변환할 수 없을 때 발생한다."""
+
+
+class VlaModelOutput(OntologyModel):
+    """VLA가 생성하는 신뢰하지 않는 행동 출력 경계.
+
+    Proposal의 ID·대상 Robot·상태는 VLA가 결정하지 않고 Backend가
+    TaskOrder 문맥에서 주입한다.
+    """
+
+    action_type: ActionType
+    parameters: dict[str, Any]
+    trajectory: list[dict[str, Any]] | None = None
+    frame_id: NonBlankString
+    speed_limit: float
+
+
+def convert_vla_output_to_proposal(
+    output: str | bytes | bytearray | Mapping[str, Any],
+    task: TaskOrder,
+    robot: Robot,
+    *,
+    model_name: NonBlankString,
+    model_version: NonBlankString,
+) -> ActionProposal:
+    """VLA JSON 출력을 검증된 ``ActionProposal(PROPOSED)``로 변환한다.
+
+    VLA에서는 행동 필드만 받고 ``task_id``와 ``robot_id``는 신뢰된
+    Backend 문맥에서 주입한다. 구조 검증 후 TaskOrder 문맥 검증까지
+    통과해야 변환된 Proposal을 반환한다.
+    """
+
+    try:
+        payload = json.loads(output) if isinstance(output, (str, bytes, bytearray)) else output
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise VlaOutputConversionError("VLA 출력이 유효한 JSON이 아닙니다.") from exc
+
+    try:
+        model_output = VlaModelOutput.model_validate(payload)
+        proposal = ActionProposal(
+            task_id=task.task_id,
+            robot_id=task.target_robot_id,
+            action_type=model_output.action_type,
+            parameters=model_output.parameters,
+            trajectory=model_output.trajectory,
+            frame_id=model_output.frame_id,
+            speed_limit=model_output.speed_limit,
+            model_name=model_name,
+            model_version=model_version,
+        )
+    except ValidationError as exc:
+        raise VlaOutputConversionError(f"VLA 출력 구조가 유효하지 않습니다: {exc}") from exc
+
+    try:
+        validate_vla_proposal(proposal, task, robot)
+    except VlaOutputValidationError as exc:
+        raise VlaOutputConversionError(str(exc)) from exc
+    return proposal
 
 
 def validate_vla_proposal(

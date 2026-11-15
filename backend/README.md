@@ -117,6 +117,15 @@ TaskOrder의 행동, 대상 로봇·물체, 목적지와 좌표계가 바뀌지 
 불일치 출력은 저장하거나 안전 규칙에 넘기지 않고 `422`로 거부합니다. 속도와 경로가
 현장 안전 기준을 만족하는지는 이 문맥 검증과 분리해 기존 제출 기준 평가에서 판정합니다.
 
+VLA 추론 런타임은 `app.vla_output.convert_vla_output_to_proposal()`에 JSON 문자열
+또는 파싱된 객체를 넘겨 원시 출력을 `ActionProposal(PROPOSED)`로 변환할 수 있습니다.
+VLA는 `action_type`, `parameters`, `trajectory`, `frame_id`, `speed_limit`만 제공하며,
+`proposal_id`, `task_id`, `robot_id`, `status`, 모델 이름·버전은 신뢰된 Backend 문맥에서
+생성합니다. 모델이 서버 소유 필드를 추가하거나 TaskOrder의 행동·대상·목적지를
+바꾸면 변환을 거부합니다.
+실제 모델 연동 클라이언트는 `VlaOutputProvider`를 구현하고 `VlaActionPlanner`에
+주입하면 기존 ActionProposal 생성 경로를 바꾸지 않고 규칙 기반 플래너를 교체할 수 있습니다.
+
 ## ActionProposal 생성
 
 TaskOrder를 생성한 뒤 아래 API를 호출합니다.

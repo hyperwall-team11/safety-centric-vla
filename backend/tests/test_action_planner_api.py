@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from app.action_planner import VlaActionPlanner
 from app.main import app, seed_rules
 from app.store import store
 
@@ -25,6 +26,24 @@ def robot_payload(
         "velocity": {"x": 0, "y": 0, "z": 0},
         "motion_limits": {"max_speed": max_speed, "max_acceleration": 0.5},
     }
+
+
+class StubVlaOutputProvider:
+    model_name = "stub-vla"
+    model_version = "test-1"
+
+    def generate(self, task, robot, request, *, destination_zone=None):
+        speed_limit = request.speed_limit or 0.3
+        return {
+            "action_type": "MOVE_TO",
+            "parameters": {
+                "target_pose": task.destination.model_dump(mode="json"),
+                "speed_limit": speed_limit,
+            },
+            "trajectory": None,
+            "frame_id": robot.pose.frame_id,
+            "speed_limit": speed_limit,
+        }
 
 
 class ActionPlannerApiTest(unittest.TestCase):
@@ -90,6 +109,19 @@ class ActionPlannerApiTest(unittest.TestCase):
         stored_task = self.client.get(f"/task-orders/{task['task_id']}").json()
         self.assertEqual(stored_task["status"], "PLANNING")
         self.assertEqual(store.logs, [])
+
+    def test_vla_planner_reuses_existing_generation_api(self) -> None:
+        task = self.create_task()
+
+        with patch("app.main.planner", VlaActionPlanner(StubVlaOutputProvider())):
+            response = self.generate(task["task_id"], {"speed_limit": 0.2})
+
+        self.assertEqual(response.status_code, 201, response.text)
+        proposal = response.json()
+        self.assertEqual(proposal["status"], "PROPOSED")
+        self.assertEqual(proposal["speed_limit"], 0.2)
+        self.assertEqual(proposal["model_name"], "stub-vla")
+        self.assertEqual(proposal["model_version"], "test-1")
 
     def test_coordinate_frame_and_explicit_speed_are_preserved(self) -> None:
         task = self.create_task(
