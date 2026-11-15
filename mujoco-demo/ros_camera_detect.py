@@ -30,7 +30,7 @@ from camera_frames import (LatestFrameBuffer, frame_file_name, person_detections
                            take_round_robin)
 from detectors import DETECTORS, WORKER_SCORE_THRESHOLD
 from florence_detect import percentile
-from camera_calib import load_calibration, normalize_camera, scene_calibration
+from camera_calib import frame_matches, load_calibration, normalize_camera, scene_calibration
 from hazard_reporter import (BackendClient, IntrusionTracker, build_hazard, keep_out_ring,
                              observation_id, workers_in_zone)
 from perception_feed import (FEED_INTERVAL_SECONDS, SEND_MAX_RETRIES, LatestSender, WorkerFusion,
@@ -274,8 +274,7 @@ class CameraDetector(Node):
                 "note": "Detection record only; not an approved safety Observation or HazardEvent.",
             }
             calibration = None if self.backend is None else self.backend["cameras"][stats.topic]
-            if calibration is not None and (msg.width, msg.height) != (calibration["width"],
-                                                                       calibration["height"]):
+            if calibration is not None and not frame_matches(calibration, msg.width, msg.height):
                 # 보정과 다른 크기의 영상은 투영하지 않는다. 작업자 없음으로 보고하지 않아
                 # 센서는 곧 DEGRADED가 되고 관측 공백 규칙이 실행을 막는다.
                 stats.calibration_mismatch += 1

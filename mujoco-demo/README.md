@@ -116,6 +116,8 @@ python camera_calib.py --scene ../control/mujoco/models/scenario_scene.xml \
   --camera cctv_1 --camera cctv_2 --output cameras/scenario_cctv.json
 ```
 
+`scenario_scene.xml`의 CCTV 위치·방향·화각이 바뀌면 위 명령으로 파일을 다시 만들어 커밋합니다. 파일의 `source`에는 저장소 기준 장면 경로가 들어가며, `tests/test_camera_calib.py`가 커밋된 파일과 장면이 같은지 확인합니다(mujoco가 있을 때).
+
 ```json
 {"version": 1, "cameras": [{
   "sensor_id": "cctv_1", "topic": "/cctv_1/image_raw", "width": 640, "height": 480,
@@ -125,10 +127,12 @@ python camera_calib.py --scene ../control/mujoco/models/scenario_scene.xml \
   "fovy_deg": 60, "ground_plane_z_m": 0.0}]}
 ```
 
+- `world_frame`과 `rotation_convention`은 필수입니다. 빠뜨리면 기본값으로 읽지 않고 오류로 멈춥니다. 다른 좌표로 적은 파일이 조용히 잘못 투영되는 것을 막기 위해서입니다.
 - 위치·방향은 백엔드 Zone과 같은 월드 좌표(z 위)입니다. Three.js 좌표(y 위)로 적었다면 `"world_frame": "threejs_y_up"`을 주면 변환합니다(MuJoCo `(x, y, z)` = Three.js `(x, z, -y)`).
 - 방향은 `rotation_cam_to_world`(3×3, 카메라 축을 월드에서 본 열) 또는 `quaternion_wxyz` 중 하나입니다. 축 규약은 `mujoco_camera`(x 오른쪽, y 위, -z 앞, Three.js 카메라와 같음) 또는 `ros_optical`(x 오른쪽, y 아래, z 앞)입니다.
 - 렌즈는 `fovy_deg`(정사각 픽셀, 중심 주점) 또는 보정값 `intrinsics: {fx, fy, cx, cy}`(픽셀) 중 하나입니다. 렌즈 왜곡은 다루지 않으므로 필요하면 영상을 먼저 보정합니다.
 - 들어온 영상 크기가 파일의 `width`·`height`와 다르면 그 프레임은 백엔드에 보고하지 않습니다(작업자 없음으로 보내지 않음). 계속 다르면 센서가 `DEGRADED`가 되어 관측 공백 규칙이 실행을 막고, 요약의 `calibration_mismatch_frames`에 개수가 남습니다.
+- 보정 오차의 영향(시나리오 CCTV 2대, 2026-11-15 계산): 카메라 기울기가 0.5° 틀리면 바닥 위치가 최대 약 0.06 m, 1°면 약 0.13 m 어긋나고, 높이가 5 cm 틀리면 약 0.03 m 어긋납니다. 금지구역 경계 근처에서는 이만큼 판정이 바뀔 수 있으므로 실제 CCTV는 기울기 오차를 0.5° 안으로 맞추는 것을 권장합니다.
 
 ### 백엔드 연결: 센서·작업자 스냅샷과 HazardEvent
 

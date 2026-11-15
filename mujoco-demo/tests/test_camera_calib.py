@@ -1,24 +1,31 @@
 """Check camera calibration files and pinhole projection without MuJoCo, ROS or a GPU."""
 
+import importlib.util
 import json
 import math
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from camera_calib import (THREE_FROM_WORLD, load_calibration, normalize_camera,
-                          quaternion_to_rotation)
+from camera_calib import (REPO_ROOT, THREE_FROM_WORLD, frame_matches, load_calibration,
+                          normalize_camera, quaternion_to_rotation, scene_calibration)
 from observation_export import ground_position
+from perception_feed import WorkerFusion, sensor_payload
 
+SCENARIO_FILE = Path(__file__).resolve().parents[1] / "cameras/scenario_cctv.json"
+SCENARIO_SCENE = REPO_ROOT / "control/mujoco/models/scenario_scene.xml"
+HAS_MUJOCO = importlib.util.find_spec("mujoco") is not None
 IDENTITY = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
 
 
 def entry(**override):
     # MuJoCo 카메라가 (1, 2, 3)에서 바로 아래를 본다.
     return {"sensor_id": "cctv_1", "width": 640, "height": 480, "position_m": [1, 2, 3],
-            "rotation_cam_to_world": IDENTITY, "fovy_deg": 60} | override
+            "rotation_cam_to_world": IDENTITY, "rotation_convention": "mujoco_camera",
+            "world_frame": "mujoco_z_up", "fovy_deg": 60} | override
 
 
 def assert_matrix_close(case, a, b):
@@ -83,10 +90,19 @@ class CameraCalibTests(unittest.TestCase):
                  entry(rotation_convention="opencv"), entry(world_frame="unity"),
                  entry(fovy_deg=180), no_lens, entry(intrinsics={"fx": 1, "fy": 1, "cx": 0, "cy": 0}),
                  no_lens | {"intrinsics": {"fx": -1, "fy": 1, "cx": 0, "cy": 0}},
-                 no_lens | {"intrinsics": {"fx": 1, "fy": 1, "cx": 0}}]
+                 no_lens | {"intrinsics": {"fx": 1, "fy": 1, "cx": 0}},
+                 no_lens | {"intrinsics": [1, 1, 0, 0]}, no_lens | {"intrinsics": None},
+                 [entry()], "cctv_1"]
         for case in cases:
             with self.subTest(case=case), self.assertRaises(ValueError):
                 normalize_camera(case)
+
+    def test_axis_fields_are_required(self):
+        # 빠뜨리면 MuJoCo 기본값으로 조용히 읽혀 Three.js·실제 CCTV 파일의 투영 방향이 틀어진다.
+        for field in ("world_frame", "rotation_convention"):
+            missing = {k: v for k, v in entry().items() if k != field}
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, field):
+                normalize_camera(missing)
 
     def test_calibration_file_is_indexed_by_topic(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -96,10 +112,55 @@ class CameraCalibTests(unittest.TestCase):
             cameras = load_calibration(path)
             self.assertEqual(sorted(cameras), ["/cctv_1/image_raw", "/site/cam2/image_raw"])
             for bad in ({"version": 2, "cameras": [entry()]}, {"version": 1, "cameras": []},
-                        {"version": 1, "cameras": [entry(), entry()]}):
+                        {"version": 1, "cameras": [entry(), entry()]}, [entry()],
+                        {"version": 1, "cameras": [entry(), "cctv_2"]},
+                        {"version": 1, "cameras": [{k: v for k, v in entry().items() if k != "world_frame"}]}):
                 path.write_text(json.dumps(bad))
                 with self.subTest(bad=bad), self.assertRaises(ValueError):
                     load_calibration(path)
+
+    def test_mismatched_frames_leave_sensor_degraded(self):
+        # 보정과 다른 크기의 프레임은 작업자 없음으로 보내지 않아, 2초 뒤 센서가 DEGRADED가 된다.
+        camera = normalize_camera(entry())
+        t0 = datetime(2026, 11, 15, tzinfo=timezone.utc)
+        fusion = WorkerFusion([])
+        for second, size in enumerate([(640, 480), (1280, 720), (1280, 720), (1280, 720)]):
+            if frame_matches(camera, *size):
+                fusion.update("cctv_1", t0 + timedelta(seconds=second), [])
+        self.assertTrue(frame_matches(camera, 640, 480))
+        self.assertFalse(frame_matches(camera, 480, 640))
+        self.assertEqual(fusion.last_frame_at("cctv_1"), t0)
+        status = sensor_payload("cctv_1", camera["topic"], camera, [], fusion.last_frame_at("cctv_1"),
+                                t0 + timedelta(seconds=3))["status"]
+        self.assertEqual(status, "DEGRADED")
+        self.assertIsNone(fusion.snapshot(t0 + timedelta(seconds=3)))
+
+    def test_scenario_file_projects_like_threejs_copy(self):
+        # 같은 카메라를 Three.js 좌표로 적은 파일도 바닥 위치가 1 mm 안에서 같아야 한다.
+        for camera in load_calibration(SCENARIO_FILE).values():
+            three = {**camera, "world_frame": "threejs_y_up",
+                     "position_m": [sum(THREE_FROM_WORLD[i][k] * camera["position_m"][k] for k in range(3))
+                                    for i in range(3)],
+                     "rotation_cam_to_world": [[sum(THREE_FROM_WORLD[i][k] * camera["rotation_cam_to_world"][k][j]
+                                                    for k in range(3)) for j in range(3)] for i in range(3)]}
+            for box in ([300, 200, 340, 300], [100, 250, 140, 420], [560, 300, 600, 470]):
+                a = ground_position(box, 640, 480, camera)
+                b = ground_position(box, 640, 480, normalize_camera(three))
+                with self.subTest(sensor=camera["sensor_id"], box=box):
+                    self.assertLess(math.hypot(a["x"] - b["x"], a["y"] - b["y"]), 1e-3)
+
+    @unittest.skipUnless(HAS_MUJOCO, "mujoco is not installed")
+    def test_committed_scenario_file_matches_scene(self):
+        # 장면 XML의 CCTV가 바뀌면 README 명령으로 파일을 다시 만들어야 한다.
+        expected = scene_calibration(SCENARIO_SCENE, ["cctv_1", "cctv_2"], 640, 480)
+        committed = json.loads(SCENARIO_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(committed["source"], "control/mujoco/models/scenario_scene.xml")
+        self.assertEqual(expected["source"], committed["source"])
+        for want, got in zip(expected["cameras"], committed["cameras"], strict=True):
+            self.assertEqual(want["sensor_id"], got["sensor_id"])
+            for a, b in zip(want["position_m"] + sum(want["rotation_cam_to_world"], []),
+                            got["position_m"] + sum(got["rotation_cam_to_world"], [])):
+                self.assertAlmostEqual(a, b, places=6)
 
 
 if __name__ == "__main__":

@@ -26,6 +26,7 @@ from pathlib import Path
 
 from observation_export import ROTATION_CONVENTION
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 ROTATION_TOLERANCE = 1e-3
 # Three.js(y 위)의 점 p_three = THREE_FROM_WORLD @ p_world. 월드는 MuJoCo·백엔드 좌표(z 위)다.
 THREE_FROM_WORLD = ((1, 0, 0), (0, 0, 1), (0, -1, 0))
@@ -74,7 +75,13 @@ def _check_rotation(rotation):
 
 
 def normalize_camera(entry):
-    """Validated camera in the MuJoCo convention and backend world frame (z up)."""
+    """Validated camera in the MuJoCo convention and backend world frame (z up).
+
+    ``world_frame`` and ``rotation_convention`` are required: a file from Three.js or a real CCTV
+    that leaves them out would otherwise parse with the wrong axes and project to the wrong place.
+    """
+    if not isinstance(entry, dict):
+        raise ValueError("Each camera must be a JSON object")
     sensor_id = entry.get("sensor_id")
     if not isinstance(sensor_id, str) or not sensor_id:
         raise ValueError("Each camera needs a sensor_id")
@@ -93,13 +100,16 @@ def normalize_camera(entry):
         rotation = [_finite_numbers(row, 3, f"{sensor_id} rotation row") for row in rows]
     _check_rotation(rotation)
 
-    convention = entry.get("rotation_convention", ROTATION_CONVENTION)
+    for field in ("rotation_convention", "world_frame"):
+        if field not in entry:
+            raise ValueError(f"{sensor_id}: {field} is required")
+    convention = entry["rotation_convention"]
     if convention == "ros_optical":
         rotation = [[rotation[i][j] * OPTICAL_TO_MUJOCO[j] for j in range(3)] for i in range(3)]
     elif convention != ROTATION_CONVENTION:
         raise ValueError(f"{sensor_id}: unknown rotation_convention {convention!r}")
 
-    world = entry.get("world_frame", "mujoco_z_up")
+    world = entry["world_frame"]
     if world == "threejs_y_up":
         back = _transpose([list(row) for row in THREE_FROM_WORLD])
         position = [sum(back[i][k] * position[k] for k in range(3)) for i in range(3)]
@@ -120,7 +130,9 @@ def normalize_camera(entry):
             raise ValueError(f"{sensor_id}: fovy_deg must be between 0 and 180")
         camera["fovy_deg"] = fovy
     else:
-        k = entry["intrinsics"] or {}
+        k = entry["intrinsics"]
+        if not isinstance(k, dict):
+            raise ValueError(f"{sensor_id}: intrinsics must be an object with fx, fy, cx, cy")
         fx, fy, cx, cy = _finite_numbers([k.get(n) for n in ("fx", "fy", "cx", "cy")], 4,
                                          f"{sensor_id} intrinsics")
         if fx <= 0 or fy <= 0:
@@ -132,6 +144,8 @@ def normalize_camera(entry):
 def load_calibration(path):
     """Cameras by topic from a calibration file."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("Calibration file must be a JSON object")
     if data.get("version") != 1 or not isinstance(data.get("cameras"), list) or not data["cameras"]:
         raise ValueError("Calibration file needs version 1 and a non-empty cameras list")
     cameras = {}
@@ -141,6 +155,20 @@ def load_calibration(path):
             raise ValueError(f"Duplicate camera topic {camera['topic']}")
         cameras[camera["topic"]] = camera
     return cameras
+
+
+def frame_matches(camera, width, height):
+    """Whether an image has the size the camera was calibrated for.
+
+    Other sizes are not projected and not reported as "no worker", so the Sensor turns DEGRADED
+    and the backend OBSERVATION_GAP rule blocks execution instead of trusting a wrong position.
+    """
+    return (width, height) == (camera["width"], camera["height"])
+
+
+def _source_name(scene_path):
+    path = Path(scene_path).resolve()
+    return path.relative_to(REPO_ROOT).as_posix() if path.is_relative_to(REPO_ROOT) else str(scene_path)
 
 
 def scene_calibration(scene_path, sensor_ids, width, height):
@@ -164,7 +192,7 @@ def scene_calibration(scene_path, sensor_ids, width, height):
                                                   for row in data.cam_xmat[cam].reshape(3, 3)],
                         "rotation_convention": ROTATION_CONVENTION, "world_frame": "mujoco_z_up",
                         "fovy_deg": float(model.cam_fovy[cam]), "ground_plane_z_m": 0.0})
-    return {"version": 1, "source": str(scene_path), "cameras": entries}
+    return {"version": 1, "source": _source_name(scene_path), "cameras": entries}
 
 
 def main():
