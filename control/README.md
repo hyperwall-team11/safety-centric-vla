@@ -316,7 +316,7 @@ pixi run amr-cycle-demo   # 데모: 2대가 팔레트를 계속 나름 (검증 �
 - `MOVE_TO`: 직선 이동. 속도 상한 `min(0.4 m/s, speed_limit)`(SR-01 기본값).
 - `MANIPULATE` `PICK`(싣기): 빈 차체일 때만. 팔레트가 차체 앞 거치대 자리(0.15 m 안)에 없으면 브리지가 `INVALID`로 돌려줍니다.
 - `MANIPULATE` `PLACE`(내리기): 같은 `object_id`를 싣고 있을 때만. 내릴 위치가 차체 앞 거치대 자리가 아니면 `INVALID`.
-- E-Stop·HOLD·STOP: 차체에 0 속도를 계속 보내고, 이송 중이면 `CANCEL`을 보내 팔레트를 그 자리에 멈춥니다. 이때 싣기는 완료되지 않은 것으로 봅니다.
+- E-Stop·HOLD·STOP: 차체에 0 속도를 계속 보내고, 이송 중이면 `CANCEL`을 보냅니다. 브리지는 팔레트를 이송 전 상태(싣기 취소 → 거치대, 내리기 취소 → 상판)로 되돌려 어댑터의 `holding_object_id`와 맞춥니다.
 
 | 토픽 (`<seg>`: `amr-01` → `amr_01`) | 방향 | 형식 |
 |---|---|---|

@@ -101,6 +101,7 @@ def test_cancel_stops_transfer_and_cmd_timeout_stops_chassis():
     plant.load(data, a.robot_id, {"command_id": "c", "manipulation": "CANCEL"})
     assert plant.pop_results()[-1][1]["reason_code"] == "CANCELLED"
     assert a.robot_id not in plant.held and a.robot_id not in plant.transfer
+    assert np.allclose(data.mocap_pos[plant.pallets[a.pallet_id]], a.place_pose(a.warehouse_stand))
     plant.set_velocity(a.robot_id, 0.3, 0.0)
     x0 = plant.pose[a.robot_id][0]
     settle(plant, data, 2.0)
@@ -136,3 +137,23 @@ def test_twin_move_to_counts_loaded_pallet():
     assert empty["result"] == "UNSAFE_DISTANCE", empty
     assert loaded["result"] == "COLLISION", loaded
     assert loaded["min_worker_distance_m"] < empty["min_worker_distance_m"]
+
+
+def test_cancelled_place_keeps_pallet_loaded():
+    model, data, plant = fresh()
+    a = amr.PLANT_AMRS[0]
+    plant.load(data, a.robot_id, {"command_id": "c1", "manipulation": "PICK", "object_id": a.pallet_id})
+    settle(plant, data, amr.TRANSFER_S)
+    plant.load(data, a.robot_id, {"command_id": "c2", "manipulation": "PLACE", "object_id": a.pallet_id,
+                                  "target_pose": {"position": list(a.place_pose(a.warehouse_stand))}})
+    settle(plant, data, 0.8)
+    plant.load(data, a.robot_id, {"command_id": "c2", "manipulation": "CANCEL"})
+    assert plant.held[a.robot_id] == a.pallet_id
+    pallet = data.mocap_pos[plant.pallets[a.pallet_id]]
+    assert np.allclose(pallet, [*plant.pose[a.robot_id][:2], amr.DECK_TOP])
+    plant.pop_results()
+    # 다시 내리기가 된다
+    plant.load(data, a.robot_id, {"command_id": "c3", "manipulation": "PLACE", "object_id": a.pallet_id,
+                                  "target_pose": {"position": list(a.place_pose(a.warehouse_stand))}})
+    settle(plant, data, amr.TRANSFER_S + 0.1)
+    assert plant.pop_results()[-1][1]["success"]
