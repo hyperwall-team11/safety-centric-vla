@@ -12,7 +12,9 @@ Ground truth is used only for scoring; the detector sees the PNG and the camera 
     python offline_eval.py --render-dir ../control/outputs/threejs_cctv --detector florence2 \
         --model-id /abr/coss38/florence-2-base --output-dir eval/florence2
 
-Writes ``frames.jsonl`` (one line per frame) and ``summary.json`` to ``--output-dir``.
+Writes ``frames.jsonl`` (one line per frame) and ``summary.json`` to ``--output-dir``. Only frames
+listed in ``boxes.json`` are scored, so a partial render (``--frames f0:f1``) works.
+``--replay-frames`` re-scores the person boxes of an earlier ``frames.jsonl`` without a model.
 ``--detector truth`` feeds the ground-truth boxes as detections (no model, no GPU) to check that the
 camera calibration and keep-out zone line up before a real run.
 """
@@ -20,13 +22,14 @@ camera calibration and keep-out zone line up before a real run.
 import argparse
 import csv
 import json
+import math
 import statistics
 import time
 from pathlib import Path
 
 from camera_calib import normalize_camera
 from camera_frames import person_detections
-from hazard_reporter import point_in_ring
+from hazard_reporter import REQUIRED_CONSECUTIVE_FRAMES, point_in_ring
 from observation_export import ground_position
 
 # 예측 상자와 정답(보이는 영역) 상자가 이만큼 겹치면 같은 작업자를 찾은 것으로 본다.
@@ -98,15 +101,17 @@ def match(predicted, expected, threshold=MATCH_IOU):
 
 
 def visible_workers(worker_boxes, min_pixels=MIN_VISIBLE_PIXELS):
-    """Worker id -> visible box ``[x0, y0, x1 + 1, y1 + 1]`` and the ids seen but too small."""
-    visible, small = {}, []
+    """Worker id -> visible box ``[x0, y0, x1 + 1, y1 + 1]``, for targets and for those too small.
+
+    Too-small workers are not scored; a prediction on one is ignored rather than counted as a
+    false positive (COCO "ignore" regions).
+    """
+    visible, small = {}, {}
     for box in worker_boxes:
         if not box.get("pixels"):
             continue
-        if box["pixels"] < min_pixels:
-            small.append(box["worker_id"])
-            continue
-        visible[box["worker_id"]] = [float(box["x0"]), float(box["y0"]), float(box["x1"]) + 1, float(box["y1"]) + 1]
+        target = small if box["pixels"] < min_pixels else visible
+        target[box["worker_id"]] = [float(box["x0"]), float(box["y0"]), float(box["x1"]) + 1, float(box["y1"]) + 1]
     return visible, small
 
 
@@ -121,6 +126,9 @@ def score_frame(frame, people_by_camera, render, min_pixels=MIN_VISIBLE_PIXELS):
         ids = sorted(visible)
         predicted = [p["bbox_xyxy"] for p in people]
         pairs = match(predicted, [visible[w] for w in ids])
+        matched = {i for i, _, _ in pairs}
+        unmatched = [i for i in range(len(predicted)) if i not in matched]
+        ignored = match([predicted[i] for i in unmatched], list(small.values()))
         found, errors = [], []
         for i, j, _ in pairs:
             worker = ids[j]
@@ -138,8 +146,9 @@ def score_frame(frame, people_by_camera, render, min_pixels=MIN_VISIBLE_PIXELS):
                 continue
             inside = inside or point_in_ring(point["x"], point["y"], render["keep_out"])
         record["cameras"][sensor] = {
-            "visible": ids, "too_small": small, "found": sorted(found),
-            "false_positives": len(predicted) - len(pairs), "position_errors_m": errors,
+            "visible": ids, "too_small": sorted(small), "found": sorted(found),
+            "ignored_predictions": len(ignored),
+            "false_positives": len(unmatched) - len(ignored), "position_errors_m": errors,
             "inside_detected": inside, "people": predicted}
     return record
 
@@ -148,13 +157,62 @@ def _rate(hit, total):
     return {"hit": hit, "total": total, "rate": round(hit / total, 4) if total else None}
 
 
+def percentile(ordered, q):
+    """Nearest-rank percentile of sorted values: the ``ceil(q/100 * n)``-th smallest value."""
+    return ordered[max(0, math.ceil(q / 100 * len(ordered)) - 1)]
+
+
 def _stats(values):
     if not values:
         return {"count": 0}
     ordered = sorted(values)
     return {"count": len(ordered), "median": round(statistics.median(ordered), 4),
-            "p95": round(ordered[min(len(ordered) - 1, int(0.95 * len(ordered)))], 4),
-            "max": round(ordered[-1], 4)}
+            "p95": round(percentile(ordered, 95), 4), "max": round(ordered[-1], 4)}
+
+
+def _runs(records, member):
+    """Maximal runs of adjacent records (consecutive evaluated frames) for which ``member`` holds."""
+    runs, current = [], []
+    for previous, record in zip([None] + records[:-1], records):
+        adjacent = previous is not None and record["frame"] - previous["frame"] == record.get("stride", 1)
+        if member(record) and current and adjacent:
+            current.append(record)
+        elif member(record):
+            current = [record]
+            runs.append(current)
+        else:
+            current = []
+    return runs
+
+
+def consecutive_alarms(records, required=REQUIRED_CONSECUTIVE_FRAMES):
+    """HazardEvent rule (team decision 2026-11-05): frame numbers where some camera saw the keep-out zone occupied on ``required`` adjacent frames."""
+    alarmed = set()
+    for sensor in sorted({s for r in records for s in r["cameras"]}):
+        for run in _runs(records, lambda r: r["cameras"].get(sensor, {}).get("inside_detected", False)):
+            alarmed.update(r["frame"] for r in run[required - 1:])
+    return alarmed
+
+
+def _alarm_quality(records, alarmed, frame_period):
+    """Hit and false-alarm rates, first-alarm delay per entry and the longest unalarmed stretch."""
+    intrusion = [r for r in records if r["inside_truth"]]
+    clear = [r for r in records if not r["inside_truth"]]
+    delays, missed, longest = [], 0, 0
+    for run in _runs(records, lambda r: bool(r["inside_truth"])):
+        hits = [r for r in run if r["frame"] in alarmed]
+        if hits:
+            delays.append(hits[0]["sim_time"] - run[0]["sim_time"])
+        else:
+            missed += 1
+        for gap in _runs(run, lambda r: r["frame"] not in alarmed):
+            longest = max(longest, len(gap))
+    return {"hit_when_inside": _rate(sum(r["frame"] in alarmed for r in intrusion), len(intrusion)),
+            "false_alarm_when_clear": _rate(sum(r["frame"] in alarmed for r in clear), len(clear)),
+            "entries": len(delays) + missed, "entries_never_alarmed": missed,
+            "first_alarm_delay_s": _stats(delays),
+            "longest_unalarmed_inside": {"frames": longest,
+                                         "seconds": round(longest * frame_period, 4) if frame_period else None}}
 
 
 def summarize(records):
@@ -181,17 +239,30 @@ def summarize(records):
         any_visible += len(seen)
         any_found += len(hit & seen)
     summary["combined_recall"] = _rate(any_found, any_visible)
-    # 금지구역 경보: 정답상 누군가 안에 있는 프레임에서 어느 카메라든 투영 위치가 구역 안이면 적중.
+    # 금지구역 경보 두 가지:
+    # - keep_out_alarm: 프레임 단위. 어느 카메라든 투영 위치가 구역 안이면 그 프레임은 경보.
+    # - keep_out_event: HazardEvent 규칙. 같은 카메라가 연속 2프레임 구역 안을 봐야 경보.
+    # 진입(entry)은 정답상 누군가 구역 안에 있는 연속 프레임 구간이다.
+    period = _frame_period(records)
     intrusion = [r for r in records if r["inside_truth"]]
-    clear = [r for r in records if not r["inside_truth"]]
-    alarm = lambda r: any(c["inside_detected"] for c in r["cameras"].values())
-    summary["keep_out_alarm"] = {
-        "hit_when_inside": _rate(sum(alarm(r) for r in intrusion), len(intrusion)),
-        "false_alarm_when_clear": _rate(sum(alarm(r) for r in clear), len(clear)),
+    per_frame = {r["frame"] for r in records if any(c["inside_detected"] for c in r["cameras"].values())}
+    summary["keep_out_alarm"] = _alarm_quality(records, per_frame, period) | {
         "per_camera_hit_when_inside": {
             s: _rate(sum(r["cameras"][s]["inside_detected"] for r in intrusion if s in r["cameras"]),
                      sum(s in r["cameras"] for r in intrusion)) for s in sensors}}
+    stride = records[0].get("stride", 1) if records else 1
+    summary["keep_out_event"] = _alarm_quality(records, consecutive_alarms(records), period) | {
+        "required_consecutive_frames": REQUIRED_CONSECUTIVE_FRAMES, "stride": stride,
+        "note": ("same camera on consecutive evaluated frames" if stride == 1 else
+                 f"--stride {stride}: consecutive means {stride} render frames apart, not the live rule")}
     return summary
+
+
+def _frame_period(records):
+    """Median sim-time step between adjacent evaluated frames (s), or None."""
+    steps = [b["sim_time"] - a["sim_time"] for a, b in zip(records, records[1:])
+             if b["frame"] - a["frame"] == b.get("stride", 1)]
+    return statistics.median(steps) if steps else None
 
 
 def truth_people(render, frame, sensors, min_pixels=MIN_VISIBLE_PIXELS):
@@ -202,8 +273,29 @@ def truth_people(render, frame, sensors, min_pixels=MIN_VISIBLE_PIXELS):
 
 
 def frame_numbers(render, stride=1, limit=None):
-    frames = sorted(render["truth"])[::stride]
-    return frames[:limit] if limit else frames
+    """Rendered frames (those in ``boxes.json`` with ground truth), every ``stride``-th, at most ``limit``."""
+    if stride < 1 or (limit is not None and limit < 1):
+        raise ValueError("stride and limit must be positive")
+    rendered = sorted({frame for frame, _ in render["boxes"]} & set(render["truth"]))
+    frames = [f for f in rendered if (f - rendered[0]) % stride == 0] if rendered else []
+    return frames if limit is None else frames[:limit]
+
+
+def replay_people(path):
+    """Person boxes per frame and camera from an earlier ``frames.jsonl``."""
+    people = {}
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        record = json.loads(line)
+        people[record["frame"]] = {s: [{"bbox_xyxy": box, "confidence": None} for box in c["people"]]
+                                   for s, c in record["cameras"].items()}
+    return people
+
+
+def _positive(text):
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return value
 
 
 def main():
@@ -214,18 +306,21 @@ def main():
     parser.add_argument("--model-id", help="model path or hub id (not used with --detector truth)")
     parser.add_argument("--num-beams", type=int, default=3, help="Florence-2 only")
     parser.add_argument("--batch", action="store_true", help="run all cameras of a frame in one model call")
-    parser.add_argument("--stride", type=int, default=1)
-    parser.add_argument("--limit", type=int)
-    parser.add_argument("--min-visible-pixels", type=int, default=MIN_VISIBLE_PIXELS)
+    parser.add_argument("--stride", type=_positive, default=1)
+    parser.add_argument("--limit", type=_positive, help="score at most this many frames (default: all)")
+    parser.add_argument("--min-visible-pixels", type=_positive, default=MIN_VISIBLE_PIXELS)
+    parser.add_argument("--replay-frames", type=Path,
+                        help="re-score the person boxes of an earlier frames.jsonl instead of running a model")
     args = parser.parse_args()
 
     from PIL import Image
     from detectors import DETECTORS, WORKER_SCORE_THRESHOLD
 
     render = load_render(args.render_dir)
-    if args.detector != "truth" and not args.model_id:
+    replay = replay_people(args.replay_frames) if args.replay_frames else None
+    if replay is None and args.detector != "truth" and not args.model_id:
         parser.error("--model-id is required for model detectors")
-    if args.detector == "truth":
+    if replay is not None or args.detector == "truth":
         detector = None
     elif args.detector == "florence2":
         detector = DETECTORS["florence2"](args.model_id, num_beams=args.num_beams)
@@ -236,7 +331,16 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
     records, call_ms, wall_started = [], [], time.perf_counter()
     with (args.output_dir / "frames.jsonl").open("w", encoding="utf-8") as out:
-        for frame in frame_numbers(render, args.stride, args.limit):
+        frames = frame_numbers(render, args.stride, args.limit)
+        if replay is not None:
+            frames = [f for f in frames if f in replay]
+        for frame in frames:
+            if replay is not None:
+                record = score_frame(frame, replay[frame], render, args.min_visible_pixels)
+                record["stride"] = args.stride
+                records.append(record)
+                out.write(json.dumps(record, ensure_ascii=False) + "\n")
+                continue
             images = [Image.open(render["dir"] / s / f"{frame:06d}.png").convert("RGB") for s in sensors]
             for sensor, image in zip(sensors, images):
                 camera = render["cameras"][sensor]
@@ -248,17 +352,21 @@ def main():
                               for people in truth_people(render, frame, sensors, args.min_visible_pixels).values()]
             elif args.batch:
                 detections, ms = detector.detect_batch(images)
-                call_ms.append(ms)
+                frame_ms = [ms]
             else:
-                detections = []
+                detections, frame_ms = [], []
                 for image in images:
                     detection, ms = detector.detect(image)
                     detections.append(detection)
-                    call_ms.append(ms)
+                    frame_ms.append(ms)
+            if detector is not None:
+                call_ms.extend(frame_ms)
             people = {s: person_detections(d, im.width, im.height, min_score)
                       for s, d, im in zip(sensors, detections, images)}
             record = score_frame(frame, people, render, args.min_visible_pixels)
             record["labels"] = {s: d.get("labels", []) for s, d in zip(sensors, detections)}
+            record["stride"] = args.stride
+            record["model_call_ms"] = frame_ms if detector is not None else []
             records.append(record)
             out.write(json.dumps(record, ensure_ascii=False) + "\n")
     wall = time.perf_counter() - wall_started
@@ -266,6 +374,7 @@ def main():
     images_per_call = len(sensors) if args.batch else 1
     summary.update({
         "detector": args.detector, "model_id": args.model_id, "batch": args.batch,
+        "replay_frames": str(args.replay_frames) if args.replay_frames else None,
         "num_beams": args.num_beams if args.detector == "florence2" else None,
         "match_iou": MATCH_IOU, "min_visible_pixels": args.min_visible_pixels,
         "render_dir": str(args.render_dir), "render_fps": render["fps"],

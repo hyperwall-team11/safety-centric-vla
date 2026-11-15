@@ -172,14 +172,19 @@ python offline_eval.py --render-dir <렌더 폴더> --detector florence2 \
   --model-id /abr/coss38/florence-2-base --output-dir eval/florence2 [--batch] [--num-beams 1]
 python offline_eval.py --render-dir <렌더 폴더> --detector rtdetr \
   --model-id PekingU/rtdetr_r50vd --output-dir eval/rtdetr
+# 3) 모델을 다시 돌리지 않고 이전 frames.jsonl의 예측 상자를 새 채점 기준으로 다시 계산
+python offline_eval.py --render-dir <렌더 폴더> --replay-frames eval/rtdetr/frames.jsonl --output-dir eval/rtdetr_rescored
 ```
 
-- 채점: 카메라마다 보이는 작업자(마스크 픽셀 400 이상)의 정답 상자와 예측 `person` 상자를 IoU 0.5 이상으로 1:1 대응합니다. 정답 상자는 가려진 부분을 뺀 보이는 영역입니다.
+- 평가 프레임은 `boxes.json`에 있는 프레임입니다. 부분 렌더(`--frames f0:f1`) 폴더도 그대로 쓸 수 있습니다. `--stride`, `--limit`, `--min-visible-pixels`는 양의 정수만 받습니다.
+- 채점: 카메라마다 보이는 작업자(마스크 픽셀 400 이상)의 정답 상자와 예측 `person` 상자를 IoU 0.5 이상으로 1:1 대응합니다. 정답 상자는 가려진 부분을 뺀 보이는 영역입니다. 400 픽셀 미만으로 작게 보이는 작업자는 채점에서 빼고, 그 정답 상자와 IoU 0.5 이상 겹치는 예측은 오탐으로 세지 않고 무시합니다(`ignored_predictions`, COCO ignore 방식).
 - `summary.json`
   - `cameras.<id>.recall`, `recall_in_keep_out`, `precision`, `position_error_m`(대응된 상자의 투영 위치와 정답 위치 거리)
   - `combined_recall`: 어느 카메라든 보이는 작업자를 찾은 비율
-  - `keep_out_alarm`: 정답상 금지구역 안에 작업자가 있는 프레임에서 어느 카메라든 투영 위치가 구역 안인 비율(`hit_when_inside`), 아무도 없는 프레임의 오경보 비율(`false_alarm_when_clear`). 연속 2프레임 규칙은 적용하지 않은 프레임 단위 값입니다.
-  - `model_call_ms`, `per_camera_hz_model_only`, `per_camera_hz_wall`(PNG 읽기 포함)
+  - `keep_out_alarm`: 프레임 단위 경보. 정답상 금지구역 안에 작업자가 있는 프레임에서 어느 카메라든 투영 위치가 구역 안인 비율(`hit_when_inside`), 아무도 없는 프레임의 오경보 비율(`false_alarm_when_clear`). HazardEvent 등록률이 아닙니다.
+  - `keep_out_event`: HazardEvent 규칙(같은 카메라 연속 2프레임)으로 낸 같은 지표. 실제 등록에 가까운 값은 이쪽입니다. `--stride`가 1보다 크면 '연속'이 `stride` 프레임 간격이 되어 실시간 규칙과 의미가 달라지며, 요약의 `note`에 남습니다.
+  - 두 경보 모두 `entries`(정답상 연속 진입 구간 수), `entries_never_alarmed`, `first_alarm_delay_s`(진입 시작부터 첫 경보까지), `longest_unalarmed_inside`(진입 중 경보가 없던 가장 긴 연속 구간의 프레임 수·초)를 냅니다.
+  - `model_call_ms`(p95는 nearest-rank: 정렬한 값의 `ceil(0.95n)`번째), `per_camera_hz_model_only`, `per_camera_hz_wall`(PNG 읽기 포함). 프레임별 호출 시간은 `frames.jsonl`의 `model_call_ms`에 남습니다.
 - `--detector truth`로 `hit_when_inside`가 1.0에 가깝지 않으면 카메라 정보나 구역 좌표가 어긋난 것이니 모델 측정 전에 확인합니다. 가림으로 발이 안 보이면 정답 상자로도 위치 오차가 생깁니다.
 - 미구현: ROS 토픽 실시간 입력. 이 스크립트는 저장된 PNG만 처리하므로 처리율은 카메라 수신·전송 지연을 포함하지 않습니다.
 
