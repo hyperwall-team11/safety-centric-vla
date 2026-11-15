@@ -7,7 +7,7 @@ import os
 import statistics
 import sys
 from dataclasses import asdict, dataclass
-from time import perf_counter, time
+from time import monotonic, sleep, time
 from typing import Any, Callable
 from urllib import error, request
 from uuid import uuid4
@@ -16,6 +16,7 @@ from uuid import uuid4
 KPI9_THRESHOLD_MS = 1000.0  # 개발계획서 v1.0 9장 KPI 9
 SCENARIO_A_RUNS = 10  # 사용자정의서 시스템구조도 v0.1 시나리오 A
 SCENARIO_A_MIN_SUCCESS_RATE_PERCENT = 90.0  # 사용자정의서 시스템구조도 v0.1 시나리오 A
+ACK_POLL_INTERVAL_SECONDS = 0.02
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,32 @@ class BackendClient:
         except error.URLError as exc:
             raise RuntimeError(f"Backend 연결 실패({self.base_url}): {exc.reason}") from exc
 
+    def get(self, path: str) -> dict[str, Any]:
+        req = request.Request(
+            f"{self.base_url}{path}",
+            method="GET",
+            headers={"Accept": "application/json"},
+        )
+        try:
+            with request.urlopen(req, timeout=self.timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"GET {path} → HTTP {exc.code}: {detail}") from exc
+        except error.URLError as exc:
+            raise RuntimeError(f"Backend 연결 실패({self.base_url}): {exc.reason}") from exc
+
+
+def wait_for_ack(client: BackendClient, proposal_id: str, timeout_seconds: float) -> dict[str, Any]:
+    deadline = monotonic() + timeout_seconds
+    while True:
+        record = client.get(f"/action-proposals/{proposal_id}/ack")
+        if record.get("status") != "PENDING":
+            return record
+        if monotonic() >= deadline:
+            raise RuntimeError("Backend ACK 기록 대기 시간을 초과했습니다.")
+        sleep(ACK_POLL_INTERVAL_SECONDS)
+
 
 def register_robot(client: BackendClient, robot_id: str) -> None:
     client.post("/robots", {
@@ -94,7 +121,6 @@ def register_robot(client: BackendClient, robot_id: str) -> None:
 
 def run_trial(client: BackendClient, robot_id: str, index: int, threshold_ms: float) -> Trial:
     instruction = f"{robot_id} 로봇을 좌표 ({index + 1}, 0, 0)로 이동해"
-    started = perf_counter()
     task_id: str | None = None
     proposal_id: str | None = None
     elapsed_ms: float | None = None
@@ -121,9 +147,12 @@ def run_trial(client: BackendClient, robot_id: str, index: int, threshold_ms: fl
 
         execution_requested = True
         executing = client.post(f"/action-proposals/{proposal_id}/execute", {})
-        elapsed_ms = (perf_counter() - started) * 1000
         if executing.get("status") != "EXECUTING":
             raise RuntimeError(f"Action publish 상태가 EXECUTING이 아닙니다: {executing.get('status')}")
+        ack = wait_for_ack(client, proposal_id, max(client.timeout, threshold_ms / 1000 + 1))
+        elapsed_ms = ack.get("command_to_ack_ms")
+        if ack.get("status") != "ACKNOWLEDGED" or elapsed_ms is None:
+            raise RuntimeError(f"어댑터 ACK가 기한 내 도착하지 않았습니다: {ack.get('status')}")
 
         client.post(
             f"/action-proposals/{proposal_id}/result",
@@ -170,7 +199,7 @@ def main(
     argv: list[str] | None = None,
     client_factory: Callable[[str, float], BackendClient] = BackendClient,
 ) -> int:
-    parser = argparse.ArgumentParser(description="자연어 명령부터 승인 Action publish API 응답까지 KPI 9 proxy 측정")
+    parser = argparse.ArgumentParser(description="자연어 명령부터 어댑터 ACK까지 KPI 9 측정")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--runs", type=int, default=SCENARIO_A_RUNS)
     parser.add_argument("--threshold-ms", type=float, default=KPI9_THRESHOLD_MS)
@@ -191,7 +220,7 @@ def main(
     trials = [run_trial(client, robot_id, index, args.threshold_ms) for index in range(args.runs)]
     summary = build_summary(trials, args.threshold_ms)
     report = {
-        "scope": "KPI 9 proxy (어댑터 ACK 제외): 자연어 TaskOrder 생성 → 안전 평가 → 승인 Action publish API 응답",
+        "scope": "KPI 9: 자연어 명령 Backend 수신 → 어댑터 ACK Backend 수신",
         "scenario_a_min_success_rate_percent": SCENARIO_A_MIN_SUCCESS_RATE_PERCENT,
         "summary": summary,
         "trials": [asdict(trial) for trial in trials],

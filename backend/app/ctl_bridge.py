@@ -13,7 +13,7 @@ from collections.abc import Callable
 from typing import Any, Protocol
 from urllib import error, request
 
-from .models import ActionProposal, AdapterResultReport, Robot, Zone
+from .models import ActionProposal, AdapterAckEvent, AdapterResultReport, Robot, Zone
 
 
 LOGGER = logging.getLogger(__name__)
@@ -222,9 +222,11 @@ class Ros2ActionDispatcher:
         self,
         result_api_base: str = "http://127.0.0.1:8000",
         safety_event_handler: Callable[[dict[str, Any]], None] | None = None,
+        ack_event_handler: Callable[[AdapterAckEvent], None] | None = None,
     ) -> None:
         self.result_api_base = result_api_base.rstrip("/")
         self.safety_event_handler = safety_event_handler
+        self.ack_event_handler = ack_event_handler
         self._node: Any = None
         self._rclpy: Any = None
         self._string_type: Any = None
@@ -338,6 +340,15 @@ class Ros2ActionDispatcher:
                 if self.safety_event_handler is not None:
                     self.safety_event_handler(event)
                 return
+            if event.get("kind") == "ACK":
+                ack = AdapterAckEvent.model_validate(event)
+                expected_robot_id = self._proposal_robots.get(ack.proposal_id)
+                if expected_robot_id is None or ack.robot_id != expected_robot_id:
+                    LOGGER.warning("대상 Robot이 일치하지 않는 CTL ACK를 무시했습니다: %s", event)
+                    return
+                if self.ack_event_handler is not None:
+                    self.ack_event_handler(ack)
+                return
             if event.get("kind") != "RESULT":
                 return
             proposal_id = event.get("proposal_id")
@@ -347,7 +358,7 @@ class Ros2ActionDispatcher:
                 return
             report = result_event_to_report(event)
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
-            LOGGER.warning("CTL RESULT 계약 오류: %s", exc)
+            LOGGER.warning("CTL 이벤트 계약 오류: %s", exc)
             return
 
         threading.Thread(

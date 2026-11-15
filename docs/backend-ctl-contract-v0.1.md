@@ -167,6 +167,12 @@ CTL은 자신의 `robot_id`와 다른 명령을 무시한다. 같은 `proposal_i
 }
 ```
 
+Backend는 승인 Action 발행 시 1초 기한의 ACK 대기 기록을 만든다. 첫 ACK의
+CTL `timestamp`와 Backend 수신 시각을 모두 보존하고, 명령 HTTP 수신→Backend ACK 수신
+지연을 KPI 9로 계산한다. 중복 ACK는 첫 기록을 덮어쓰지 않는다. 기한 후 ACK는
+원본 시각을 저장하되 상태는 `TIMED_OUT`으로 유지한다. Backend는 ACK 누락 시
+자동 재발행하지 않으며, 재시도 정책은 별도 통합 작업으로 둔다.
+
 ### 5.2 RESULT
 
 ```json

@@ -5,6 +5,7 @@ from threading import RLock
 
 from .models import (
     ActionProposal,
+    AdapterAckRecord,
     AdapterResultReport,
     ExecutionLog,
     HazardEvent,
@@ -32,10 +33,12 @@ class InMemoryStore:
             self.workers_observed_at: datetime | None = None
             self.zones: dict[str, Zone] = {}
             self.tasks: dict[str, TaskOrder] = {}
+            self.task_received_at: dict[str, datetime] = {}
             self.task_idempotency: dict[str, tuple[str, str]] = {}
             self.proposals: dict[str, ActionProposal] = {}
             self.proposal_idempotency: dict[tuple[str, str], tuple[str, str]] = {}
             self.proposal_results: dict[str, AdapterResultReport] = {}
+            self.proposal_acks: dict[str, AdapterAckRecord] = {}
             self.hazards: dict[str, HazardEvent] = {}
             # CRITICAL HazardEvent 중 E-Stop을 발행하게 한 hazard_id. 모두 해제되면 정지 신호를 푼다.
             self.estop_hazard_ids: set[str] = set()

@@ -30,7 +30,7 @@
 
 ## 2. 구현 엔드포인트
 
-현재 구현은 19개 path, 22개 HTTP operation으로 구성된다.
+현재 구현은 20개 path, 23개 HTTP operation으로 구성된다.
 
 | Method | Path | 성공 | 용도 |
 |---|---|---:|---|
@@ -51,6 +51,7 @@
 | `POST` | `/action-proposals` | `201` | 외부 VLA의 ActionProposal 직접 등록 |
 | `POST` | `/action-proposals/{proposal_id}/evaluate` | `200` | 안전 규칙 평가 |
 | `POST` | `/action-proposals/{proposal_id}/execute` | `200` | 실행 직전 재평가 후 Mock adapter 전달 |
+| `GET` | `/action-proposals/{proposal_id}/ack` | `200` | 어댑터 ACK 수신 상태와 KPI 9 원시 지연 조회 |
 | `POST` | `/action-proposals/{proposal_id}/result` | `200` | 제어 어댑터 실행 결과 보고 |
 | `POST` | `/hazards` | `201` | HazardEvent 등록 |
 | `POST` | `/hazards/{hazard_id}/resolve` | `200` | HazardEvent 해제 |
@@ -277,7 +278,17 @@ TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 
 - 자동 생성한 MOVE_TO의 출발 위치나 좌표계가 실행 직전 백엔드에 저장된 로봇 위치와 다르면 전송을 차단한다. 출발점만 불일치하면 Proposal을 `REJECTED`, TaskOrder를 `PLANNING`으로 바꿔 새 제안을 생성할 수 있다.
 - 통과 시 Proposal을 `EXECUTING`, TaskOrder를 `RUNNING`, Robot을 `MOVING`으로 바꾸고 Mock adapter 전달을 나타내는 `EXECUTE` 로그를 남긴다.
 - 평가와 실행 직전 재평가 로그에는 `evaluated_in_ms`를 기록한다.
-- KPI 9 proxy는 현재 명령 입력부터 이 API 응답까지 측정한다. 어댑터 ACK 시각은 Backend에 저장하지 않으므로 KPI 9의 최종 명령→ACK 지연에는 사용할 수 없다.
+- 실행 요청 전송 실패 시 ACK 대기 기록을 제거한다. 발행 성공 시 1초 기한의 ACK 대기 기록을 만든다.
+
+`GET /action-proposals/{proposal_id}/ack`
+
+- `PENDING`: 발행 후 1초 기한 내에 ACK를 기다리는 상태다.
+- `ACKNOWLEDGED`: 기한 내 첫 ACK를 수신한 상태다.
+- `TIMED_OUT`: 1초 기한 내 ACK를 받지 못했거나 기한 후 첫 ACK가 도착한 상태다.
+- 응답은 `command_received_at`, `dispatched_at`, `timeout_at`, CTL 원본 `adapter_ack_at`, Backend `ack_received_at`, `command_to_ack_ms`, `duplicate_count`를 포함한다.
+- `command_to_ack_ms`는 Backend의 명령 HTTP 수신 시각과 ACK 콜백 수신 시각으로 계산해 분리 호스트 간 시계 오차를 피한다. CTL `timestamp`는 원본 근거로 별도 보존한다.
+- 중복 ACK는 첫 수신 시각과 지연을 덮어쓰지 않고 `duplicate_count`만 증가시킨다. 알 수 없는 Proposal, Robot 불일치, 시각 형식 오류 ACK는 무시한다.
+- Proposal이 없거나 실행되지 않아 ACK 대기 기록이 없으면 `404`다.
 
 `POST /action-proposals/{proposal_id}/result`
 
@@ -385,4 +396,4 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q app tests
 ```
 
-OpenAPI 경로 수는 19개, operation 수는 22개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.
+OpenAPI 경로 수는 20개, operation 수는 23개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.

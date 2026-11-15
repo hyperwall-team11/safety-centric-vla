@@ -1,4 +1,6 @@
 import unittest
+from datetime import timedelta
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -6,12 +8,13 @@ from app import main
 from app.ctl_bridge import (
     CommandSerializationError,
     DispatchError,
+    Ros2ActionDispatcher,
     build_approved_action_command,
     result_event_to_report,
     result_topic,
 )
 from app.main import app, seed_rules
-from app.models import ActionProposal, Robot, Zone
+from app.models import ActionProposal, AdapterAckEvent, Robot, Zone, utc_now
 from app.store import store
 
 
@@ -164,6 +167,36 @@ class BackendCtlBridgeTest(unittest.TestCase):
         self.assertEqual(result_topic("robot-01"), "/adapter/robot_01/result")
         self.assertEqual(result_topic("01-arm"), "/adapter/r_01_arm/result")
 
+    def test_ros_bridge_delivers_valid_ack_event(self) -> None:
+        received = []
+        dispatcher = Ros2ActionDispatcher(ack_event_handler=received.append)
+        dispatcher._proposal_robots["proposal-1"] = "robot-01"
+        message = SimpleNamespace(data=(
+            '{"kind":"ACK","robot_id":"robot-01","proposal_id":"proposal-1",'
+            '"timestamp":"2026-11-15T00:00:00Z"}'
+        ))
+
+        dispatcher._on_result(message)
+
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0].proposal_id, "proposal-1")
+
+    def test_ros_bridge_ignores_ack_with_wrong_robot_or_timestamp(self) -> None:
+        received = []
+        dispatcher = Ros2ActionDispatcher(ack_event_handler=received.append)
+        dispatcher._proposal_robots["proposal-1"] = "robot-01"
+
+        dispatcher._on_result(SimpleNamespace(data=(
+            '{"kind":"ACK","robot_id":"robot-02","proposal_id":"proposal-1",'
+            '"timestamp":"2026-11-15T00:00:00Z"}'
+        )))
+        dispatcher._on_result(SimpleNamespace(data=(
+            '{"kind":"ACK","robot_id":"robot-01","proposal_id":"proposal-1",'
+            '"timestamp":"not-a-time"}'
+        )))
+
+        self.assertEqual(received, [])
+
     def test_publish_failure_does_not_transition_execution_state(self) -> None:
         store.reset()
         seed_rules()
@@ -192,6 +225,7 @@ class BackendCtlBridgeTest(unittest.TestCase):
         self.assertEqual(store.tasks[task["task_id"]].status, "PLANNING")
         self.assertEqual(store.robots["robot-01"].status, "IDLE")
         self.assertEqual(len(store.logs), log_count)
+        self.assertNotIn(action["proposal_id"], store.proposal_acks)
 
     def test_execute_dispatches_approved_snapshot_before_state_change(self) -> None:
         store.reset()
@@ -222,6 +256,80 @@ class BackendCtlBridgeTest(unittest.TestCase):
             dispatcher.commands[0]["parameters"]["target_pose"]["position"],
             [1.0, 2.0, 0.0],
         )
+        ack = client.get(f"/action-proposals/{action['proposal_id']}/ack")
+        self.assertEqual(ack.status_code, 200, ack.text)
+        self.assertEqual(ack.json()["status"], "PENDING")
+
+    def test_ack_is_recorded_once_and_duplicate_count_is_incremented(self) -> None:
+        store.reset()
+        seed_rules()
+        client = TestClient(app)
+        self.assertEqual(
+            client.post("/robots", json=robot().model_dump(mode="json")).status_code,
+            201,
+        )
+        task = client.post(
+            "/task-orders/from-natural-language",
+            json={"instruction": "robot-01 로봇을 좌표 (1, 2, 0)로 이동해", "frame_id": "world"},
+        ).json()
+        action = client.post(
+            f"/task-orders/{task['task_id']}/action-proposals",
+            json={"speed_limit": 0.3},
+        ).json()
+        client.post(f"/action-proposals/{action['proposal_id']}/evaluate")
+        main.action_dispatcher = RecordingDispatcher()
+        client.post(f"/action-proposals/{action['proposal_id']}/execute")
+        ack = AdapterAckEvent(
+            proposal_id=action["proposal_id"],
+            robot_id="robot-01",
+            timestamp=utc_now(),
+        )
+
+        main.apply_ctl_ack_event(ack)
+        first = client.get(f"/action-proposals/{action['proposal_id']}/ack").json()
+        main.apply_ctl_ack_event(ack)
+        duplicate = client.get(f"/action-proposals/{action['proposal_id']}/ack").json()
+
+        self.assertEqual(first["status"], "ACKNOWLEDGED")
+        self.assertIsNotNone(first["command_to_ack_ms"])
+        self.assertEqual(first["ack_received_at"], duplicate["ack_received_at"])
+        self.assertEqual(duplicate["duplicate_count"], 1)
+
+    def test_ack_query_marks_missing_ack_as_timed_out(self) -> None:
+        store.reset()
+        seed_rules()
+        client = TestClient(app)
+        self.assertEqual(
+            client.post("/robots", json=robot().model_dump(mode="json")).status_code,
+            201,
+        )
+        task = client.post(
+            "/task-orders/from-natural-language",
+            json={"instruction": "robot-01 로봇을 좌표 (1, 2, 0)로 이동해", "frame_id": "world"},
+        ).json()
+        action = client.post(
+            f"/task-orders/{task['task_id']}/action-proposals",
+            json={"speed_limit": 0.3},
+        ).json()
+        client.post(f"/action-proposals/{action['proposal_id']}/evaluate")
+        main.action_dispatcher = RecordingDispatcher()
+        client.post(f"/action-proposals/{action['proposal_id']}/execute")
+        store.proposal_acks[action["proposal_id"]].timeout_at = utc_now() - timedelta(seconds=1)
+
+        response = client.get(f"/action-proposals/{action['proposal_id']}/ack")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "TIMED_OUT")
+        main.apply_ctl_ack_event(AdapterAckEvent(
+            proposal_id=action["proposal_id"],
+            robot_id="robot-01",
+            timestamp=utc_now(),
+        ))
+        late_ack = client.get(f"/action-proposals/{action['proposal_id']}/ack").json()
+        self.assertEqual(late_ack["status"], "TIMED_OUT")
+        self.assertIsNotNone(late_ack["adapter_ack_at"])
+        self.assertIsNotNone(late_ack["ack_received_at"])
+        self.assertIsNotNone(late_ack["command_to_ack_ms"])
 
     def test_ctl_estop_event_holds_active_execution(self) -> None:
         store.reset()

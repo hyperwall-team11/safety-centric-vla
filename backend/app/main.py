@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from datetime import timedelta
 from hashlib import sha256
 from math import dist
 from os import getenv
@@ -34,6 +35,9 @@ from .ctl_bridge import (
 from .models import (
     ActionProposal,
     ActionType,
+    AdapterAckEvent,
+    AdapterAckRecord,
+    AdapterAckStatus,
     AdapterFailureCode,
     AdapterResultReport,
     AdapterResultStatus,
@@ -112,6 +116,8 @@ TASK_ORDER_RESPONSE_HEADERS = {
 }
 # control/robot_adapter/diff_drive_core.py의 도착 판정 허용 오차와 동일하다.
 TRAJECTORY_START_TOLERANCE_M = 0.05
+# 개발계획서 v1.0 KPI 9의 명령 입력→어댑터 ACK 목표 시간과 같다.
+ADAPTER_ACK_TIMEOUT_SECONDS = 1.0
 STATE_HEARTBEAT_SECONDS = 15.0
 # UI 상태 스트림 부하 제한이며 ROS 2 안전 heartbeat·판정 주기와 무관하다.
 STATE_MIN_PUSH_INTERVAL_SECONDS = 0.2
@@ -348,9 +354,39 @@ def _publish_estop(active: bool, reason: str) -> None:
         LOGGER.error("E-Stop 발행 실패(%s): %s", reason, exc)
 
 
+def apply_ctl_ack_event(ack: AdapterAckEvent) -> None:
+    """CTL ACK 첫 수신 기록을 보존하고 중복은 개수만 누적한다."""
+    received_at = utc_now()
+    with store.lock:
+        record = store.proposal_acks.get(ack.proposal_id)
+        if record is None:
+            LOGGER.warning("발행 기록이 없는 CTL ACK를 무시했습니다: %s", ack.proposal_id)
+            return
+        if record.robot_id != ack.robot_id:
+            LOGGER.warning("대상 Robot이 일치하지 않는 CTL ACK를 무시했습니다: %s", ack.proposal_id)
+            return
+        if record.ack_received_at is not None:
+            record.duplicate_count += 1
+            return
+
+        record.adapter_ack_at = ack.timestamp
+        record.ack_received_at = received_at
+        record.command_to_ack_ms = max(
+            0.0,
+            (received_at - record.command_received_at).total_seconds() * 1000,
+        )
+        record.status = (
+            AdapterAckStatus.ACKNOWLEDGED
+            if received_at <= record.timeout_at
+            else AdapterAckStatus.TIMED_OUT
+        )
+
+
 action_dispatcher = create_action_dispatcher()
 if hasattr(action_dispatcher, "safety_event_handler"):
     action_dispatcher.safety_event_handler = apply_ctl_safety_event
+if hasattr(action_dispatcher, "ack_event_handler"):
+    action_dispatcher.ack_event_handler = apply_ctl_ack_event
 
 
 @app.on_event("startup")
@@ -529,6 +565,7 @@ def create_task_from_natural_language(
         Header(alias="Idempotency-Key"),
     ] = None,
 ) -> TaskOrder:
+    command_received_at = utc_now()
     normalized_key = normalize_idempotency_key(idempotency_key)
     request_fingerprint = make_request_fingerprint(request)
     with store.lock:
@@ -553,6 +590,7 @@ def create_task_from_natural_language(
         except TaskParseError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         store.tasks[task.task_id] = task
+        store.task_received_at[task.task_id] = command_received_at
         if normalized_key is not None:
             store.task_idempotency[normalized_key] = (
                 task.task_id,
@@ -868,14 +906,25 @@ def execute_action(proposal_id: str) -> ActionProposal:
             raise HTTPException(status_code=409, detail="실행 직전 안전 재검증에 실패했습니다.")
 
         try:
+            dispatched_at = utc_now()
+            store.proposal_acks[proposal.proposal_id] = AdapterAckRecord(
+                proposal_id=proposal.proposal_id,
+                task_id=task.task_id,
+                robot_id=robot.robot_id,
+                command_received_at=store.task_received_at.get(task.task_id, task.created_at),
+                dispatched_at=dispatched_at,
+                timeout_at=dispatched_at + timedelta(seconds=ADAPTER_ACK_TIMEOUT_SECONDS),
+            )
             action_dispatcher.dispatch(
                 proposal,
                 robot,
                 list(store.zones.values()),
             )
         except CommandSerializationError as exc:
+            store.proposal_acks.pop(proposal.proposal_id, None)
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except DispatchError as exc:
+            store.proposal_acks.pop(proposal.proposal_id, None)
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=str(exc),
@@ -899,6 +948,25 @@ def execute_action(proposal_id: str) -> ActionProposal:
             )
         )
         return proposal
+
+
+@app.get(
+    "/action-proposals/{proposal_id}/ack",
+    response_model=AdapterAckRecord,
+)
+def get_action_ack(proposal_id: str) -> AdapterAckRecord:
+    with store.lock:
+        if proposal_id not in store.proposals:
+            raise HTTPException(status_code=404, detail="ActionProposal을 찾을 수 없습니다.")
+        record = store.proposal_acks.get(proposal_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="ActionProposal의 ACK 대기 기록을 찾을 수 없습니다.")
+        if (
+            record.status == AdapterAckStatus.PENDING
+            and utc_now() > record.timeout_at
+        ):
+            record.status = AdapterAckStatus.TIMED_OUT
+        return record.model_copy(deep=True)
 
 
 @app.post("/action-proposals/{proposal_id}/result", response_model=ActionProposal)

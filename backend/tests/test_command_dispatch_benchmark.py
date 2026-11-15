@@ -20,6 +20,7 @@ from benchmark_command_to_dispatch import (  # noqa: E402
 class FakeBackendClient:
     def __init__(self, _base_url: str = "", _timeout: float = 0, *, reject: bool = False) -> None:
         self.reject = reject
+        self.timeout = _timeout
         self.calls: list[tuple[str, dict]] = []
         self.sequence = 0
 
@@ -38,6 +39,14 @@ class FakeBackendClient:
             return {"status": "EXECUTING"}
         if path.endswith("/result"):
             return {"status": body["status"]}
+        raise AssertionError(f"unexpected path: {path}")
+
+    def get(self, path):
+        if path.endswith("/ack"):
+            return {
+                "status": "ACKNOWLEDGED",
+                "command_to_ack_ms": 25.0,
+            }
         raise AssertionError(f"unexpected path: {path}")
 
 
@@ -64,6 +73,7 @@ class CommandDispatchBenchmarkTest(unittest.TestCase):
         trial = run_trial(client, "robot-01", 0, 1000)
         self.assertTrue(trial.execution_succeeded)
         self.assertTrue(trial.latency_passed)
+        self.assertEqual(trial.elapsed_ms, 25.0)
         self.assertEqual(client.calls[-1][1]["status"], "SUCCEEDED")
 
     def test_run_trial_records_rejection_without_aborting(self):
