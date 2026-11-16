@@ -23,6 +23,7 @@ class FakeBackendClient:
         self.timeout = _timeout
         self.calls: list[tuple[str, dict]] = []
         self.sequence = 0
+        self.latest_proposal_id: str | None = None
 
     def post(self, path, body, headers=None):
         self.calls.append((path, body))
@@ -32,21 +33,27 @@ class FakeBackendClient:
             self.sequence += 1
             return {"task_id": f"task-{self.sequence}"}
         if path.endswith("/action-proposals"):
-            return {"proposal_id": f"proposal-{self.sequence}"}
+            self.latest_proposal_id = f"proposal-{self.sequence}"
+            return {"proposal_id": self.latest_proposal_id}
         if path.endswith("/evaluate"):
             return {"status": "REJECTED" if self.reject else "APPROVED"}
         if path.endswith("/execute"):
             return {"status": "EXECUTING"}
-        if path.endswith("/result"):
-            return {"status": body["status"]}
         raise AssertionError(f"unexpected path: {path}")
 
     def get(self, path):
+        if path == "/robots":
+            return []
         if path.endswith("/ack"):
             return {
                 "status": "ACKNOWLEDGED",
                 "command_to_ack_ms": 25.0,
             }
+        if path.endswith("/action-proposals"):
+            return [{
+                "proposal_id": self.latest_proposal_id,
+                "status": "COMPLETED",
+            }]
         raise AssertionError(f"unexpected path: {path}")
 
 
@@ -74,7 +81,7 @@ class CommandDispatchBenchmarkTest(unittest.TestCase):
         self.assertTrue(trial.execution_succeeded)
         self.assertTrue(trial.latency_passed)
         self.assertEqual(trial.elapsed_ms, 25.0)
-        self.assertEqual(client.calls[-1][1]["status"], "SUCCEEDED")
+        self.assertFalse(any(path.endswith("/result") for path, _body in client.calls))
 
     def test_run_trial_records_rejection_without_aborting(self):
         client = FakeBackendClient(reject=True)
@@ -92,6 +99,23 @@ class CommandDispatchBenchmarkTest(unittest.TestCase):
             )
         self.assertEqual(success_code, 0)
         self.assertEqual(failure_code, 1)
+
+    def test_main_uses_explicit_ctl_robot_id(self):
+        client = FakeBackendClient()
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = main(
+                ["--runs", "1", "--robot-id", "tiago-ctl", "--json"],
+                lambda _base_url, _timeout: client,
+            )
+        self.assertEqual(code, 0)
+        robot_call = next(body for path, body in client.calls if path == "/robots")
+        self.assertEqual(robot_call["robot_id"], "tiago-ctl")
+        task_call = next(
+            body
+            for path, body in client.calls
+            if path == "/task-orders/from-natural-language"
+        )
+        self.assertIn("tiago-ctl", task_call["instruction"])
 
 
 if __name__ == "__main__":

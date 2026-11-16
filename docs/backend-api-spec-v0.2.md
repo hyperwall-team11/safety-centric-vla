@@ -285,9 +285,11 @@ TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 
 - `PENDING`: 발행 후 1초 기한 내에 ACK를 기다리는 상태다.
 - `ACKNOWLEDGED`: 기한 내 첫 ACK를 수신한 상태다.
 - `TIMED_OUT`: 1초 기한 내 ACK를 받지 못했거나 기한 후 첫 ACK가 도착한 상태다.
+- `PENDING`의 기한 경과는 이 조회 API 호출 또는 늦은 ACK 처리 시점에 `TIMED_OUT`으로 확정한다. 백그라운드 타이머는 사용하지 않는다.
 - 응답은 `command_received_at`, `dispatched_at`, `timeout_at`, CTL 원본 `adapter_ack_at`, Backend `ack_received_at`, `command_to_ack_ms`, `duplicate_count`를 포함한다.
 - `command_to_ack_ms`는 Backend의 명령 HTTP 수신 시각과 ACK 콜백 수신 시각으로 계산해 분리 호스트 간 시계 오차를 피한다. CTL `timestamp`는 원본 근거로 별도 보존한다.
 - 중복 ACK는 첫 수신 시각과 지연을 덮어쓰지 않고 `duplicate_count`만 증가시킨다. 알 수 없는 Proposal, Robot 불일치, 시각 형식 오류 ACK는 무시한다.
+- ACK 상태는 전송 진단값이며 Proposal·TaskOrder·Robot 실행 상태를 변경하지 않는다. 완료·실패 전이는 실제 CTL `RESULT`만 처리한다.
 - Proposal이 없거나 실행되지 않아 ACK 대기 기록이 없으면 `404`다.
 
 `POST /action-proposals/{proposal_id}/result`

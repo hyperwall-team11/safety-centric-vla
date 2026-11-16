@@ -69,23 +69,30 @@ python3 -m unittest discover -s tests -v
 ROS 2 dispatcher와 CTL 어댑터를 함께 실행한 상태에서 자연어 명령의 Backend 수신부터
 어댑터 ACK의 Backend 수신까지 10회 지연을 측정합니다. 각 회차의 실행 성공률과
 1초 이내 지연 통과율을 별도로 집계하며,
-한 회차가 실패해도 나머지 측정을 계속합니다. 실행 요청 뒤 실패한 경우 `FAILED` 결과를 보고해
-로봇이 `EXECUTING`/`MOVING` 상태에 남지 않도록 복구를 시도합니다.
+한 회차가 실패해도 나머지 측정을 계속합니다. ACK 측정 후에는 실제 CTL `RESULT`가
+Backend에 반영될 때까지 기다리며, 벤치마크가 성공·실패 결과를 대신 등록하지 않습니다.
 
 ```bash
 cd backend
 python3 scripts/benchmark_command_to_dispatch.py --runs 10 --threshold-ms 1000
 ```
 
+CTL 어댑터의 Robot ID가 기본값 `robot-01`과 다르면 `--robot-id`로 같은 값을
+지정합니다. 좌표계는 기본 `world`이며 필요하면 `--frame-id`로 바꿉니다. 실제 동작
+완료 대기시간은 `--result-timeout`(기본 120초)으로 지정합니다.
+
 Backend는 `GET /action-proposals/{proposal_id}/ack`에서 `PENDING`, `ACKNOWLEDGED`,
 `TIMED_OUT`을 반환합니다. 명령 수신·발행·CTL ACK·Backend ACK 수신 시각과
 `command_to_ack_ms`를 함께 보존하므로 원시 지연을 재현할 수 있습니다. 어댑터와
 Backend의 시계 오차가 KPI에 영향을 주지 않도록 `command_to_ack_ms`는 Backend 수신 시각끼리
-계산합니다. mock dispatcher는 ACK를 보내지 않으므로 KPI 측정에 사용할 수 없습니다.
+계산합니다. `PENDING`의 1초 기한 경과는 ACK 조회 또는 늦은 ACK 처리 시점에
+`TIMED_OUT`으로 확정하며 별도 백그라운드 타이머는 없습니다. ACK 상태는 전송 진단값일
+뿐 Proposal·TaskOrder·Robot의 실행 상태를 변경하지 않습니다. mock dispatcher는 ACK를
+보내지 않으므로 KPI 측정에 사용할 수 없습니다.
 
 > **주의:** ROS 2 dispatcher를 활성화한 환경에서는 벤치마크 MOVE가 실제 ROS Action을 발행하므로
-> mock 또는 격리된 시험 환경에서만 실행합니다. 현재 Robot 삭제 API가 없어 벤치마크가 등록한 Robot은
-> 저장소에 남으므로 측정 뒤 개발 서버의 저장소를 초기화해야 합니다.
+> mock 또는 격리된 시험 환경에서만 실행합니다. `--robot-id`에 이미 등록된 Robot을 지정하면
+> 재등록하지 않습니다. 새 ID를 지정한 경우 현재 Robot 삭제 API가 없어 저장소에 남습니다.
 
 ## 자연어 파서 예시
 
