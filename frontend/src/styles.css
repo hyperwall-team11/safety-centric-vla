@@ -346,3 +346,5 @@ tbody tr.selected { background: rgba(0, 113, 227, .07); box-shadow: inset 3px 0 
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+.sim-zone[data-frame-diff] polygon { stroke-opacity: .35; }
+.sim-zone[data-frame-diff] text, .sim-frame-diff { color: #c77800; fill: #c77800; }

@@ -4,6 +4,7 @@ import type { Zone } from "../api/types";
 import type { Point } from "../api/explain";
 import { fetchSimScene } from "../api/sim";
 import { useState } from "react";
+import { sameRing } from "./siteMapGeometry";
 
 function ring(zone: Zone): [number, number][] {
   const g = zone.geometry as { points?: number[][]; coordinates?: number[][][] };
@@ -26,12 +27,6 @@ type SiteMapProps = {
 
 // 시뮬레이션 동적 객체(로봇·작업자)가 이 시간(초) 넘게 갱신되지 않으면 오래된 관측으로 표시한다.
 const SIM_STALE_S = 2;
-
-/** 두 다각형이 같은 꼭짓점(순서 무관, 허용 오차 tol m)으로 이루어졌는지 */
-function sameRing(a: [number, number][], b: [number, number][], tol = 0.05) {
-  if (a.length !== b.length) return false;
-  return a.every(([x, y]) => b.some(([u, v]) => Math.abs(x - u) <= tol && Math.abs(y - v) <= tol));
-}
 
 const centroid = (pts: [number, number][]) => ({
   x: pts.reduce((a, p) => a + p[0], 0) / pts.length,
@@ -59,6 +54,14 @@ export function SiteMap({ selectedRobotId, selectedZoneId, onRobotClick, onZoneC
   const simAge = (updatedAt: number) => sim.data!.observed_at - updatedAt;
   const simStale = (updatedAt: number) => simAge(updatedAt) > SIM_STALE_S;
   const simDynamicOn = simOn && !simLost;
+  // 시뮬레이션 장면은 world 좌표계다. 다른 좌표계(map 등)의 등록 항목은 변환 없이 같은 위치로 비교하지 않는다.
+  const simFrame = sim.data?.frame_id;
+  const sameFrame = (frameId: string) => simFrame === undefined || frameId === simFrame;
+  const otherFrames = simOn ? [...new Set([
+    ...(zones.data ?? []).map((z) => z.frame_id),
+    ...(robots.data ?? []).map((r) => r.pose.frame_id),
+    ...(workers.data?.workers ?? []).map((w) => w.pose.frame_id),
+  ].filter((f) => !sameFrame(f)))] : [];
   const flip = (y: number) => -y;
 
   // 계획 경로: trajectory가 있으면 그대로, 없으면 로봇 위치 → 목적지 구역 중심을 점선으로 잇는다.
@@ -139,10 +142,13 @@ export function SiteMap({ selectedRobotId, selectedZoneId, onRobotClick, onZoneC
             {sim.data!.zones.map((z) => {
               // 등록된 구역과 겹쳐 그려 배치를 비교한다. 같으면 라벨을 생략하고, 다르면 불일치로 표시한다.
               const registered = zones.data?.find((b) => b.zone_id === z.zone_id);
-              const mismatch = registered !== undefined && !sameRing(ring(registered), z.points);
-              const label = !registered ? `${z.zone_id} (미등록)` : mismatch ? `${z.zone_id} 시뮬레이션 배치 불일치` : undefined;
+              const frameDiff = registered !== undefined && !sameFrame(registered.frame_id);
+              const mismatch = registered !== undefined && !frameDiff && !sameRing(ring(registered), z.points);
+              const label = !registered ? `${z.zone_id} (미등록)`
+                : frameDiff ? `${z.zone_id} 좌표계 다름 (${registered.frame_id} ≠ ${simFrame}) · 비교 안 함`
+                : mismatch ? `${z.zone_id} 시뮬레이션 배치 불일치` : undefined;
               return (
-                <g key={z.zone_id} className="sim-zone" data-type={z.zone_type} data-registered={registered ? true : undefined} data-mismatch={mismatch || undefined}>
+                <g key={z.zone_id} className="sim-zone" data-type={z.zone_type} data-registered={registered ? true : undefined} data-mismatch={mismatch || undefined} data-frame-diff={frameDiff || undefined}>
                   <polygon points={z.points.map(([x, y]) => `${x},${flip(y)}`).join(" ")} />
                   {label && <text x={z.points[0][0]} y={flip(z.points[0][1]) + (registered ? 0.28 : -0.1) * k} style={{ fontSize: 0.19 * k }}>{label}</text>}
                 </g>
@@ -202,6 +208,7 @@ export function SiteMap({ selectedRobotId, selectedZoneId, onRobotClick, onZoneC
             <input type="checkbox" checked={showSim} onChange={(e) => setShowSim(e.target.checked)} />
             시뮬레이션 정답 ({sim.data.source})
             {simLost && <small className="sim-lost">연결 끊김 · 위치 숨김</small>}
+            {otherFrames.length > 0 && <small className="sim-frame-diff">좌표계 불일치: {otherFrames.join(", ")} 항목은 시뮬레이션({simFrame})과 비교하지 않음</small>}
           </label>
         )}
       </figcaption>
