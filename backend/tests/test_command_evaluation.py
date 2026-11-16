@@ -6,7 +6,13 @@ from pathlib import Path
 EVALUATION_DIR = Path(__file__).resolve().parents[1] / "evaluation"
 sys.path.insert(0, str(EVALUATION_DIR))
 
-from run_command_evaluation import DEFAULT_CASES, evaluate, load_cases, summary  # noqa: E402
+from run_command_evaluation import (  # noqa: E402
+    DEFAULT_CASES,
+    evaluate,
+    load_cases,
+    summary,
+    validate_case,
+)
 
 
 class CommandEvaluationTest(unittest.TestCase):
@@ -21,6 +27,21 @@ class CommandEvaluationTest(unittest.TestCase):
         failures = [result for result in results if not result.passed]
         self.assertEqual(failures, [], "\n".join(f"{r.case_id}: {r.message}" for r in failures))
         self.assertEqual(summary(cases, results)["accuracy_percent"], 100.0)
+
+    def test_valid_case_requires_every_expected_field(self):
+        with self.assertRaisesRegex(ValueError, "기대 필드 누락"):
+            validate_case({"id": "V", "instruction": "명령", "valid": True})
+
+    def test_rejected_case_requires_known_error_code(self):
+        with self.assertRaisesRegex(ValueError, "expected_error_code 누락"):
+            validate_case({"id": "X", "instruction": "명령", "valid": False})
+        with self.assertRaisesRegex(ValueError, "알 수 없는 expected_error_code"):
+            validate_case({
+                "id": "X",
+                "instruction": "명령",
+                "valid": False,
+                "expected_error_code": "UNKNOWN",
+            })
 
 
 if __name__ == "__main__":

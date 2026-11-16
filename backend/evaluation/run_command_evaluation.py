@@ -14,11 +14,18 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.models import NaturalLanguageTaskRequest
-from app.task_parser import TaskParseError, parse_task_order_preview
+from app.task_parser import TaskParseError, TaskParseErrorCode, parse_task_order_preview
 
 
 DEFAULT_CASES = Path(__file__).with_name("command_cases.jsonl")
 KNOWN_ROBOTS = ["robot-01", "robot-02"]
+VALID_EXPECTED_FIELDS = {
+    "robot_id",
+    "action_type",
+    "destination_type",
+    "destination_value",
+    "object_id",
+}
 
 
 @dataclass(frozen=True)
@@ -38,8 +45,29 @@ def load_cases(path: Path) -> list[dict[str, Any]]:
             case = json.loads(line)
         except json.JSONDecodeError as exc:
             raise ValueError(f"{path}:{line_number} JSON 오류: {exc}") from exc
+        validate_case(case, f"{path}:{line_number}")
         cases.append(case)
     return cases
+
+
+def validate_case(case: dict[str, Any], source: str = "평가 케이스") -> None:
+    missing_common = {"id", "instruction", "valid"} - case.keys()
+    if missing_common:
+        raise ValueError(f"{source} 필수 필드 누락: {sorted(missing_common)}")
+    if case["valid"]:
+        missing = VALID_EXPECTED_FIELDS - case.keys()
+        if missing:
+            raise ValueError(f"{source} 정상 명령 기대 필드 누락: {sorted(missing)}")
+        if "expected_error_code" in case:
+            raise ValueError(f"{source} 정상 명령에는 expected_error_code를 둘 수 없습니다.")
+        return
+    error_code = case.get("expected_error_code")
+    if error_code is None:
+        raise ValueError(f"{source} 거부 명령 expected_error_code 누락")
+    try:
+        TaskParseErrorCode(error_code)
+    except ValueError as exc:
+        raise ValueError(f"{source} 알 수 없는 expected_error_code: {error_code}") from exc
 
 
 def _destination_value(preview) -> str | list[float]:
@@ -59,6 +87,14 @@ def evaluate_case(case: dict[str, Any]) -> CaseResult:
     except TaskParseError as exc:
         elapsed_ms = (perf_counter() - started) * 1000
         if not case["valid"]:
+            expected = case["expected_error_code"]
+            if exc.code.value != expected:
+                return CaseResult(
+                    case["id"],
+                    False,
+                    elapsed_ms,
+                    f"거부 코드 {exc.code.value} (기대 {expected})",
+                )
             return CaseResult(case["id"], True, elapsed_ms, f"예상대로 거부: {exc.code.value}")
         return CaseResult(case["id"], False, elapsed_ms, f"예상과 달리 거부: {exc.code.value} · {exc}")
 
@@ -74,9 +110,9 @@ def evaluate_case(case: dict[str, Any]) -> CaseResult:
         "object_id": preview.target_object_id,
     }
     mismatches = [
-        f"{key}={actual[key]!r} (기대 {expected!r})"
-        for key, expected in case.items()
-        if key in actual and actual[key] != expected
+        f"{key}={actual[key]!r} (기대 {case[key]!r})"
+        for key in VALID_EXPECTED_FIELDS
+        if actual[key] != case[key]
     ]
     if mismatches:
         return CaseResult(case["id"], False, elapsed_ms, "; ".join(mismatches))
