@@ -175,6 +175,7 @@ pixi run amr-cycle-demo         # 터미널 4: 순환 데모 (검증 서버 대�
 | `/robot/head_camera/image_raw` | 브리지 → 외부 | sensor data, 15Hz | 로봇 머리 카메라, frame_id `camera_head_camera` |
 | `.../camera_info` | 브리지 → 외부 | sensor data, 15Hz | 각 카메라의 `CameraInfo` (fovy로 계산한 K·P, 왜곡 없음) |
 | `/sim/worker_pose` | 브리지 → 외부 | 기본, 50Hz | `geometry_msgs/PoseStamped` 작업자 실제 위치 (`world`) |
+| `/sim/worker_pose_<n>` | 브리지 → 외부 | `cctv_renderer:=threejs`, `camera_hz` | `geometry_msgs/PoseStamped` 추가 작업자(`worker_2`, `worker_3` mocap) 실제 위치 (`world`), n = 2, 3 |
 | `/sim/worker_in_keep_out` | 브리지 → 외부 | 기본, 50Hz | `std_msgs/Bool` 작업자가 금지구역 안에 있는지 (실제값) |
 | `/safety/approved_action` | 검증 서버 → 어댑터 | Reliable | 승인된 ActionProposal (JSON) |
 | `/safety/estop` | 검증 서버·운영자 → 어댑터 | Reliable, latched | `{"active", "triggered_by", "issued_at"}` |
