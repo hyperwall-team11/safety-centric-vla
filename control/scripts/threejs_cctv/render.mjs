@@ -14,7 +14,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const arg = (name, def) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : def; };
 const dataDir = path.resolve(arg('data', path.join(here, '../../outputs/threejs_cctv/data')));
 const outDir = path.resolve(arg('out', path.join(here, '../../outputs/threejs_cctv')));
-const cams = arg('cameras', 'cctv_1,cctv_2').split(',');
+let cams = arg('cameras', '').split(',').filter(Boolean);   // 기본: 장면의 모든 카메라
 
 function findChromium() {
   if (process.env.CHROMIUM_PATH) return process.env.CHROMIUM_PATH;
@@ -67,7 +67,7 @@ await page.goto(`http://127.0.0.1:${port}/` + (process.argv.includes('--glb') ? 
 await page.waitForFunction(() => window.ready === true, null, { timeout: 300000 });
 const meta = await page.evaluate(() => window.meta);
 if (process.argv.includes('--live-test')) {   // 실시간 재생 속도 측정 (5초)
-  await page.goto(`http://127.0.0.1:${port}/?live&cam=${cams[0]}`);
+  await page.goto(`http://127.0.0.1:${port}/?live&cam=${cams[0] ?? 'cctv_1'}`);
   await page.waitForFunction(() => window.ready === true, null, { timeout: 300000 });
   await new Promise(r => setTimeout(r, 6000));
   console.log(await page.evaluate(() => document.body.lastElementChild.textContent || document.querySelector('div')?.textContent));
@@ -77,6 +77,7 @@ if (process.argv.includes('--glb')) {   // Blender Cycles용 정적 장면만 �
   console.log(await page.evaluate(() => window.exportGLB()));
   await browser.close(); server.close(); process.exit(0);
 }
+if (!cams.length) cams = Object.keys(meta.cameras);
 const [f0, f1] = arg('frames', `0:${meta.frames}`).split(':').map(Number);
 
 for (const c of cams) for (const sub of [c, `${c}_mask`]) fs.mkdirSync(path.join(outDir, sub), { recursive: true });
@@ -101,7 +102,7 @@ const camInfo = Object.fromEntries(Object.entries(meta.cameras).map(([k, v]) => 
   const fy = v.height / 2 / Math.tan(v.fovy * Math.PI / 360);
   return [k, { ...v, fx: fy, fy, cx: v.width / 2, cy: v.height / 2 }];
 }));
-fs.writeFileSync(path.join(outDir, 'cameras.json'), JSON.stringify({ fps: meta.fps, cameras: camInfo, workers: meta.workers, zone_rects: meta.zone_rects }, null, 2));
+fs.writeFileSync(path.join(outDir, 'cameras.json'), JSON.stringify({ fps: meta.fps, cameras: camInfo, camera_tracks: meta.camera_tracks ?? {}, workers: meta.workers, zone_rects: meta.zone_rects }, null, 2));
 console.log(`완료: ${outDir}`);
 await browser.close();
 server.close();

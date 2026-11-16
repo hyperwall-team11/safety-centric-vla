@@ -137,7 +137,7 @@ if (bakeTex) bd.traverse(o => { if (o.isMesh) o.castShadow = false; });
 
 // glTF 소품 (작업자 이동 범위 밖 가장자리에만 둔다: MuJoCo에 없는 물체가 작업자를 가리면 안 되므로)
 const gltf = new GLTFLoader();
-const DECOR = [
+const PLANT_DECOR = [
   ['barrel_03', [[-5.6, -2.9, 0], [-6.3, -3.3, 0.6], [-5.9, -3.9, 1.4]]],
   ['propane_tank', [[-6.8, -4.6, 0], [-7.2, -4.2, 0.4]]],
   ['wooden_crate_02', [[-3.6, 6.4, 0], [-2.7, 6.5, 0.3], [-3.2, 6.6, 0]]],
@@ -151,6 +151,15 @@ const DECOR = [
   ['plastic_crate_01', [[10.2, 5.0, 0], [10.2, 5.0, 0.2]]],
   ['metal_trash_can', [[6.3, -5.7, 0]]],
 ];
+// 물류창고: 랙(y ±7.6, x ±9.6) 바깥 벽 쪽과 도크 옆에만 둔다
+const WAREHOUSE_DECOR = [
+  ['plastic_crate_01', [[13.0, 3.4, 0], [13.0, 3.4, 0.2], [13.2, 4.2, 0.4]]],
+  ['cardboard_box_01', [[12.9, 5.6, 0], [13.3, 6.0, 0.5]]],
+  ['wooden_crate_02', [[-3.0, 9.6, 0], [-2.1, 9.7, 0.3], [5.0, -9.6, 0]]],
+  ['korean_fire_extinguisher_01', [[2.2, 8.6, 0]]],
+  ['metal_trash_can', [[13.0, -8.5, 0]]],
+];
+const DECOR = { 'warehouse_scene.xml': WAREHOUSE_DECOR }[meta.scene] ?? PLANT_DECOR;
 for (const [name, places] of DECOR) {
   if (!assets.models[name]) continue;
   const src = (await gltf.loadAsync('/assets/' + assets.models[name])).scene;
@@ -281,6 +290,11 @@ const jpegRound = (canvas, quality) => new Promise(res => {
 
 window.renderFrame = async (camName, f) => {
   setFrame(f);
+  const tr = meta.camera_tracks?.[camName]?.[f];   // 로봇 탑재 카메라: 프레임마다 자세가 바뀐다
+  if (tr) { const R = tr.mat, p = tr.pos, cam = cams[camName];
+    new THREE.Matrix4().set(R[0], R[1], R[2], p[0], R[3], R[4], R[5], p[1], R[6], R[7], R[8], p[2], 0, 0, 0, 1)
+      .decompose(cam.position, cam.quaternion, cam.scale);
+    cam.updateMatrixWorld(true); }
   cctvPasses[camName].uniforms.seed.value = (f * 7.13 + camName.length) % 100;
   composers[camName].render();
   const rgb = await jpegRound(renderer.domElement, 0.72);
@@ -334,7 +348,7 @@ window.exportGLB = async () => {
   await fetch('/upload/decor.json', { method: 'POST', body: JSON.stringify(DECOR) });
   return { bytes: glb.byteLength, stripped: stash.length };
 };
-window.meta = { frames: meta.frames, fps: meta.fps, cameras: meta.cameras, workers: meta.workers, zone_rects: meta.zone_rects };
+window.meta = { frames: meta.frames, fps: meta.fps, cameras: meta.cameras, camera_tracks: meta.camera_tracks, workers: meta.workers, zone_rects: meta.zone_rects };
 // 실시간 재생: render.html?live&cam=cctv_1 → 시뮬레이션 시각에 맞춰 계속 렌더하고 FPS를 표시한다
 if (location.search.includes('live')) {
   const camName = new URLSearchParams(location.search).get('cam') || 'cctv_1';

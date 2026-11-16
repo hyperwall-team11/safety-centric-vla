@@ -17,6 +17,25 @@ node render.mjs --data ../../outputs/threejs_cctv/data --out ../../outputs/three
 
 300프레임 × 카메라 2대 렌더는 Apple M3에서 약 70초 걸린다.
 
+### 물류창고 교차로 장면 (`warehouse_scene.xml`)
+
+선반 랙 12개 사이 십자(0,0)·T자(10,0) 교차로 현장이다. CCTV는 메인 통로 끝(서쪽 `cctv_1`, 북쪽 `cctv_2`)에 있고,
+랙 사이 보조 통로 안은 두 대 모두 가려져 관측 공백 장면이 생긴다. 작업자 경로는 `export_scene.py`의 `WAREHOUSE_WORKERS`
+(작업자 1: 보조 통로 → 교차로 돌발 진입, 작업자 2: 보조 통로에 숨었다가 재등장, 작업자 3: 통로 순찰)를 쓴다.
+`prop_rack_*`는 `props.js`의 팔레트 랙으로 그리고, 가운데 칸막이로 MuJoCo 박스와 같은 가림을 유지한다.
+glTF 소품은 장면별 목록(`render.html`의 `WAREHOUSE_DECOR`)으로 랙 바깥에만 둔다.
+
+```bash
+python export_scene.py --out ../../outputs/threejs_warehouse/data --duration 30 --fps 10 --scene warehouse_scene.xml
+node render.mjs --data ../../outputs/threejs_warehouse/data --out ../../outputs/threejs_warehouse
+```
+
+TIAGo는 도크(12.5, 0)에서 1초에 출발해 x통로를 0.5 m/s로 서쪽 주행하고 x=5.0에서 멈춘다(`SCENE_ROBOT`).
+고정 시나리오라 안전 판정(ESTOP)을 반영하지 않는다. 머리를 0.35 rad 숙인 탑재 카메라 `head_camera`도 함께 렌더하며,
+이동 카메라라 `scene.json`·`cameras.json`의 `camera_tracks.head_camera`에 프레임별 위치·회전(MuJoCo 카메라 축)과
+로봇 자기 위치(`base`: x, y, yaw)를 남긴다. 작업자 탐지·위험도 판정은 CV 파트에서 이 영상과 트랙을 입력으로 쓴다.
+`render.mjs`는 `--cameras`를 주지 않으면 장면의 모든 카메라를 렌더한다. 바닥 라이트맵은 아직 굽지 않았다.
+
 ### 지게차 모델
 
 `prop_forklift_*`는 `models/forklift.glb`로 그린다. 출처: Sketchfab [Forklift low poly](https://sketchfab.com/3d-models/forklift-low-poly-8ab650b3982243f8b661142de50f79c9), Ricardo Sanchez, **CC-BY-4.0** (영상·보고서에 출처 표기 필요).

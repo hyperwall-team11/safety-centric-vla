@@ -54,6 +54,43 @@ WORKERS = [
         "speed": 0.7, "vest": "lime", "pants": "jeans", "helmet": "orange",
     },
 ]
+# 물류창고 교차로(warehouse_scene.xml) 작업자 경로. 랙 사이 보조 통로는 CCTV 2대 모두에서 가려진다.
+WAREHOUSE_WORKERS = [
+    {   # 작업자 1: 교차로 옆 보조 통로(관측 공백)에서 십자 교차로로 돌발 진입
+        "waypoints": [
+            (6.0, -3.25, 3.0),   # 남동 보조 통로 안 (두 대 모두 가려짐)
+            (1.0, -3.25, 0.0),   # 보조 통로 입구 → y통로
+            (0.7, -0.5, 2.0),    # 십자 교차로 진입 (두 대 모두 보임)
+            (4.5, -0.25, 2.0),   # x통로에서 멈춰 선 로봇 정면까지 접근 (head_camera 근접 장면, 로봇 중심과 약 0.5 m)
+            (1.0, -0.9, 0.0),    # y통로로 되돌아와
+            (1.0, -3.25, 0.0),   # 보조 통로 입구 (반복 시 랙을 가로지르지 않게)
+        ],
+        "speed": 0.9, "vest": "lime", "pants": "navy", "helmet": "white",
+    },
+    {   # 작업자 2: T자 교차로에서 북동 보조 통로로 들어가 머문 뒤 다시 나온다 (관측 공백 → 재등장)
+        "waypoints": [(10.0, -0.6, 1.0), (10.0, 3.25, 0.0), (7.0, 3.25, 3.0), (10.0, 3.25, 0.0)],
+        "speed": 0.8, "vest": "orange", "pants": "jeans", "helmet": "yellow",
+    },
+    {   # 작업자 3: 서쪽 x통로 → 교차로 → y통로 북쪽 순찰
+        "waypoints": [(-10.0, 0.6, 1.0), (-1.0, 0.6, 1.0), (-1.0, 7.0, 2.0), (-1.0, 0.9, 0.0)],
+        "speed": 0.8, "vest": "lime", "pants": "jeans", "helmet": "orange",
+    },
+]
+# 장면별 작업자 경로 (없는 장면은 WORKERS)
+SCENE_WORKERS = {"warehouse_scene.xml": WAREHOUSE_WORKERS}
+# 장면별 로봇 주행: start초에 출발해 speed(m/s)로 직진, x가 stop_x 이하가 되면 정지.
+# head_tilt(rad, 음수가 아래)로 머리 카메라(head_camera)를 통로 바닥 쪽으로 숙인다. 없는 장면은 제자리 회전만.
+# 주행은 영상 데이터용 고정 시나리오이며 안전 판정(ESTOP 등)을 반영하지 않는다.
+SCENE_ROBOT = {"warehouse_scene.xml": {"start": 1.0, "speed": 0.5, "stop_x": 5.0, "head_tilt": -0.35}}
+ROBOT_CAMERA = "head_camera"
+
+
+def drive_robot(sim, motion):
+    x, _, _ = sim.pose()
+    if sim.time < motion["start"] or x <= motion["stop_x"]:
+        sim.stop()
+    else:
+        sim.set_velocity(motion["speed"], 0.0)
 VEST = {"lime": (196, 236, 40), "orange": (255, 120, 20)}
 # 알파 채널이 없는 속눈썹·눈썹 skin은 렌더하지 않는다 (CCTV 거리에서 보이지 않음)
 SKIP_SKINS = {"worker_eyebrow001", "worker_eyelashes01"}
@@ -132,7 +169,7 @@ class Skinner:
         return out
 
 
-def export_static(m, d, out: Path):
+def export_static(m, d, out: Path, workers_cfg=WORKERS, robot_camera=False):
     out.mkdir(parents=True, exist_ok=True)
     geoms, meshes = [], {}
     for g in range(m.ngeom):
@@ -168,9 +205,9 @@ def export_static(m, d, out: Path):
         })
 
     cams = {}
-    for sensor in ("cctv_1", "cctv_2"):
+    for sensor in ("cctv_1", "cctv_2") + ((ROBOT_CAMERA,) if robot_camera else ()):
         cid = m.camera(CAMERAS[sensor][0]).id
-        cams[sensor] = {"pos": d.cam_xpos[cid].tolist(), "mat": d.cam_xmat[cid].tolist(),
+        cams[sensor] = {"moving": sensor == ROBOT_CAMERA,"pos": d.cam_xpos[cid].tolist(), "mat": d.cam_xmat[cid].tolist(),
                         "fovy": float(m.cam_fovy[cid]), "width": 640, "height": 480,
                         "frame_id": f"camera_{sensor}"}
 
@@ -183,7 +220,7 @@ def export_static(m, d, out: Path):
         rects[key] = [float(d.geom_xpos[g.id][0]), float(d.geom_xpos[g.id][1]), float(g.size[0]), float(g.size[1])]
 
     workers = [{"id": f"worker-{i + 1:02d}", "suit": outfit_texture(out, w["vest"], w["pants"]),
-                "helmet": w["helmet"]} for i, w in enumerate(WORKERS)]
+                "helmet": w["helmet"]} for i, w in enumerate(workers_cfg)]
     return {"geoms": geoms, "meshes": {str(k): v for k, v in meshes.items()}, "skins": skins,
             "nskinvert": int(m.nskinvert), "cameras": cams, "zone_rects": rects, "workers": workers}
 
@@ -200,12 +237,20 @@ def main():
     sim = DiffDriveSim("scenario", model_path=MUJOCO_DIR / "models" / args.scene)
     m, d = sim.model, sim.data
     names = {m.body(i).name for i in range(m.nbody)}
-    scripts = [WorkerScript(waypoints=w["waypoints"], speed=w["speed"]) for w in WORKERS]
-    extra = [i for i in range(1, len(WORKERS)) if f"worker_{i + 1}" in names]
+    workers_cfg = SCENE_WORKERS.get(args.scene, WORKERS)
+    scripts = [WorkerScript(waypoints=w["waypoints"], speed=w["speed"]) for w in workers_cfg]
+    extra = [i for i in range(1, len(workers_cfg)) if f"worker_{i + 1}" in names]
+    motion = SCENE_ROBOT.get(args.scene)
+    if motion:
+        d.ctrl[m.actuator("head_2_joint_position").id] = motion["head_tilt"]
+        d.qpos[m.jnt_qposadr[m.joint("head_2_joint").id]] = motion["head_tilt"]
     scripts[0].apply(m, d)
     mujoco.mj_forward(m, d)
 
-    meta = export_static(m, d, args.out)
+    meta = export_static(m, d, args.out, workers_cfg, robot_camera=bool(motion))
+    # 이동 카메라는 프레임마다 위치·회전(cam→world, MuJoCo 카메라 축)과 로봇 자기 위치(오도메트리 x, y, yaw)를 남긴다
+    track = []
+    robot_cam = m.camera(CAMERAS[ROBOT_CAMERA][0]).id if motion else None
     meta["workers"] = [meta["workers"][0]] + [meta["workers"][i] for i in extra]
     gids = [g["id"] for g in meta["geoms"]]
     opt, cam = mujoco.MjvOption(), mujoco.MjvCamera()
@@ -235,13 +280,16 @@ def main():
         w = csv.writer(fc)
         w.writerow(["frame", "sim_time", "worker_id", "x", "y", "yaw", "in_keep_out",
                     "dist_to_robot", "robot_x", "robot_y"])
-        sim.set_velocity(0.0, 0.4)  # 로봇은 처음 1.2초 제자리 회전 후 정지
+        if not motion:
+            sim.set_velocity(0.0, 0.4)  # 로봇은 처음 1.2초 제자리 회전 후 정지
         for f in range(n):
             target = f * dt
             while sim.time < target - 1e-9:
                 scripts[0].apply(m, d)
+                if motion:
+                    drive_robot(sim, motion)
                 sim.step(min(0.02, target - sim.time))
-                if sim.time > 1.2:
+                if not motion and sim.time > 1.2:
                     sim.stop()
             states = [scripts[0].apply(m, d)]
             for i in extra:
@@ -249,6 +297,9 @@ def main():
                 d.mocap_pos[m.body_mocapid[m.body(f"worker_{i + 1}").id]] = [x, y, 0.0]
                 states.append((x, y, yaw))
             mujoco.mj_forward(m, d)
+            if motion:
+                track.append({"pos": d.cam_xpos[robot_cam].tolist(), "mat": d.cam_xmat[robot_cam].tolist(),
+                              "base": list(sim.pose())})
             mujoco.mjv_updateScene(m, d, opt, None, cam, mujoco.mjtCatBit.mjCAT_ALL, scn)
             pose = np.concatenate([d.geom_xpos[gids], d.geom_xmat[gids]], axis=1)
             fb.write(pose.astype("<f4").tobytes())
@@ -266,7 +317,9 @@ def main():
                             int(in_zone(m, "keep_out_zone", x, y)), f"{math.hypot(x - rx, y - ry):.3f}",
                             f"{rx:.4f}", f"{ry:.4f}"])
 
-    meta.update({"frames": n, "fps": args.fps, "ngeom_export": len(gids)})
+    meta.update({"frames": n, "fps": args.fps, "ngeom_export": len(gids), "scene": args.scene})
+    if motion:
+        meta["camera_tracks"] = {ROBOT_CAMERA: track}
     (args.out / "scene.json").write_text(json.dumps(meta))
     print(f"{n} 프레임, 작업자 {len(meta['workers'])}명 → {args.out}")
 
