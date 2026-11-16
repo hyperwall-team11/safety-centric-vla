@@ -8,7 +8,7 @@ ROS 2 제어 어댑터, 안전 경로(HOLD·E-Stop), MuJoCo 시뮬레이션 환�
 |---|---|---|---|
 | 1~5 | Python·MuJoCo·ROS 2 설치, 작업공간 빌드 | 완료 | `pixi run build` |
 | 6~7 | 바퀴 로봇 모델(TIAGo), 전진·회전·정지 | 완료 | `pixi run sim` |
-| 8 | ROS 2 브리지 (`/cmd_vel` → MuJoCo → `/odom`) | 완료 | `pixi run cctv-stream` | 카메라 토픽을 웹 콘솔용 MJPEG로 내보냄 (`http://127.0.0.1:8081/stream/cctv_1`). 브리지와 함께 실행. 처음 한 번은 `pixi run build` 후 브리지와 따로 띄운다(동시 빌드 충돌) |
+| 8 | ROS 2 브리지 (`/cmd_vel` → MuJoCo → `/odom`) | 완료 | `pixi run cctv-stream` | 카메라 토픽을 웹 콘솔용 MJPEG로 내보냄 (`http://127.0.0.1:8081/stream/cctv_1`). 지도용 시뮬레이션 장면도 `GET /scene`으로 제공(구역 표시·작업대·CCTV 시야는 장면 XML, 로봇·작업자는 `/odom`·`/sim/worker_pose`, 정답값). 브리지와 함께 실행. 처음 한 번은 `pixi run build` 후 브리지와 따로 띄운다(동시 빌드 충돌) |
 | `pixi run cmd-vel-demo` |
 | 9 | Mock 어댑터 (공통 Action, ACK·RESULT, E-Stop·HOLD) | 완료 | `pixi run roundtrip` |
 | CT-01 | 브리지 확장: `/joint_states`, 카메라 3대(Image + CameraInfo), TF, 주기 측정 | 완료 | `pixi run measure` |
