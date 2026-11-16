@@ -213,6 +213,9 @@ MANIPULATE 예:
 대조한다. `action_type`, `robot_id`, `parameters.target_pose`, MANIPULATE의 `object_id`,
 `frame_id`가 TaskOrder·Robot과 다르면 모델이 작업 문맥을 바꾼 것으로 보고 `422`로 거부한다.
 속도·경로의 안전성은 이 문맥 검증에서 승인하지 않고 이후 Action 제출 기준 평가에서 판정한다.
+`MOVE_TO trajectory`가 있으면 시작점은 Robot 현재 위치와 0.05m 이내여야 한다. 좌표
+목적지 또는 같은 좌표계의 Zone `navigation_target`이 있으면 끝점도 해당 좌표와 0.05m
+이내여야 한다. 물리 좌표가 없는 Zone은 `target_pose`의 Zone ID 일치만 검증한다.
 
 자동 생성한 `MOVE_TO`는 로봇의 현재 위치와 좌표 목적지 또는
 `Zone.geometry.navigation_target`을 잇는 직선 `trajectory`를 채운다.
@@ -253,7 +256,7 @@ CTL의 최종 실행 경로와 실시간 위치를 안전 검증에 반영하는
 
 `MOVE_TO parameters.speed_limit`와 최상위 `speed_limit`는 같아야 한다. `SAFETY` priority는 시스템이 발행하는 STOP·RESUME에만 허용한다.
 
-TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 VLA는 `POST /action-proposals`로 네 action_type을 직접 등록할 수 있으나, TaskOrder·Robot 존재 및 일치, 상태, 중복 활성 Proposal 검사를 모두 통과해야 한다.
+TaskOrder 기반 생성기와 외부 VLA 직접 등록은 현재 `MOVE_TO`와 `MANIPULATE`만 허용한다. `STOP`·`RESUME`은 일반 VLA 제안이 아니라 별도 안전 제어 경로에서만 생성한다. 직접 등록은 TaskOrder·Robot 존재 및 일치, 상태, 중복 활성 Proposal 검사를 모두 통과해야 한다.
 
 ### 3.5 평가와 실행
 

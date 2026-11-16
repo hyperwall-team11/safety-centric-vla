@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from math import dist
 from typing import Any
 
 from pydantic import ValidationError
@@ -15,7 +16,13 @@ from .models import (
     OntologyModel,
     Robot,
     TaskOrder,
+    Vector3,
+    Zone,
 )
+
+
+# CTL diff-drive 도착 판정 및 Backend 실행 직전 경로 시작점 검사와 같은 허용 오차다.
+TRAJECTORY_CONTEXT_TOLERANCE_M = 0.05
 
 
 class VlaOutputValidationError(ValueError):
@@ -47,6 +54,7 @@ def convert_vla_output_to_proposal(
     *,
     model_name: NonBlankString,
     model_version: NonBlankString,
+    destination_zone: Zone | None = None,
 ) -> ActionProposal:
     """VLA JSON 출력을 검증된 ``ActionProposal(PROPOSED)``로 변환한다.
 
@@ -77,7 +85,12 @@ def convert_vla_output_to_proposal(
         raise VlaOutputConversionError(f"VLA 출력 구조가 유효하지 않습니다: {exc}") from exc
 
     try:
-        validate_vla_proposal(proposal, task, robot)
+        validate_vla_proposal(
+            proposal,
+            task,
+            robot,
+            destination_zone=destination_zone,
+        )
     except VlaOutputValidationError as exc:
         raise VlaOutputConversionError(str(exc)) from exc
     return proposal
@@ -87,6 +100,8 @@ def validate_vla_proposal(
     proposal: ActionProposal,
     task: TaskOrder,
     robot: Robot,
+    *,
+    destination_zone: Zone | None = None,
 ) -> None:
     """모델 출력의 구조 검증 뒤 TaskOrder 문맥 일치 여부를 검증한다.
 
@@ -139,3 +154,44 @@ def validate_vla_proposal(
         raise VlaOutputValidationError(
             f"VLA 출력 frame_id({proposal.frame_id})가 예상 좌표계({expected_frame})와 다릅니다."
         )
+
+    if actual_action != ActionType.MOVE_TO or proposal.trajectory is None:
+        return
+    if len(proposal.trajectory) < 2:
+        raise VlaOutputValidationError("MOVE_TO trajectory에는 시작점과 끝점이 필요합니다.")
+
+    def position(point: dict[str, Any], label: str) -> Vector3:
+        try:
+            return Vector3.model_validate(point.get("position"))
+        except (AttributeError, ValidationError) as exc:
+            raise VlaOutputValidationError(
+                f"VLA 출력 trajectory {label}의 position이 유효하지 않습니다."
+            ) from exc
+
+    start = position(proposal.trajectory[0], "시작점")
+    if dist(
+        (start.x, start.y, start.z),
+        (robot.pose.position.x, robot.pose.position.y, robot.pose.position.z),
+    ) > TRAJECTORY_CONTEXT_TOLERANCE_M:
+        raise VlaOutputValidationError("VLA 출력 trajectory 시작점이 Robot 현재 위치와 다릅니다.")
+
+    expected_end: Vector3 | None = None
+    if isinstance(task.destination, CoordinateDestination):
+        expected_end = task.destination.position
+    elif destination_zone is not None and destination_zone.frame_id == proposal.frame_id:
+        navigation_target = destination_zone.geometry.get("navigation_target")
+        if navigation_target is not None:
+            try:
+                expected_end = Vector3.model_validate(navigation_target)
+            except ValidationError as exc:
+                raise VlaOutputValidationError(
+                    "TaskOrder 목적지 Zone의 navigation_target이 유효하지 않습니다."
+                ) from exc
+
+    if expected_end is not None:
+        end = position(proposal.trajectory[-1], "끝점")
+        if dist(
+            (end.x, end.y, end.z),
+            (expected_end.x, expected_end.y, expected_end.z),
+        ) > TRAJECTORY_CONTEXT_TOLERANCE_M:
+            raise VlaOutputValidationError("VLA 출력 trajectory 끝점이 TaskOrder 목적지와 다릅니다.")

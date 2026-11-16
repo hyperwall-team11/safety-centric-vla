@@ -116,6 +116,9 @@ TaskOrder 생성 요청에 선택적인 `Idempotency-Key` 헤더를 보내면 �
 TaskOrder의 행동, 대상 로봇·물체, 목적지와 좌표계가 바뀌지 않았는지 검증합니다.
 불일치 출력은 저장하거나 안전 규칙에 넘기지 않고 `422`로 거부합니다. 속도와 경로가
 현장 안전 기준을 만족하는지는 이 문맥 검증과 분리해 기존 제출 기준 평가에서 판정합니다.
+직접 제출하는 `MOVE_TO trajectory`가 있으면 시작점은 Robot 현재 위치와, 좌표 목적지
+또는 같은 좌표계의 Zone `navigation_target`이 있으면 끝점도 목적지와 0.05m 이내로
+일치해야 합니다. 물리 좌표가 없는 Zone은 의미상 `target_pose` 일치만 검증합니다.
 
 VLA 추론 런타임은 `app.vla_output.convert_vla_output_to_proposal()`에 JSON 문자열
 또는 파싱된 객체를 넘겨 원시 출력을 `ActionProposal(PROPOSED)`로 변환할 수 있습니다.
@@ -125,6 +128,9 @@ VLA는 `action_type`, `parameters`, `trajectory`, `frame_id`, `speed_limit`만 �
 바꾸면 변환을 거부합니다.
 실제 모델 연동 클라이언트는 `VlaOutputProvider`를 구현하고 `VlaActionPlanner`에
 주입하면 기존 ActionProposal 생성 경로를 바꾸지 않고 규칙 기반 플래너를 교체할 수 있습니다.
+현재 TaskOrder v1.1에서 VLA 자동·직접 제안으로 허용하는 행동은 목적지가 구조화된
+`MOVE_TO`와 대상 물체·목적지가 구조화된 `MANIPULATE`입니다. `STOP`·`RESUME`은
+일반 VLA 출력으로 받지 않고 별도 안전 제어 경로에서만 생성합니다.
 
 ## ActionProposal 생성
 

@@ -83,6 +83,28 @@ class ActionPlannerApiTest(unittest.TestCase):
             headers=headers,
         )
 
+    def external_move_proposal(
+        self,
+        task: dict,
+        *,
+        robot_id: str = "robot-01",
+        trajectory=None,
+    ) -> dict:
+        return {
+            "task_id": task["task_id"],
+            "robot_id": robot_id,
+            "action_type": "MOVE_TO",
+            "parameters": {
+                "target_pose": task["destination"],
+                "speed_limit": 0.3,
+            },
+            "trajectory": trajectory,
+            "frame_id": task["destination"].get("frame_id", "map"),
+            "speed_limit": 0.3,
+            "model_name": "external-vla",
+            "model_version": "test-1",
+        }
+
     def test_generates_move_to_and_transitions_task_to_planning(self) -> None:
         task = self.create_task()
         response = self.generate(task["task_id"])
@@ -122,6 +144,31 @@ class ActionPlannerApiTest(unittest.TestCase):
         self.assertEqual(proposal["speed_limit"], 0.2)
         self.assertEqual(proposal["model_name"], "stub-vla")
         self.assertEqual(proposal["model_version"], "test-1")
+
+    def test_external_robot_context_mismatch_returns_422_without_storage(self) -> None:
+        task = self.create_task()
+        response = self.client.post(
+            "/action-proposals",
+            json=self.external_move_proposal(task, robot_id="robot-02"),
+        )
+
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertIn("robot_id", response.json()["detail"])
+        self.assertEqual(store.proposals, {})
+
+    def test_external_trajectory_context_mismatch_returns_422_without_storage(self) -> None:
+        task = self.create_task("robot-01 로봇을 좌표 (1, 2, 0)로 이동해")
+        response = self.client.post(
+            "/action-proposals",
+            json=self.external_move_proposal(task, trajectory=[
+                {"position": {"x": 0, "y": 0, "z": 0}},
+                {"position": {"x": 3, "y": 2, "z": 0}},
+            ]),
+        )
+
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertIn("끝점", response.json()["detail"])
+        self.assertEqual(store.proposals, {})
 
     def test_coordinate_frame_and_explicit_speed_are_preserved(self) -> None:
         task = self.create_task(
@@ -376,7 +423,9 @@ class ActionPlannerApiTest(unittest.TestCase):
                 "model_version": "0.1.0",
             },
         )
-        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("robot_id", response.json()["detail"])
+        self.assertEqual(store.proposals, {})
         self.assertEqual(store.tasks[task["task_id"]].status, "CREATED")
         self.assertEqual(store.proposals, {})
 

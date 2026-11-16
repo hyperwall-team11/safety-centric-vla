@@ -55,6 +55,38 @@ def move_proposal(**changes) -> ActionProposal:
     return ActionProposal.model_validate(payload)
 
 
+def coordinate_task() -> TaskOrder:
+    return TaskOrder.model_validate({
+        "task_id": "task-coordinate",
+        "instruction": "robot-01 로봇을 좌표 (1, 2, 0)로 이동해",
+        "target_robot_id": "robot-01",
+        "target_object_id": None,
+        "destination": {
+            "type": "COORDINATE",
+            "frame_id": "map",
+            "position": {"x": 1, "y": 2, "z": 0},
+        },
+    })
+
+
+def coordinate_proposal(trajectory) -> ActionProposal:
+    return ActionProposal.model_validate({
+        "proposal_id": "proposal-coordinate",
+        "task_id": "task-coordinate",
+        "robot_id": "robot-01",
+        "action_type": "MOVE_TO",
+        "parameters": {
+            "target_pose": coordinate_task().destination.model_dump(mode="json"),
+            "speed_limit": 0.3,
+        },
+        "trajectory": trajectory,
+        "frame_id": "map",
+        "speed_limit": 0.3,
+        "model_name": "mock-vla",
+        "model_version": "test-1",
+    })
+
+
 def raw_move_output(**changes):
     payload = {
         "action_type": "MOVE_TO",
@@ -282,6 +314,29 @@ class VlaOutputValidationTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(VlaOutputValidationError, "object_id"):
             validate_vla_proposal(proposal, task, ROBOT)
+
+    def test_accepts_trajectory_matching_robot_and_coordinate_destination(self):
+        proposal = coordinate_proposal([
+            {"position": {"x": 0.01, "y": 0, "z": 0}},
+            {"position": {"x": 1.0, "y": 2.01, "z": 0}},
+        ])
+        validate_vla_proposal(proposal, coordinate_task(), ROBOT)
+
+    def test_rejects_trajectory_start_away_from_robot(self):
+        proposal = coordinate_proposal([
+            {"position": {"x": 0.2, "y": 0, "z": 0}},
+            {"position": {"x": 1, "y": 2, "z": 0}},
+        ])
+        with self.assertRaisesRegex(VlaOutputValidationError, "시작점"):
+            validate_vla_proposal(proposal, coordinate_task(), ROBOT)
+
+    def test_rejects_trajectory_end_away_from_destination(self):
+        proposal = coordinate_proposal([
+            {"position": {"x": 0, "y": 0, "z": 0}},
+            {"position": {"x": 2, "y": 2, "z": 0}},
+        ])
+        with self.assertRaisesRegex(VlaOutputValidationError, "끝점"):
+            validate_vla_proposal(proposal, coordinate_task(), ROBOT)
 
 
 if __name__ == "__main__":

@@ -64,6 +64,7 @@ from .models import (
     TriggerSource,
     Worker,
     Zone,
+    ZoneDestination,
     utc_now,
 )
 from .safety import WORKER_SNAPSHOT_MAX_AGE_SECONDS, default_rules, evaluate_proposal
@@ -677,17 +678,17 @@ def list_task_action_proposals(task_id: str) -> list[ActionProposal]:
 @app.post("/action-proposals", response_model=ActionProposal, status_code=status.HTTP_201_CREATED)
 def create_proposal(proposal: ActionProposal) -> ActionProposal:
     with store.lock:
-        robot = store.robots.get(proposal.robot_id)
-        if robot is None:
-            raise HTTPException(status_code=404, detail="대상 Robot을 찾을 수 없습니다.")
         task = store.tasks.get(proposal.task_id)
         if task is None:
             raise HTTPException(status_code=404, detail="대상 TaskOrder를 찾을 수 없습니다.")
         if proposal.robot_id != task.target_robot_id:
             raise HTTPException(
-                status_code=409,
+                status_code=422,
                 detail="ActionProposal의 robot_id가 TaskOrder의 대상 로봇과 다릅니다.",
             )
+        robot = store.robots.get(proposal.robot_id)
+        if robot is None:
+            raise HTTPException(status_code=404, detail="대상 Robot을 찾을 수 없습니다.")
         if task.status not in PLANNABLE_TASK_STATUSES:
             raise HTTPException(
                 status_code=409,
@@ -695,8 +696,18 @@ def create_proposal(proposal: ActionProposal) -> ActionProposal:
             )
         if robot.status == "ERROR":
             raise HTTPException(status_code=409, detail="ERROR 상태의 로봇에는 제안을 등록할 수 없습니다.")
+        destination_zone = (
+            store.zones.get(task.destination.zone_id)
+            if isinstance(task.destination, ZoneDestination)
+            else None
+        )
         try:
-            validate_vla_proposal(proposal, task, robot)
+            validate_vla_proposal(
+                proposal,
+                task,
+                robot,
+                destination_zone=destination_zone,
+            )
         except VlaOutputValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         if proposal.proposal_id in store.proposals:

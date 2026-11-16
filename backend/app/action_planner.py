@@ -82,6 +82,7 @@ class VlaActionPlanner:
                 robot,
                 model_name=self.model_name,
                 model_version=self.model_version,
+                destination_zone=destination_zone,
             )
         except VlaOutputConversionError as exc:
             raise ActionPlanningError(str(exc)) from exc
