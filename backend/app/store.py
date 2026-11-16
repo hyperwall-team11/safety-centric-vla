@@ -40,6 +40,8 @@ class InMemoryStore:
             # CRITICAL HazardEvent 중 E-Stop을 발행하게 한 hazard_id. 모두 해제되면 정지 신호를 푼다.
             self.estop_hazard_ids: set[str] = set()
             self.logs: list[ExecutionLog] = []
+            # 평가 단계 사전 시뮬레이션 PASS의 snapshot_id. 실행 직전 같은 상태일 때만 재사용한다.
+            self.twin_simulation_passes: dict[str, str] = {}
             self.rules: dict[str, SafetyRule] = {}
 
     @property

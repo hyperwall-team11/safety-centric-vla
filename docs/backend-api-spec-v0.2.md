@@ -266,6 +266,7 @@ TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 
 4. 대상 로봇 또는 TaskOrder의 `ZONE` 목적지와 연결된 OPEN·CRITICAL HazardEvent가 없음
 5. `KEEP_OUT` 목적지 및 경로 제한 충족
 6. 관측 안전 규칙을 활성화한 경우 `OBSERVATION_GAP` 및 `SAFETY_DISTANCE` 통과
+7. 사전 시뮬레이션을 활성화한 경우 1~6을 모두 통과한 후보만 MuJoCo ② `COLLISION` 판정 `PASS`(3.9절)
 
 빈 `related_robot_ids`는 전역 차단을 뜻하지 않는다. 로봇 ID가 명시적으로 연결되었거나 HazardEvent의 `zone_id`와 TaskOrder 목적지 Zone이 같을 때만 관련 위험으로 판단한다. 좌표 목적지는 Zone 연결을 추론하지 않는다.
 
@@ -273,10 +274,10 @@ TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 
 
 - `APPROVED`만 실행할 수 있다.
 - 실행 직전 같은 안전 규칙을 다시 평가한다.
-- 재평가 실패 시 Proposal과 TaskOrder를 `HELD`로 바꾸고 `409`를 반환한다. 관측 공백 또는 최소 안전거리만 위반하면 `REJECT`를 기록한다. E-Stop 거리 위반 또는 기존 규칙 재평가 실패 시 Robot을 `ESTOP`으로 바꾸고 `triggered_by=RULE_ENGINE`인 `ESTOP` 로그를 남긴다.
+- 재평가 실패 시 Proposal과 TaskOrder를 `HELD`로 바꾸고 `409`를 반환한다. 관측 공백, 최소 안전거리, 사전 시뮬레이션(`rule-collision`)만 위반하면 `REJECT`를 기록한다. E-Stop 거리 위반 또는 기존 규칙 재평가 실패 시 Robot을 `ESTOP`으로 바꾸고 `triggered_by=RULE_ENGINE`인 `ESTOP` 로그를 남긴다.
 - 자동 생성한 MOVE_TO의 출발 위치나 좌표계가 실행 직전 백엔드에 저장된 로봇 위치와 다르면 전송을 차단한다. 출발점만 불일치하면 Proposal을 `REJECTED`, TaskOrder를 `PLANNING`으로 바꿔 새 제안을 생성할 수 있다.
 - 통과 시 Proposal을 `EXECUTING`, TaskOrder를 `RUNNING`, Robot을 `MOVING`으로 바꾸고 Mock adapter 전달을 나타내는 `EXECUTE` 로그를 남긴다.
-- 평가와 실행 직전 재평가 로그에는 `evaluated_in_ms`를 기록한다.
+- 평가와 실행 직전 재평가 로그에는 `evaluated_in_ms`를 기록한다. 사전 시뮬레이션을 호출하면 그 대기 시간도 포함한다.
 - KPI 9 proxy는 현재 명령 입력부터 이 API 응답까지 측정한다. 어댑터 ACK 시각은 Backend에 저장하지 않으므로 KPI 9의 최종 명령→ACK 지연에는 사용할 수 없다.
 
 `POST /action-proposals/{proposal_id}/result`
@@ -337,6 +338,18 @@ v1.1 객체의 Pydantic 모델 계약에는 다음 선택 필드를 반영한다
 - Worker 스냅샷과 개별 Worker 위치는 현재 ONT MVP의 2초 최신성 정책을 적용한다. 안전거리 검사는 MOBILE 로봇의 XY 경로와 동일 좌표계의 작업자 위치를 비교한다.
 - 안전거리 위반의 백엔드 판정과 상태를 로그에 기록한다. 물리 E-Stop 신호 발행과 실행 중 연속 감시는 CTL 연동 범위다.
 
+### 3.9 사전 시뮬레이션(`COLLISION`)
+
+서버 시작 시 `BACKEND_TWIN_SIMULATION_ENABLED=1`을 설정하면 스키마 v1.1 5장 9번 규칙(`rule-collision`)을 적용한다. 기본값은 비활성화다. 호출 주소는 `BACKEND_TWIN_SIMULATE_URL`(기본 `http://127.0.0.1:8100/twin/simulate`)이며 요청·응답은 [제어 계약 v0.2](backend-ctl-contract-v0.1.md) 13장을 따른다.
+
+- 평가와 실행 직전 재검증 모두 다른 규칙을 전부 통과한 후보만 시뮬레이션한다. `STOP`·`RESUME`은 대상에서 제외한다.
+- 요청의 `target_pose`·`speed_limit`은 실제 CTL 전송값(4.1절, `ZONE`은 `navigation_target`)이고, `state`에는 등록된 모든 Robot, 마지막 Worker 스냅샷, 모든 Zone을 넣는다. Worker 스냅샷이 없으면 `workers: null`을 보내며 트윈은 이를 `ERROR`로 거부한다.
+- `PASS`가 아닌 모든 `result`, 시간 초과(잠정 1.0초, #50 확정 전), 연결 실패, 2xx가 아닌 응답, 형식 오류(필수 필드 누락, 알 수 없는 `result`, 요청과 다른 `snapshot_id`)는 위반이다. `MANIPULATE`는 계약 13.1절 지원 범위가 아니어서 호출 없이 위반으로 기록한다.
+- 결과는 `rule-collision` RuleResult의 `reason`에 `result`, `snapshot_id`, 최소 작업자 거리, 첫 접촉 시각, 시뮬레이션 구간, 서비스 처리 시간으로 남긴다.
+- `snapshot_id`는 Robot(상태·자세), Worker 스냅샷(관측 시각·위치), 열린 HazardEvent, Zone으로 계산한다. 실행 직전에 다시 계산해 평가 때와 같으면 평가 단계 `PASS`를 재사용하고, 다르면 다시 시뮬레이션한다. 시뮬레이션 중 상태가 또 바뀌면 최대 2회까지 다시 하고, 그래도 다르면 거부한다.
+- HTTP 응답을 기다리는 동안 저장소 잠금을 잡지 않는다. 대기 중 등록된 HazardEvent 등은 응답 반영 시 규칙을 다시 평가해 결정에 반영한다.
+- 실행 직전 사전 시뮬레이션 위반은 로봇이 아직 움직이지 않았으므로 Robot을 `ESTOP`으로 바꾸지 않는다.
+
 ## 4. 상태 전이
 
 ```text
@@ -371,7 +384,7 @@ ResumeTask 전이와 실제 ROS 2 어댑터 결과 토픽 연결은 아직 구�
 | 판정 시간 | `evaluated_in_ms` 기록 | 평가·실행 직전 재평가 로그에 구현 |
 | Observation 등록 | CV가 Observation을 제출하고 ONT가 병합해 HazardEvent 생성 | 미구현. CV가 `PUT /sensors/{sensor_id}`, `PUT /workers/snapshot`, `POST /hazards`로 직접 갱신 |
 | HazardEvent 즉시 정지 | `CRITICAL` 등록 시 실행 중 로봇 `TriggerEStop` | 미구현. 이후 평가와 실행 직전 재검증만 차단 |
-| 사전 시뮬레이션(`COLLISION`) | 규칙 통과 후보를 MuJoCo ② 서비스로 검증, 시간 초과·미가동 시 거부 | 미구현. CTL 서비스 인터페이스는 [제어 계약 v0.2](backend-ctl-contract-v0.1.md) 13장 초안 |
+| 사전 시뮬레이션(`COLLISION`) | 규칙 통과 후보를 MuJoCo ② 서비스로 검증, 시간 초과·미가동 시 거부 | `BACKEND_TWIN_SIMULATION_ENABLED=1`일 때 `MOVE_TO` 호출·Fail-Closed·`snapshot_id` 재검증 구현(3.9절). 기본 비활성화, 시간 제한은 #50 확정 전 잠정값, `MANIPULATE`는 계약 확정 전까지 차단 |
 | 토크·관절 속도 검사 | 스키마 미결 | 미구현 |
 | 스키마 v1.1 선택 필드 | 모델에서 선택적으로 허용 | Robot, Sensor, Observation, Worker, Zone, SafetyRule, HazardEvent, ExecutionLog에 반영 |
 
