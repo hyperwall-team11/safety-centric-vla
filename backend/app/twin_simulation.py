@@ -38,8 +38,10 @@ TWIN_SIMULATE_URL_ENV = "BACKEND_TWIN_SIMULATE_URL"
 DEFAULT_TWIN_SIMULATE_URL = "http://127.0.0.1:8100/twin/simulate"
 # 제어 계약 13.2: 시간 제한 값은 ONT·백엔드가 정한다. #50 확정 전 잠정값이며 확정되면 그 값으로 바꾼다.
 TWIN_SIMULATE_TIMEOUT_SECONDS = 1.0
-# 실행 직전 시뮬레이션 중 상태가 바뀌면 다시 시뮬레이션하는 최대 횟수. 넘으면 실행을 거부한다(13.3절).
-MAX_EXECUTE_SIMULATION_ATTEMPTS = 2
+# 시뮬레이션 대기 중 상태가 바뀌면 다시 시뮬레이션하는 최대 횟수(평가·실행 직전 각각). 넘으면 차단한다(13.3절).
+MAX_SIMULATION_ATTEMPTS = 2
+# trajectory 끝점과 실제 전송 목표의 허용 오차. control/robot_adapter/diff_drive_core.py의 도착 판정 허용 오차와 같다.
+TRAJECTORY_TARGET_TOLERANCE_M = 0.05
 
 # 제어 계약 13.1: 첫 버전은 MOVE_TO만 지원한다.
 SIMULATED_ACTION_TYPES = {ActionType.MOVE_TO}
@@ -119,6 +121,30 @@ def _yaw(pose) -> float:
     return math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
 
 
+def _check_straight_trajectory(proposal: ActionProposal, target_pose: dict[str, Any]) -> None:
+    """트윈과 CTL 어댑터는 현재 위치에서 `target_pose`까지 직선으로 움직인다.
+
+    경유점이 있거나 끝점이 목표와 다른 trajectory는 시뮬레이션한 경로와 규칙 1~8이 검사한 경로가 달라지므로 차단한다.
+    """
+    trajectory = proposal.trajectory
+    if not trajectory:
+        return
+    if len(trajectory) != 2:
+        raise TwinSimulationError(
+            f"경유점이 있는 trajectory({len(trajectory)}개 점)는 직선 이동만 시뮬레이션하는 트윈으로 검증할 수 없음"
+        )
+    end = trajectory[-1].get("position") if isinstance(trajectory[-1], dict) else None
+    try:
+        end_xyz = [float(end["x"]), float(end["y"]), float(end["z"])]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TwinSimulationError("trajectory 끝점 position 형식 오류") from exc
+    if (
+        target_pose.get("frame_id") != proposal.frame_id
+        or math.dist(end_xyz, target_pose["position"]) > TRAJECTORY_TARGET_TOLERANCE_M
+    ):
+        raise TwinSimulationError("trajectory 끝점이 실제 전송 목표(target_pose)와 다름")
+
+
 def compute_snapshot_id(
     robots: Iterable[Robot],
     workers: list[Worker] | None,
@@ -176,6 +202,7 @@ def build_simulation_request(
     target_pose = command["parameters"].get("target_pose")
     if not isinstance(target_pose, dict):
         raise TwinSimulationError("요청 생성 실패: target_pose 없음")
+    _check_straight_trajectory(proposal, target_pose)
 
     worker_state = None
     if workers is not None and workers_observed_at is not None:
@@ -265,6 +292,12 @@ def run_simulation(simulator: TwinSimulator, payload: dict[str, Any]) -> RuleRes
 def blocked_result(reason: str, snapshot_id: str | None = None) -> RuleResult:
     suffix = f" (snapshot_id={snapshot_id})" if snapshot_id else ""
     return RuleResult(rule_id=COLLISION_RULE_ID, passed=False, reason=f"{reason}{suffix}")
+
+
+def stale_result(snapshot_id: str, attempts: int) -> RuleResult:
+    return blocked_result(
+        f"사전 시뮬레이션 중 상태가 바뀌어 {attempts}회 모두 결과를 쓸 수 없어 차단", snapshot_id
+    )
 
 
 def reused_pass_result(snapshot_id: str) -> RuleResult:

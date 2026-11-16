@@ -72,7 +72,7 @@ from .store import store
 from .task_parser import TaskParseError, parse_task_order, parse_task_order_preview
 from .twin_simulation import (
     COLLISION_RULE_ID,
-    MAX_EXECUTE_SIMULATION_ATTEMPTS,
+    MAX_SIMULATION_ATTEMPTS,
     TWIN_SIMULATION_ENABLED_ENV,
     HttpTwinSimulator,
     TwinSimulationError,
@@ -82,6 +82,7 @@ from .twin_simulation import (
     collision_rule_applies,
     compute_snapshot_id,
     reused_pass_result,
+    stale_result,
     run_simulation,
 )
 
@@ -259,12 +260,13 @@ def trajectory_start_distance_m(robot: Robot, trajectory_start: dict) -> float |
 
 
 def seed_rules() -> None:
-    if not store.rules:
-        rules = default_rules(
-            perception_enabled=getenv("BACKEND_PERCEPTION_SAFETY_ENABLED") == "1",
-            collision_simulation_enabled=getenv(TWIN_SIMULATION_ENABLED_ENV) == "1",
-        )
-        store.rules.update({rule.rule_id: rule for rule in rules})
+    # 저장소에 규칙이 이미 있어도(영속 저장소 복구 등) 새로 추가된 기본 규칙은 빠뜨리지 않는다. 기존 규칙은 덮어쓰지 않는다.
+    rules = default_rules(
+        perception_enabled=getenv("BACKEND_PERCEPTION_SAFETY_ENABLED") == "1",
+        collision_simulation_enabled=getenv(TWIN_SIMULATION_ENABLED_ENV) == "1",
+    )
+    for rule in rules:
+        store.rules.setdefault(rule.rule_id, rule)
 
 
 seed_rules()
@@ -832,6 +834,27 @@ def prepare_collision_simulation(
     return payload, None
 
 
+def select_collision_result(
+    proposal: ActionProposal,
+    robot: Robot,
+    snapshot_id: str,
+    simulated: tuple[str, RuleResult] | None,
+    attempts: int,
+    stored_pass_snapshot_id: str | None = None,
+) -> tuple[dict | None, RuleResult | None]:
+    """현재 snapshot_id에 쓸 수 있는 COLLISION 결과를 고르고, 없으면 새 요청 본문을 만든다. 잠금 안에서 부른다.
+
+    제어 계약 13.3절: 다른 snapshot_id의 PASS는 쓰지 않는다. 위반 결과는 상태가 바뀌어도 그대로 차단한다.
+    """
+    if simulated is not None and (simulated[0] == snapshot_id or not simulated[1].passed):
+        return None, simulated[1]
+    if stored_pass_snapshot_id == snapshot_id:
+        return None, reused_pass_result(snapshot_id)
+    if attempts >= MAX_SIMULATION_ATTEMPTS:
+        return None, stale_result(snapshot_id, attempts)
+    return prepare_collision_simulation(proposal, robot, snapshot_id)
+
+
 def load_proposal_for_update(
     proposal_id: str, expected_status: ProposalStatus, detail: str
 ) -> tuple[ActionProposal, Robot, TaskOrder]:
@@ -878,37 +901,40 @@ def finish_evaluation(
 def evaluate_action(proposal_id: str) -> ActionProposal:
     started_at = perf_counter()
     not_proposed = "PROPOSED 상태만 평가할 수 있습니다."
-    with store.lock:
-        proposal, robot, task = load_proposal_for_update(
-            proposal_id, ProposalStatus.PROPOSED, not_proposed
-        )
-        rule_results, hazard_ids, estop_requested = evaluate_current_safety(proposal, task, robot)
-        payload = None
-        if needs_collision_simulation(proposal, rule_results, estop_requested):
-            payload, blocked = prepare_collision_simulation(proposal, robot, current_snapshot_id())
-            if blocked is not None:
-                rule_results.append(blocked)
-        if payload is None:
-            return finish_evaluation(
-                proposal, robot, task, rule_results, hazard_ids, estop_requested, started_at
+    attempts = 0
+    simulated: tuple[str, RuleResult] | None = None  # (시뮬레이션한 snapshot_id, 결과)
+    while True:
+        with store.lock:
+            proposal, robot, task = load_proposal_for_update(
+                proposal_id, ProposalStatus.PROPOSED, not_proposed
             )
+            # 시뮬레이션 대기 중 바뀐 위험·로봇 상태도 결정에 반영한다.
+            rule_results, hazard_ids, estop_requested = evaluate_current_safety(
+                proposal, task, robot
+            )
+            payload = None
+            pass_snapshot_id = None
+            if needs_collision_simulation(proposal, rule_results, estop_requested):
+                # 평가 완료 시점의 snapshot_id와 같은 상태로 시뮬레이션한 결과만 쓴다.
+                snapshot_id = current_snapshot_id()
+                payload, collision_result = select_collision_result(
+                    proposal, robot, snapshot_id, simulated, attempts
+                )
+                if collision_result is not None:
+                    rule_results.append(collision_result)
+                    if collision_result.passed:
+                        pass_snapshot_id = snapshot_id
+            if payload is None:
+                proposal = finish_evaluation(
+                    proposal, robot, task, rule_results, hazard_ids, estop_requested, started_at
+                )
+                if proposal.status == ProposalStatus.APPROVED and pass_snapshot_id is not None:
+                    store.twin_simulation_passes[proposal_id] = pass_snapshot_id
+                return proposal
 
-    # 제어 계약 13.3절: HTTP 응답을 기다리는 동안 저장소 잠금을 잡지 않는다.
-    collision_result = run_simulation(twin_simulator, payload)
-
-    with store.lock:
-        proposal, robot, task = load_proposal_for_update(
-            proposal_id, ProposalStatus.PROPOSED, not_proposed
-        )
-        # 대기 중 바뀐 위험·로봇 상태를 결정에 반영한다. 시뮬레이션 상태와의 일치는 실행 직전에 확인한다.
-        rule_results, hazard_ids, estop_requested = evaluate_current_safety(proposal, task, robot)
-        rule_results.append(collision_result)
-        proposal = finish_evaluation(
-            proposal, robot, task, rule_results, hazard_ids, estop_requested, started_at
-        )
-        if proposal.status == ProposalStatus.APPROVED:
-            store.twin_simulation_passes[proposal_id] = payload["snapshot_id"]
-        return proposal
+        # 제어 계약 13.3절: HTTP 응답을 기다리는 동안 저장소 잠금을 잡지 않는다.
+        attempts += 1
+        simulated = (payload["snapshot_id"], run_simulation(twin_simulator, payload))
 
 
 def evaluate_execution_checks(
@@ -1041,22 +1067,14 @@ def execute_action(proposal_id: str) -> ActionProposal:
             if needs_collision_simulation(proposal, rule_results, estop_requested):
                 # 제어 계약 13.3절: 실행 직전 상태로 snapshot_id를 다시 계산해 같은 상태의 PASS만 쓴다.
                 snapshot_id = current_snapshot_id()
-                collision_result = None
-                if simulated is not None and (
-                    simulated[0] == snapshot_id or not simulated[1].passed
-                ):
-                    collision_result = simulated[1]
-                elif store.twin_simulation_passes.get(proposal_id) == snapshot_id:
-                    collision_result = reused_pass_result(snapshot_id)
-                elif attempts >= MAX_EXECUTE_SIMULATION_ATTEMPTS:
-                    collision_result = blocked_result(
-                        f"사전 시뮬레이션 중 상태가 바뀌어 {attempts}회 모두 결과를 쓸 수 없어 차단",
-                        snapshot_id,
-                    )
-                else:
-                    payload, collision_result = prepare_collision_simulation(
-                        proposal, robot, snapshot_id
-                    )
+                payload, collision_result = select_collision_result(
+                    proposal,
+                    robot,
+                    snapshot_id,
+                    simulated,
+                    attempts,
+                    store.twin_simulation_passes.get(proposal_id),
+                )
                 if collision_result is not None:
                     rule_results.append(collision_result)
             if payload is None:

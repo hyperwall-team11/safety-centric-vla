@@ -19,7 +19,7 @@ from app.store import store
 from app.twin_simulation import (
     COLLISION_RULE_ID,
     CONTRACT_VERSION,
-    MAX_EXECUTE_SIMULATION_ATTEMPTS,
+    MAX_SIMULATION_ATTEMPTS,
     TWIN_SIMULATION_ENABLED_ENV,
     HttpTwinSimulator,
     TwinSimulationError,
@@ -121,7 +121,7 @@ def client(monkeypatch, sim):
     return c
 
 
-def propose(client, *, speed=0.3):
+def propose(client, *, speed=0.3, trajectory=None):
     r = client.post(
         "/task-orders/from-natural-language",
         json={"instruction": "robot-01 로봇을 A구역으로 이동해"},
@@ -132,7 +132,7 @@ def propose(client, *, speed=0.3):
         "robot_id": "robot-01",
         "action_type": "MOVE_TO",
         "parameters": {"target_pose": {"type": "ZONE", "zone_id": "A구역"}, "speed_limit": speed},
-        "trajectory": None,
+        "trajectory": trajectory,
         "frame_id": "world",
         "speed_limit": speed,
         "model_name": "mock-vla",
@@ -158,6 +158,16 @@ def test_rule_is_disabled_by_default(monkeypatch, sim):
     seed_rules()
     assert store.rules[COLLISION_RULE_ID].enabled is False
     assert store.rules[COLLISION_RULE_ID].rule_type == "COLLISION"
+
+
+def test_seed_rules_adds_new_default_rules_to_existing_store(client):
+    # 영속 저장소에서 복구한 규칙 목록에 새 기본 규칙이 없어도 추가되고, 기존 규칙은 덮어쓰지 않는다
+    del store.rules[COLLISION_RULE_ID]
+    other = next(rule for rule in store.rules.values() if rule.rule_id != COLLISION_RULE_ID)
+    other.enabled = not other.enabled
+    seed_rules()
+    assert store.rules[COLLISION_RULE_ID].enabled is True
+    assert store.rules[other.rule_id].enabled is other.enabled
 
 
 def test_pass_approves_and_sends_contract_request(client, sim):
@@ -283,6 +293,74 @@ def test_hazard_registered_while_waiting_is_reflected_in_decision(client, sim):
     assert any(rule.rule_id == "rule-critical-hazard" and not rule.passed for rule in log.rule_results)
 
 
+def test_evaluate_resimulates_when_state_changed_during_simulation(client, sim):
+    def new_snapshot_once(_payload):
+        if len(sim.payloads) == 1:
+            time.sleep(0.001)
+            put_workers(client, [worker(x=3.5)])
+
+    sim.on_call = new_snapshot_once
+    proposal_id = propose(client)
+    status, log = evaluate(client, proposal_id)
+    assert status == "APPROVED"
+    assert len(sim.payloads) == 2
+    assert sim.payloads[1]["state"]["workers"]["items"][0]["position"] == [3.5, 3.0, 0.0]
+    # 평가 완료 시점 상태로 시뮬레이션한 PASS만 기록·보관한다
+    assert sim.payloads[1]["snapshot_id"] in collision_rule(log).reason
+    assert store.twin_simulation_passes[proposal_id] == sim.payloads[1]["snapshot_id"]
+
+
+def test_evaluate_rejects_when_state_keeps_changing_during_simulation(client, sim):
+    def new_snapshot(_payload):
+        time.sleep(0.001)
+        put_workers(client, [worker()])
+
+    sim.on_call = new_snapshot
+    proposal_id = propose(client)
+    status, log = evaluate(client, proposal_id)
+    assert status == "REJECTED"
+    assert len(sim.payloads) == MAX_SIMULATION_ATTEMPTS
+    rule = collision_rule(log)
+    assert not rule.passed and "상태가 바뀌어" in rule.reason
+    assert proposal_id not in store.twin_simulation_passes
+
+
+def test_evaluate_keeps_violation_from_older_snapshot(client, sim):
+    def collide_then_change(_payload):
+        time.sleep(0.001)
+        put_workers(client, [worker(x=3.5)])
+
+    sim.result = "COLLISION"
+    sim.on_call = collide_then_change
+    status, log = evaluate(client, propose(client))
+    assert status == "REJECTED"
+    assert len(sim.payloads) == 1  # 위반은 상태가 바뀌어도 다시 시뮬레이션하지 않고 차단한다
+    assert "COLLISION" in collision_rule(log).reason
+
+
+def straight(end=NAV_TARGET):
+    return [{"position": {"x": 0.0, "y": 0.0, "z": 0.0}}, {"position": end}]
+
+
+def test_straight_trajectory_to_target_is_simulated(client, sim):
+    status, _ = evaluate(client, propose(client, trajectory=straight()))
+    assert status == "APPROVED"
+    assert len(sim.payloads) == 1
+
+
+@pytest.mark.parametrize("trajectory, reason", [
+    # 트윈·CTL 어댑터는 직선으로 움직이므로 경유점을 지나는 경로는 검증할 수 없다
+    ([*straight()[:1], {"position": {"x": 1.0, "y": 0.5, "z": 0.0}}, straight()[1]], "경유점"),
+    (straight({"x": 2.5, "y": 1.0, "z": 0.0}), "trajectory 끝점"),
+])
+def test_trajectory_different_from_simulated_path_is_blocked(client, sim, trajectory, reason):
+    status, log = evaluate(client, propose(client, trajectory=trajectory))
+    assert status == "REJECTED"
+    assert sim.payloads == []
+    rule = collision_rule(log)
+    assert not rule.passed and reason in rule.reason
+
+
 def approved(client, sim):
     proposal_id = propose(client)
     status, _ = evaluate(client, proposal_id)
@@ -339,7 +417,7 @@ def test_execute_rejects_when_state_keeps_changing_during_simulation(client, sim
     sim.on_call = new_snapshot
     r = client.post(f"/action-proposals/{proposal_id}/execute")
     assert r.status_code == 409, r.text
-    assert len(sim.payloads) == MAX_EXECUTE_SIMULATION_ATTEMPTS
+    assert len(sim.payloads) == MAX_SIMULATION_ATTEMPTS
     rule = collision_rule(store.logs[-1])
     assert not rule.passed and "상태가 바뀌어" in rule.reason
 

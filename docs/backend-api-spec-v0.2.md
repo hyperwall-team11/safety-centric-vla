@@ -340,13 +340,14 @@ v1.1 객체의 Pydantic 모델 계약에는 다음 선택 필드를 반영한다
 
 ### 3.9 사전 시뮬레이션(`COLLISION`)
 
-서버 시작 시 `BACKEND_TWIN_SIMULATION_ENABLED=1`을 설정하면 스키마 v1.1 5장 9번 규칙(`rule-collision`)을 적용한다. 기본값은 비활성화다. 호출 주소는 `BACKEND_TWIN_SIMULATE_URL`(기본 `http://127.0.0.1:8100/twin/simulate`)이며 요청·응답은 [제어 계약 v0.2](backend-ctl-contract-v0.1.md) 13장을 따른다.
+서버 시작 시 `BACKEND_TWIN_SIMULATION_ENABLED=1`을 설정하면 스키마 v1.1 5장 9번 규칙(`rule-collision`)을 적용한다. 기본값은 비활성화다. 이미 규칙이 있는 저장소에도 빠진 기본 규칙은 추가하며 기존 규칙은 덮어쓰지 않는다. 호출 주소는 `BACKEND_TWIN_SIMULATE_URL`(기본 `http://127.0.0.1:8100/twin/simulate`)이며 요청·응답은 [제어 계약 v0.2](backend-ctl-contract-v0.1.md) 13장을 따른다.
 
 - 평가와 실행 직전 재검증 모두 다른 규칙을 전부 통과한 후보만 시뮬레이션한다. `STOP`·`RESUME`은 대상에서 제외한다.
 - 요청의 `target_pose`·`speed_limit`은 실제 CTL 전송값(4.1절, `ZONE`은 `navigation_target`)이고, `state`에는 등록된 모든 Robot, 마지막 Worker 스냅샷, 모든 Zone을 넣는다. Worker 스냅샷이 없으면 `workers: null`을 보내며 트윈은 이를 `ERROR`로 거부한다.
 - `PASS`가 아닌 모든 `result`, 시간 초과(잠정 1.0초, #50 확정 전), 연결 실패, 2xx가 아닌 응답, 형식 오류(필수 필드 누락, 알 수 없는 `result`, 요청과 다른 `snapshot_id`)는 위반이다. `MANIPULATE`는 계약 13.1절 지원 범위가 아니어서 호출 없이 위반으로 기록한다.
+- 트윈과 CTL 어댑터는 모두 현재 위치에서 `target_pose`까지 직선으로 움직인다. `trajectory`가 있으면 두 점(출발점·끝점)이고 끝점이 `target_pose`와 0.05 m 이내일 때만 시뮬레이션하고, 경유점이 있거나 끝점이 다르면 호출 없이 위반으로 기록한다.
 - 결과는 `rule-collision` RuleResult의 `reason`에 `result`, `snapshot_id`, 최소 작업자 거리, 첫 접촉 시각, 시뮬레이션 구간, 서비스 처리 시간으로 남긴다.
-- `snapshot_id`는 Robot(상태·자세), Worker 스냅샷(관측 시각·위치), 열린 HazardEvent, Zone으로 계산한다. 실행 직전에 다시 계산해 평가 때와 같으면 평가 단계 `PASS`를 재사용하고, 다르면 다시 시뮬레이션한다. 시뮬레이션 중 상태가 또 바뀌면 최대 2회까지 다시 하고, 그래도 다르면 거부한다.
+- `snapshot_id`는 Robot(상태·자세), Worker 스냅샷(관측 시각·위치), 열린 HazardEvent, Zone으로 계산한다. 평가 완료 시점과 실행 직전에 각각 다시 계산해 시뮬레이션한 값과 같은 `PASS`만 쓴다. 실행 직전에는 평가 단계 `PASS`와 같으면 재사용하고, 다르면 다시 시뮬레이션한다. 시뮬레이션 중 상태가 바뀌면 평가·실행 직전 각각 최대 2회까지 다시 하고, 그래도 다르면 거부한다. 위반 결과는 상태가 바뀌어도 그대로 차단한다.
 - HTTP 응답을 기다리는 동안 저장소 잠금을 잡지 않는다. 대기 중 등록된 HazardEvent 등은 응답 반영 시 규칙을 다시 평가해 결정에 반영한다.
 - 실행 직전 사전 시뮬레이션 위반은 로봇이 아직 움직이지 않았으므로 Robot을 `ESTOP`으로 바꾸지 않는다.
 
