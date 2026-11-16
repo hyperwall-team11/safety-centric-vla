@@ -19,7 +19,8 @@
 - ID는 문자열이다. 서버 생성 ID는 `task-`, `proposal-`, `hazard-`, `log-` 접두사와 UUID를 사용한다.
 - 현재 인증·인가와 `/api/v1` 접두사는 구현하지 않았다.
 - 기본 저장소는 인메모리이다. `BACKEND_STORE=redis`를 지정하면 Redis에 상태를 영속 저장한다.
-- Redis 모드에서 연결, 분산 잠금, 스냅샷 읽기·쓰기가 실패하면 E-Stop을 발행하고 fail-closed로 `503`을 반환한다.
+- Redis 모드에서 연결, 분산 잠금, 잠금 소유권·연장, 스냅샷 읽기·쓰기가 실패하면 E-Stop을 발행하고 fail-closed로 `503`을 반환한다. 만료된 잠금은 저장에 사용할 수 없다.
+- 다중 Backend의 E-Stop 발행은 Redis 분산 잠금으로 직렬화하며 시작 시 저장된 정지 상태를 CTL에 다시 발행한다. Redis Pub/Sub 변경 알림은 다른 인스턴스의 `/ws/state` 구독자 갱신에 사용한다.
 
 ### 공통 오류
 

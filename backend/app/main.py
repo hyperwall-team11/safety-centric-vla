@@ -334,9 +334,9 @@ def sync_estop(reason: str) -> None:
     항상 마지막 저장소 상태와 같다(Transient Local·Keep Last 1 latched 값 보장).
     """
     with ESTOP_PUBLISH_LOCK:
-        with store.lock:
-            active = bool(store.estop_hazard_ids)
-        _publish_estop(active, reason)
+        store.synchronize_safety_publish(
+            lambda active: _publish_estop(active, reason)
+        )
 
 
 def _publish_estop(active: bool, reason: str) -> None:
@@ -359,10 +359,14 @@ if hasattr(action_dispatcher, "safety_event_handler"):
 @app.on_event("startup")
 def start_action_dispatcher() -> None:
     action_dispatcher.start()
+    store.start_change_notifications(state_broadcaster.publish)
+    # Redis 재시작 복구 시 latched E-Stop 상태도 CTL에 다시 전달한다.
+    sync_estop("Backend 시작 상태 복구")
 
 
 @app.on_event("shutdown")
 def stop_action_dispatcher() -> None:
+    store.stop_change_notifications()
     action_dispatcher.stop()
 
 

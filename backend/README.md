@@ -71,7 +71,25 @@ docker compose exec redis redis-cli BGSAVE
 
 백엔드는 Redis 분산 잠금을 획득한 후 최신 스냅샷을 읽고 하나의 `SET`으로
 상태를 교체합니다. 이 방식은 현재 인메모리 API의 객체 수정 계약을 유지하면서
-재시작 복구와 다중 백엔드 프로세스 직렬화를 제공합니다.
+재시작 복구와 다중 백엔드 프로세스 직렬화를 제공합니다. 저장 직전 잠금 소유권을
+확인하고 만료시간을 다시 30초로 연장하므로, 이미 만료된 잠금으로 다른 프로세스의
+최신 스냅샷을 덮어쓰지 않습니다. 소유권 확인이나 연장에 실패하면 저장하지 않고
+메모리 상태를 이전 스냅샷으로 복구한 뒤 `503`을 반환합니다.
+
+E-Stop 발행은 별도 Redis 분산 잠금과 최신 상태 스냅샷 읽기로 직렬화합니다. Backend가
+재시작되면 Redis의 정지 상태를 ROS 2 latched 토픽에 다시 발행합니다. Redis Pub/Sub 변경
+알림을 구독하므로 다른 Backend 인스턴스의 상태 변경도 각 인스턴스의 `/ws/state`
+구독자에게 전달됩니다. Pub/Sub 알림은 WebSocket 갱신용이며 상태의 기준은 항상 Redis
+스냅샷입니다.
+
+CI는 실제 Redis 7.4 서비스를 띄워 재시작 복구, 2개 저장소의 동시 쓰기, Pub/Sub 알림,
+E-Stop 상태 복구, Action 제출·검증을 검증합니다. 로컬에서 같은 통합 테스트를 실행하려면
+Redis를 실행한 뒤 다음처럼 지정합니다.
+
+```bash
+cd backend
+REDIS_TEST_URL=redis://127.0.0.1:6379/15 python3 -m pytest tests/test_redis_store.py -q
+```
 
 ### ROS 2 제어 어댑터 연결
 

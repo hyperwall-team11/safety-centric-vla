@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
+import uuid
 from datetime import datetime
 from os import getenv
 from threading import RLock, local
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from .models import (
     ActionProposal,
@@ -22,6 +24,7 @@ from .models import (
 
 SNAPSHOT_VERSION = 1
 DEFAULT_REDIS_KEY = "safety-centric-vla:state:v1"
+LOGGER = logging.getLogger(__name__)
 
 
 class StoreUnavailableError(RuntimeError):
@@ -37,6 +40,10 @@ class RedisLock(Protocol):
 
     def release(self) -> None: ...
 
+    def owned(self) -> bool: ...
+
+    def extend(self, additional_time: float, replace_ttl: bool = False) -> bool: ...
+
 
 class RedisClient(Protocol):
     def ping(self) -> Any: ...
@@ -44,6 +51,10 @@ class RedisClient(Protocol):
     def get(self, key: str) -> str | bytes | None: ...
 
     def set(self, key: str, value: str) -> Any: ...
+
+    def publish(self, channel: str, message: str) -> Any: ...
+
+    def pubsub(self, **kwargs: Any) -> Any: ...
 
     def lock(
         self,
@@ -171,6 +182,7 @@ class InMemoryStore:
 
     def __init__(self) -> None:
         self._lock = RLock()
+        self._safety_publish_lock = RLock()
         self.reset()
 
     def reset(self) -> None:
@@ -178,6 +190,17 @@ class InMemoryStore:
             _initialize_empty_state(self)
 
     def ensure_available(self) -> None:
+        return None
+
+    def synchronize_safety_publish(self, publish: Callable[[bool], None]) -> None:
+        with self._safety_publish_lock:
+            with self.lock:
+                publish(bool(self.estop_hazard_ids))
+
+    def start_change_notifications(self, callback: Callable[[], Any]) -> None:
+        del callback
+
+    def stop_change_notifications(self) -> None:
         return None
 
     @property
@@ -232,7 +255,10 @@ class _RedisStoreLock:
             before = store._thread_state.before
             distributed_lock = store._thread_state.distributed_lock
             try:
-                store._save()
+                current = _serialize_state(store)
+                if current != before:
+                    store._ensure_lock_owned(distributed_lock)
+                    store._save(current)
             except Exception as save_error:
                 failure = save_error
                 try:
@@ -248,6 +274,8 @@ class _RedisStoreLock:
                 store._thread_state.before = None
         store._local_lock.release()
         if failure is not None:
+            if isinstance(failure, StoreUnavailableError):
+                raise failure
             raise StoreUnavailableError("Redis에 상태를 안전하게 반영하지 못했습니다.") from failure
         return False
 
@@ -283,10 +311,15 @@ class RedisStore:
         self._client = client
         self._key = key
         self._lock_key = f"{key}:lock"
+        self._safety_publish_lock_key = f"{key}:estop-publish-lock"
+        self._change_channel = f"{key}:changes"
         self._lock_timeout_seconds = lock_timeout_seconds
         self._lock_wait_seconds = lock_wait_seconds
         self._local_lock = RLock()
         self._thread_state = local()
+        self._notification_worker: Any = None
+        self._notification_pubsub: Any = None
+        self._instance_id = uuid.uuid4().hex
         _initialize_empty_state(self)
         # Start only after Redis connectivity and snapshot validity are confirmed.
         with self.lock:
@@ -305,6 +338,82 @@ class RedisStore:
         except Exception as exc:
             raise StoreUnavailableError("Redis에 연결할 수 없습니다.") from exc
 
+    def _acquire_named_lock(self, name: str) -> RedisLock:
+        distributed_lock = self._client.lock(
+            name,
+            timeout=self._lock_timeout_seconds,
+            blocking_timeout=self._lock_wait_seconds,
+        )
+        if not distributed_lock.acquire(
+            blocking=True,
+            blocking_timeout=self._lock_wait_seconds,
+        ):
+            raise StoreUnavailableError("Redis 상태 잠금을 획득하지 못했습니다.")
+        return distributed_lock
+
+    def _ensure_lock_owned(self, distributed_lock: RedisLock) -> None:
+        """만료된 잠금으로 다른 프로세스의 최신 스냅샷을 덮어쓰지 않는다."""
+        try:
+            if not distributed_lock.owned():
+                raise StoreUnavailableError("Redis 상태 잠금 소유권이 만료되었습니다.")
+            if not distributed_lock.extend(
+                self._lock_timeout_seconds,
+                replace_ttl=True,
+            ):
+                raise StoreUnavailableError("Redis 상태 잠금 만료시간을 연장하지 못했습니다.")
+        except StoreUnavailableError:
+            raise
+        except Exception as exc:
+            raise StoreUnavailableError("Redis 상태 잠금 소유권을 확인할 수 없습니다.") from exc
+
+    def synchronize_safety_publish(self, publish: Callable[[bool], None]) -> None:
+        """다중 Backend의 E-Stop 발행을 직렬화하고 최신 공유 상태만 발행한다."""
+        safety_lock = self._acquire_named_lock(self._safety_publish_lock_key)
+        try:
+            with self.lock:
+                self._ensure_lock_owned(safety_lock)
+                publish(bool(self.estop_hazard_ids))
+        finally:
+            try:
+                safety_lock.release()
+            except Exception as exc:
+                raise StoreUnavailableError("Redis E-Stop 발행 잠금을 해제하지 못했습니다.") from exc
+
+    def start_change_notifications(self, callback: Callable[[], Any]) -> None:
+        """다른 Backend 프로세스의 상태 저장을 WebSocket 구독자에게 알린다."""
+        if self._notification_worker is not None:
+            return
+        try:
+            pubsub = self._client.pubsub(ignore_subscribe_messages=True)
+
+            def on_message(message: dict[str, Any]) -> None:
+                data = message.get("data")
+                if isinstance(data, bytes):
+                    data = data.decode("utf-8", errors="replace")
+                if data != self._instance_id:
+                    callback()
+
+            pubsub.subscribe(**{self._change_channel: on_message})
+            self._notification_pubsub = pubsub
+            self._notification_worker = pubsub.run_in_thread(
+                sleep_time=0.1,
+                daemon=True,
+            )
+        except Exception as exc:
+            self._notification_pubsub = None
+            self._notification_worker = None
+            raise StoreUnavailableError("Redis 상태 변경 구독을 시작할 수 없습니다.") from exc
+
+    def stop_change_notifications(self) -> None:
+        worker = self._notification_worker
+        pubsub = self._notification_pubsub
+        self._notification_worker = None
+        self._notification_pubsub = None
+        if worker is not None:
+            worker.stop()
+        if pubsub is not None:
+            pubsub.close()
+
     def reset(self) -> None:
         with self.lock:
             _initialize_empty_state(self)
@@ -322,9 +431,9 @@ class RedisStore:
         except Exception as exc:
             raise StoreUnavailableError("Redis 상태 스냅샷을 읽을 수 없습니다.") from exc
 
-    def _save(self) -> None:
+    def _save(self, snapshot: dict[str, Any]) -> None:
         payload = json.dumps(
-            _serialize_state(self),
+            snapshot,
             ensure_ascii=False,
             separators=(",", ":"),
         )
@@ -335,6 +444,11 @@ class RedisStore:
             raise
         except Exception as exc:
             raise StoreUnavailableError("Redis 상태 스냅샷을 저장할 수 없습니다.") from exc
+        try:
+            self._client.publish(self._change_channel, self._instance_id)
+        except Exception as exc:
+            # 상태 저장은 이미 원자적으로 완료됐다. 알림 실패로 저장 성공을 되돌린 척하지 않는다.
+            LOGGER.warning("Redis 상태 변경 알림 발행 실패: %s", exc)
 
 
 def create_store() -> InMemoryStore | RedisStore:
