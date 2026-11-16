@@ -831,7 +831,6 @@ def execute_action(proposal_id: str) -> ActionProposal:
         start_rule_id = "precondition-trajectory-start"
         if (
             proposal.action_type == ActionType.MOVE_TO
-            and proposal.model_name == planner.model_name
             and proposal.trajectory
         ):
             start_distance_m = trajectory_start_distance_m(robot, proposal.trajectory[0])

@@ -170,6 +170,34 @@ class ActionPlannerApiTest(unittest.TestCase):
         self.assertIn("끝점", response.json()["detail"])
         self.assertEqual(store.proposals, {})
 
+    def test_external_trajectory_is_rechecked_against_robot_before_dispatch(self) -> None:
+        task = self.create_task("robot-01 로봇을 좌표 (1, 2, 0)로 이동해")
+        created = self.client.post(
+            "/action-proposals",
+            json=self.external_move_proposal(task, trajectory=[
+                {"position": {"x": 0, "y": 0, "z": 0}},
+                {"position": {"x": 1, "y": 2, "z": 0}},
+            ]),
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        proposal_id = created.json()["proposal_id"]
+        evaluated = self.client.post(f"/action-proposals/{proposal_id}/evaluate")
+        self.assertEqual(evaluated.json()["status"], "APPROVED")
+
+        with store.lock:
+            store.robots["robot-01"].pose.position.x = 1.5
+        with patch("app.main.action_dispatcher.dispatch") as dispatch:
+            executed = self.client.post(f"/action-proposals/{proposal_id}/execute")
+
+        self.assertEqual(executed.status_code, 409, executed.text)
+        dispatch.assert_not_called()
+        self.assertEqual(store.proposals[proposal_id].status, "REJECTED")
+        self.assertEqual(store.tasks[task["task_id"]].status, "PLANNING")
+        self.assertTrue(any(
+            result.rule_id == "precondition-trajectory-start" and not result.passed
+            for result in store.logs[-1].rule_results
+        ))
+
     def test_coordinate_frame_and_explicit_speed_are_preserved(self) -> None:
         task = self.create_task(
             "robot-01 로봇을 좌표 (1, 2, 0)로 이동해",
