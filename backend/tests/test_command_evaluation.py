@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -42,6 +43,40 @@ class CommandEvaluationTest(unittest.TestCase):
                 "valid": False,
                 "expected_error_code": "UNKNOWN",
             })
+
+    def test_case_metadata_requires_expected_types(self):
+        with self.assertRaisesRegex(ValueError, "id는 비어 있지 않은 문자열"):
+            validate_case({"id": "", "instruction": "명령", "valid": False})
+        with self.assertRaisesRegex(ValueError, "valid는 boolean"):
+            validate_case({"id": "X", "instruction": "명령", "valid": "false"})
+
+    def test_duplicate_case_ids_are_rejected(self):
+        content = (
+            '{"id":"X","instruction":"명령","valid":false,'
+            '"expected_error_code":"INVALID_INSTRUCTION"}\n'
+            '{"id":"X","instruction":"다른 명령","valid":false,'
+            '"expected_error_code":"INVALID_INSTRUCTION"}\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            cases_path = Path(directory) / "cases.jsonl"
+            cases_path.write_text(content, encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "중복 평가 ID"):
+                load_cases(cases_path)
+
+    def test_summary_supports_a_single_case_class(self):
+        cases = [{
+            "id": "V",
+            "instruction": "robot-01 로봇을 A구역으로 이동해",
+            "valid": True,
+            "robot_id": "robot-01",
+            "action_type": "MOVE_TO",
+            "destination_type": "ZONE",
+            "destination_value": "A구역",
+            "object_id": None,
+        }]
+        report = summary(cases, evaluate(cases))
+        self.assertEqual(report["valid_accuracy_percent"], 100.0)
+        self.assertIsNone(report["rejection_accuracy_percent"])
 
 
 if __name__ == "__main__":
