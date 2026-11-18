@@ -21,11 +21,13 @@ from fastapi import (
     WebSocketDisconnect,
     status,
 )
-from fastapi.responses import FileResponse
+from fastapi.openapi.utils import get_openapi
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import AwareDatetime, BaseModel
 
 from .action_planner import ActionPlanningError, RuleBasedActionPlanner
+from .auth import TokenAuthenticator, websocket_bearer_token
 from .ctl_bridge import (
     CommandSerializationError,
     DispatchError,
@@ -77,6 +79,7 @@ app = FastAPI(
     version="0.2.0",
     description="TaskOrder 변환과 최소 Action 안전 검증을 제공하는 MVP API",
 )
+app.state.token_authenticator = TokenAuthenticator.from_environment()
 CONSOLE_DIR = Path(__file__).resolve().parent / "static" / "console"
 app.mount(
     "/console/assets",
@@ -120,6 +123,53 @@ NON_MUTATING_POST_PATHS = {
     "/task-orders/preview",
     "/task-orders/preview/batch",
 }
+PUBLIC_HTTP_PATHS = {
+    "/health",
+    "/docs",
+    "/docs/oauth2-redirect",
+    "/openapi.json",
+    "/redoc",
+    "/console",
+}
+PUBLIC_HTTP_PREFIXES = ("/console/assets/",)
+STATE_WEBSOCKET_PROTOCOL = "state.v1"
+
+
+class AuthStatus(BaseModel):
+    enabled: bool
+    subject: str | None = None
+    role: str | None = None
+
+
+def build_openapi_schema() -> dict:
+    if app.openapi_schema is not None:
+        return app.openapi_schema
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    security_schemes = schema.setdefault("components", {}).setdefault(
+        "securitySchemes",
+        {},
+    )
+    security_schemes["BearerAuth"] = {
+        "type": "http",
+        "scheme": "bearer",
+        "description": (
+            "BACKEND_API_TOKEN_CONFIG가 설정된 경우 필요한 사전 발급 API 토큰"
+        ),
+    }
+    for path, operations in schema["paths"].items():
+        for operation in operations.values():
+            if isinstance(operation, dict):
+                operation["security"] = [] if path == "/health" else [{"BearerAuth": []}]
+    app.openapi_schema = schema
+    return schema
+
+
+app.openapi = build_openapi_schema
 
 
 class StateSnapshot(BaseModel):
@@ -159,6 +209,29 @@ def make_state_snapshot() -> dict:
     return snapshot.model_dump(mode="json")
 
 
+def is_public_http_path(path: str) -> bool:
+    return path in PUBLIC_HTTP_PATHS or path.startswith(PUBLIC_HTTP_PREFIXES)
+
+
+@app.middleware("http")
+async def authenticate_api_token(request: Request, call_next):
+    authenticator: TokenAuthenticator = app.state.token_authenticator
+    request.state.auth_principal = None
+    if not authenticator.enabled or is_public_http_path(request.url.path):
+        return await call_next(request)
+    principal = authenticator.authenticate_authorization(
+        request.headers.get("authorization")
+    )
+    if principal is None:
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": "유효한 Bearer API 토큰이 필요합니다."},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    request.state.auth_principal = principal
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def publish_successful_state_writes(request: Request, call_next):
     response = await call_next(request)
@@ -174,7 +247,31 @@ async def publish_successful_state_writes(request: Request, call_next):
 
 @app.websocket("/ws/state")
 async def stream_state(websocket: WebSocket) -> None:
-    await websocket.accept()
+    authenticator: TokenAuthenticator = app.state.token_authenticator
+    principal = None
+    if authenticator.enabled:
+        token = websocket_bearer_token(
+            websocket.headers.get("authorization"),
+            websocket.headers.get("sec-websocket-protocol"),
+        )
+        principal = authenticator.authenticate_token(token)
+        if principal is None:
+            await websocket.close(
+                code=4401,
+                reason="유효한 Bearer API 토큰이 필요합니다.",
+            )
+            return
+    websocket.state.auth_principal = principal
+    requested_protocols = {
+        protocol.strip()
+        for protocol in websocket.headers.get("sec-websocket-protocol", "").split(",")
+    }
+    selected_protocol = (
+        STATE_WEBSOCKET_PROTOCOL
+        if STATE_WEBSOCKET_PROTOCOL in requested_protocols
+        else None
+    )
+    await websocket.accept(subprotocol=selected_protocol)
     subscription = state_broadcaster.subscribe()
     try:
         loop = asyncio.get_running_loop()
@@ -366,6 +463,19 @@ def stop_action_dispatcher() -> None:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/auth/me", response_model=AuthStatus)
+def auth_status(request: Request) -> AuthStatus:
+    authenticator: TokenAuthenticator = app.state.token_authenticator
+    principal = request.state.auth_principal
+    if principal is None:
+        return AuthStatus(enabled=authenticator.enabled)
+    return AuthStatus(
+        enabled=True,
+        subject=principal.subject,
+        role=principal.role,
+    )
 
 
 @app.get("/console", include_in_schema=False)

@@ -4,6 +4,7 @@
 - 기준 코드: `backend/app/main.py`, `backend/app/models.py`
 - 기준 버전: FastAPI application `0.2.0`
 - 작성일: 2026-10-30
+- 수정일: 2026-11-18
 - 기본 URL(로컬): `http://127.0.0.1:8000`
 - 대화형 문서: `/docs`
 - OpenAPI JSON: `/openapi.json`
@@ -17,24 +18,27 @@
 - 시간은 UTC ISO 8601 문자열로 반환한다.
 - 거리 단위는 m, 속도 단위는 m/s이다.
 - ID는 문자열이다. 서버 생성 ID는 `task-`, `proposal-`, `hazard-`, `log-` 접두사와 UUID를 사용한다.
-- 현재 인증·인가와 `/api/v1` 접두사는 구현하지 않았다.
+- 기본 개발 모드에서는 인증이 비활성화된다. `BACKEND_API_TOKEN_CONFIG`를 설정하면 역할별 Bearer API 토큰 인증을 적용한다. 역할별 행동 허용 규칙은 아직 구현하지 않았다.
+- `/api/v1` 접두사는 아직 구현하지 않았다.
 - 현재 저장소는 인메모리이므로 서버 재시작 시 등록 데이터가 사라진다.
 
 ### 공통 오류
 
 | 상태 코드 | 의미 | 대표 응답 |
 |---|---|---|
+| `401` | 인증이 활성화된 환경에서 Bearer 토큰이 없거나 유효하지 않음 | `{"detail":"유효한 Bearer API 토큰이 필요합니다."}` |
 | `404` | 요청한 Robot, TaskOrder, ActionProposal 또는 HazardEvent가 없음 | `{"detail":"...찾을 수 없습니다."}` |
 | `409` | 현재 상태에서 실행 불가, ID 중복, 활성 Proposal 또는 멱등성 충돌 | `{"detail":"..."}` |
 | `422` | JSON 스키마 위반, 자연어 해석 실패 또는 안전한 제안 생성 불가 | FastAPI 검증 오류 배열 또는 `{"detail":"..."}` |
 
 ## 2. 구현 엔드포인트
 
-현재 구현은 19개 path, 22개 HTTP operation으로 구성된다.
+현재 구현은 20개 path, 23개 HTTP operation으로 구성된다.
 
 | Method | Path | 성공 | 용도 |
 |---|---|---:|---|
 | `GET` | `/health` | `200` | 서버 상태 확인 |
+| `GET` | `/auth/me` | `200` | 인증 활성화 여부와 현재 요청자 확인 |
 | `POST` | `/robots` | `201` | Robot 등록 |
 | `GET` | `/robots` | `200` | Robot 전체 조회 |
 | `POST` | `/zones` | `201` | Zone 등록 |
@@ -57,9 +61,19 @@
 | `GET` | `/safety-rules` | `200` | 활성 안전 규칙 조회 |
 | `GET` | `/execution-logs` | `200` | 전체 ExecutionLog 조회 |
 
+### 2.1 인증
+
+`BACKEND_API_TOKEN_CONFIG`가 없으면 기존 개발 호환을 위해 인증을 적용하지 않는다. 값이 있으면 각 항목은 `token_sha256`, `subject`, `role`을 가져야 하며, 서버는 요청의 평문 토큰을 SHA-256으로 계산해 상수 시간 비교한다. 설정에는 평문 토큰을 넣지 않는다. 빈 배열, 잘못된 digest, 중복 digest, 빈 요청자·역할은 서버 시작 오류다.
+
+인증 활성화 시 `/health`, `/docs`, `/openapi.json`, `/redoc`, `/console`과 정적 asset만 공개한다. 나머지 HTTP API는 `Authorization: Bearer <token>`이 필요하고, 실패 시 `401`과 `WWW-Authenticate: Bearer`를 반환한다. `GET /auth/me`는 비활성화 상태에서는 `enabled=false`를 반환하며, 활성화 상태에서는 유효한 토큰으로 호출해야 `subject`와 `role`을 반환한다.
+
+`WS /ws/state`는 비브라우저 클라이언트의 `Authorization` 헤더 또는 브라우저의 WebSocket subprotocol `bearer.<base64url(token)>`을 받는다. 브라우저는 함께 `state.v1`을 요청하고 서버는 인증 성공 시 `state.v1`만 선택한다. 토큰 query parameter는 URL·로그 노출을 막기 위해 지원하지 않는다. 인증 실패 시 연결 전 WebSocket code `4401`로 닫는다.
+
+현재 인증 계층은 검증된 요청자의 `subject`와 `role`을 HTTP `request.state.auth_principal` 또는 WebSocket `state.auth_principal`에 전달한다. CRITICAL 해제·RESUME 같은 행동별 허용 역할과 감사 로그 요청자 기록은 #71의 ONT 권한 규칙에서 적용한다. 운영 콘솔의 토큰 입력 UI와 역할별 버튼 제어도 해당 규칙 확정 뒤 연결하며, 현재 인증 활성화 시험은 Swagger UI 또는 별도 API 클라이언트를 사용한다.
+
 WebSocket `WS /ws/state`는 연결 직후와 상태 변경 시 전체 상태 스냅샷을 전송한다. 연속 변경은 200ms 전송 간격 안에서 최신 전체 상태 하나로 합치며, 상태 변경이 없어도 15초마다 같은 형식의 스냅샷을 heartbeat로 전송한다. 이 heartbeat는 상태 구독 연결 유지용이며 ROS 2 안전 heartbeat나 Sensor·Worker 관측 최신성을 대신하지 않는다. WebSocket 경로는 HTTP OpenAPI path·operation 수에 포함하지 않는다.
 
-스냅샷은 `type=STATE_SNAPSHOT`, 단조 증가하는 `revision`, 서버 전송 시각 `observed_at`과 함께 Robot, Sensor, Worker, Zone, TaskOrder, ActionProposal, HazardEvent, SafetyRule 및 최근 ExecutionLog 100건을 포함한다. Worker 관측이 한 번도 없으면 `workers=null`, 관측 결과 작업자가 없으면 `workers=[]`이며, `workers_observed_at`으로 관측 시각을 제공한다. 관측 유효성은 WebSocket 연결 여부가 아니라 기존 `last_frame_at`, `workers_observed_at` 기준으로 판단한다. 전체 ExecutionLog는 `GET /execution-logs`로 조회한다. 현재는 인증과 재연결 시 delta 복구 없이 항상 전체 스냅샷을 보낸다.
+스냅샷은 `type=STATE_SNAPSHOT`, 단조 증가하는 `revision`, 서버 전송 시각 `observed_at`과 함께 Robot, Sensor, Worker, Zone, TaskOrder, ActionProposal, HazardEvent, SafetyRule 및 최근 ExecutionLog 100건을 포함한다. Worker 관측이 한 번도 없으면 `workers=null`, 관측 결과 작업자가 없으면 `workers=[]`이며, `workers_observed_at`으로 관측 시각을 제공한다. 관측 유효성은 WebSocket 연결 여부가 아니라 기존 `last_frame_at`, `workers_observed_at` 기준으로 판단한다. 전체 ExecutionLog는 `GET /execution-logs`로 조회한다. 현재는 재연결 시 delta 복구 없이 항상 전체 스냅샷을 보낸다.
 
 ## 3. 데이터 계약
 
@@ -362,7 +376,7 @@ ResumeTask 전이와 실제 ROS 2 어댑터 결과 토픽 연결은 아직 구�
 | Proposal 제출·평가 | 한 경계에서 판정 결과 반환 | 등록, 평가, 실행 API 분리 |
 | 객체 조회 | `GET /api/v1/objects/{type}` | Robot, TaskOrder, Proposal, Rule, Log의 개별 API 일부 |
 | ResumeTask | 관리자 승인 2단계 복귀 | 미구현, HELD 생성 요청은 `409` |
-| 인증·권한 | CRITICAL 해제와 Resume는 관리자 전용 | CRITICAL 해제 요청의 `resolved_by=OPERATOR` 검사 구현, 실제 인증·Resume는 미구현 |
+| 인증·권한 | CRITICAL 해제와 Resume는 관리자 전용 | 선택형 역할별 API 토큰 인증과 요청자 전달 구현. CRITICAL 해제 요청의 `resolved_by=OPERATOR` 검사만 있고 역할별 인가는 미구현 |
 | 규칙 SR-01~06 | 속도·구역·거리·위험·상태·센서 공백 | SR-01 기본 0.4m/s·Robot·Zone 상한, 로봇 상태·adapter·관련 CRITICAL 위험 구현. KEEP_OUT 경로 검사를 구현하고 거리·센서 공백은 관측 안전 검사 활성화 시 적용 |
 | E-Stop | ROS 2 latched 전용 경로 | 실행 재검증 실패 시 Robot ESTOP·Task HELD·감사 로그 구현. `CRITICAL` HazardEvent가 실행 중 로봇과 연결되면 `/safety/estop` 발행(3.6절). 운영자 E-Stop API와 로봇별 정지는 미구현 |
 | 어댑터 실행 결과 | ROS 2 result 토픽으로 완료·실패 보고 | HTTP 결과 보고, 상태 전이, 멱등 감사 로그 구현. ROS 2 토픽 연결은 미구현 |
@@ -385,4 +399,4 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q app tests
 ```
 
-OpenAPI 경로 수는 19개, operation 수는 22개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.
+OpenAPI 경로 수는 20개, operation 수는 23개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.
