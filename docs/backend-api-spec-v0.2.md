@@ -30,7 +30,7 @@
 
 ## 2. 구현 엔드포인트
 
-현재 구현은 19개 path, 22개 HTTP operation으로 구성된다.
+현재 구현은 19개 path, 24개 HTTP operation으로 구성된다.
 
 | Method | Path | 성공 | 용도 |
 |---|---|---:|---|
@@ -40,6 +40,7 @@
 | `POST` | `/zones` | `201` | Zone 등록 |
 | `GET` | `/zones` | `200` | Zone 전체 조회 |
 | `PUT` | `/sensors/{sensor_id}` | `200` | Sensor 등록·갱신 |
+| `GET` | `/workers/snapshot` | `200`, `404` | 최신 전체 Worker 관측 스냅샷 조회 |
 | `PUT` | `/workers/snapshot` | `200` | 전체 Worker 관측 스냅샷 교체 |
 | `GET` | `/task-orders` | `200` | TaskOrder 필터·정렬·페이지 목록 조회 |
 | `POST` | `/task-orders/preview` | `200` | 자연어 명령 단건 비저장 검증 |
@@ -52,10 +53,15 @@
 | `POST` | `/action-proposals/{proposal_id}/evaluate` | `200` | 안전 규칙 평가 |
 | `POST` | `/action-proposals/{proposal_id}/execute` | `200` | 실행 직전 재평가 후 Mock adapter 전달 |
 | `POST` | `/action-proposals/{proposal_id}/result` | `200` | 제어 어댑터 실행 결과 보고 |
+| `GET` | `/hazards` | `200` | HazardEvent 필터 목록 조회 |
 | `POST` | `/hazards` | `201` | HazardEvent 등록 |
 | `POST` | `/hazards/{hazard_id}/resolve` | `200` | HazardEvent 해제 |
 | `GET` | `/safety-rules` | `200` | 활성 안전 규칙 조회 |
 | `GET` | `/execution-logs` | `200` | 전체 ExecutionLog 조회 |
+
+WebSocket `WS /ws/state`는 연결 직후와 상태 변경 시 전체 상태 스냅샷을 전송한다. 연속 변경은 200ms 전송 간격 안에서 최신 전체 상태 하나로 합치며, 상태 변경이 없어도 15초마다 같은 형식의 스냅샷을 heartbeat로 전송한다. 이 heartbeat는 상태 구독 연결 유지용이며 ROS 2 안전 heartbeat나 Sensor·Worker 관측 최신성을 대신하지 않는다. WebSocket 경로는 HTTP OpenAPI path·operation 수에 포함하지 않는다.
+
+스냅샷은 `type=STATE_SNAPSHOT`, 단조 증가하는 `revision`, 서버 전송 시각 `observed_at`과 함께 Robot, Sensor, Worker, Zone, TaskOrder, ActionProposal, HazardEvent, SafetyRule 및 최근 ExecutionLog 100건을 포함한다. Worker 관측이 한 번도 없으면 `workers=null`, 관측 결과 작업자가 없으면 `workers=[]`이며, `workers_observed_at`으로 관측 시각을 제공한다. 관측 유효성은 WebSocket 연결 여부가 아니라 기존 `last_frame_at`, `workers_observed_at` 기준으로 판단한다. 전체 ExecutionLog는 `GET /execution-logs`로 조회한다. 현재는 인증과 재연결 시 delta 복구 없이 항상 전체 스냅샷을 보낸다.
 
 ## 3. 데이터 계약
 
@@ -205,6 +211,17 @@ MANIPULATE 예:
 
 `GET /task-orders/{task_id}/action-proposals`는 해당 TaskOrder의 Proposal만 배열로 반환한다.
 
+자동 생성한 `MOVE_TO`는 로봇의 현재 위치와 좌표 목적지 또는
+`Zone.geometry.navigation_target`을 잇는 직선 `trajectory`를 채운다.
+출발점과 목적지의 좌표계가 일치해야 한다. 목적지 좌표가 없거나 좌표계가
+다르면 경로는 `null`이며, 경로 검사가 필요한 경우 안전 게이트가 거절한다.
+
+이 직선은 백엔드의 사전 검사에 사용하는 예상 경로다. 현재 CTL 이동 제어기는
+목표 좌표와 주행 중 `/odom`을 바탕으로 속도와 방향을 계산하므로 실제 궤적과의
+일치는 보장되지 않는다. 실행 직전 Robot 위치와 예상 경로 출발점은 CTL diff-drive의
+도착 판정과 같은 0.05m 허용 오차로 비교하며, 이를 넘으면 Proposal을 거절하고 재계획한다.
+CTL의 최종 실행 경로와 실시간 위치를 안전 검증에 반영하는 작업은 후속 연동 범위다.
+
 ### 3.4 ActionProposal
 
 | 필드 | 타입 | 규칙 |
@@ -259,8 +276,10 @@ TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 
 - `APPROVED`만 실행할 수 있다.
 - 실행 직전 같은 안전 규칙을 다시 평가한다.
 - 재평가 실패 시 Proposal과 TaskOrder를 `HELD`로 바꾸고 `409`를 반환한다. 관측 공백 또는 최소 안전거리만 위반하면 `REJECT`를 기록한다. E-Stop 거리 위반 또는 기존 규칙 재평가 실패 시 Robot을 `ESTOP`으로 바꾸고 `triggered_by=RULE_ENGINE`인 `ESTOP` 로그를 남긴다.
+- 자동 생성한 MOVE_TO의 출발 위치나 좌표계가 실행 직전 백엔드에 저장된 로봇 위치와 다르면 전송을 차단한다. 출발점만 불일치하면 Proposal을 `REJECTED`, TaskOrder를 `PLANNING`으로 바꿔 새 제안을 생성할 수 있다.
 - 통과 시 Proposal을 `EXECUTING`, TaskOrder를 `RUNNING`, Robot을 `MOVING`으로 바꾸고 Mock adapter 전달을 나타내는 `EXECUTE` 로그를 남긴다.
 - 평가와 실행 직전 재평가 로그에는 `evaluated_in_ms`를 기록한다.
+- KPI 9 proxy는 현재 명령 입력부터 이 API 응답까지 측정한다. 어댑터 ACK 시각은 Backend에 저장하지 않으므로 KPI 9의 최종 명령→ACK 지연에는 사용할 수 없다.
 
 `POST /action-proposals/{proposal_id}/result`
 
@@ -275,6 +294,8 @@ TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 
 - 동일한 결과 재전송은 저장 상태만 반환하고 로그를 중복 생성하지 않는다. 이미 기록된 결과와 다른 재전송은 `409`다.
 
 ### 3.6 HazardEvent
+
+`GET /hazards`는 저장된 HazardEvent를 등록 순서로 반환한다. `status`, `severity`, `robot_id`를 단독 또는 함께 필터링할 수 있다. `robot_id`는 `related_robot_ids`에 해당 ID가 포함된 이벤트만 반환한다. 필터와 일치하는 이벤트가 없으면 빈 배열을 반환한다.
 
 `POST /hazards`
 
@@ -317,6 +338,7 @@ v1.1 객체의 Pydantic 모델 계약에는 다음 선택 필드를 반영한다
 
 - `PUT /sensors/{sensor_id}`는 기존 Sensor 모델 전체를 받는다. 센서 ID는 경로와 본문에서 일치해야 한다. 목적지 Zone을 감시하고 마지막 프레임의 나이가 2초 미만인 ONLINE 센서가 있어야 한다.
 - `PUT /workers/snapshot`은 `{"observed_at":"2026-11-05T12:00:00Z","workers":[]}` 형식으로 전체 Worker 목록을 교체한다. 빈 배열은 감지된 작업자가 없는 최신 관측을 뜻한다. 관측 시각은 시간대를 포함하며, 이전 관측보다 오래된 요청은 `409`다. 동일 스냅샷을 재전송해도 최신성은 관측 시각으로 계산한다.
+- `GET /workers/snapshot`은 마지막으로 저장된 `{"observed_at", "workers"}` 전체 스냅샷을 반환한다. 한 번도 저장되지 않았으면 `404`다.
 - Worker 스냅샷과 개별 Worker 위치는 현재 ONT MVP의 2초 최신성 정책을 적용한다. 안전거리 검사는 MOBILE 로봇의 XY 경로와 동일 좌표계의 작업자 위치를 비교한다.
 - 안전거리 위반의 백엔드 판정과 상태를 로그에 기록한다. 물리 E-Stop 신호 발행과 실행 중 연속 감시는 CTL 연동 범위다.
 
@@ -349,7 +371,7 @@ ResumeTask 전이와 실제 ROS 2 어댑터 결과 토픽 연결은 아직 구�
 | 규칙 SR-01~06 | 속도·구역·거리·위험·상태·센서 공백 | SR-01 기본 0.4m/s·Robot·Zone 상한, 로봇 상태·adapter·관련 CRITICAL 위험 구현. KEEP_OUT 경로 검사를 구현하고 거리·센서 공백은 관측 안전 검사 활성화 시 적용 |
 | E-Stop | ROS 2 latched 전용 경로 | 실행 재검증 실패 시 Robot ESTOP·Task HELD·감사 로그 구현. `CRITICAL` HazardEvent가 실행 중 로봇과 연결되면 `/safety/estop` 발행(3.6절). 운영자 E-Stop API와 로봇별 정지는 미구현 |
 | 어댑터 실행 결과 | ROS 2 result 토픽으로 완료·실패 보고 | HTTP 결과 보고, 상태 전이, 멱등 감사 로그 구현. ROS 2 토픽 연결은 미구현 |
-| 상태 구독 | WebSocket `/ws/state` | 미구현 |
+| 상태 구독 | WebSocket `/ws/state` | 전체 상태 스냅샷 구독과 15초 heartbeat 구현, delta 복구는 미구현 |
 | 영속 저장 | Redis 또는 ROS 2 상태 연동 | 인메모리 |
 | 판정 시간 | `evaluated_in_ms` 기록 | 평가·실행 직전 재평가 로그에 구현 |
 | Observation 등록 | CV가 Observation을 제출하고 ONT가 병합해 HazardEvent 생성 | 미구현. CV가 `PUT /sensors/{sensor_id}`, `PUT /workers/snapshot`, `POST /hazards`로 직접 갱신 |
@@ -368,4 +390,4 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q app tests
 ```
 
-OpenAPI 경로 수는 19개, operation 수는 22개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.
+OpenAPI 경로 수는 19개, operation 수는 24개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.

@@ -106,6 +106,32 @@ python ros_camera_detect.py --topic /cctv_1/image_raw --topic /cctv_2/image_raw 
 - `--num-beams`는 Florence-2 생성의 빔 수입니다(기본 3, 기존과 같음). 줄이면 빨라질 수 있지만 탐지 결과가 달라질 수 있어 정답 비교로 확인한 뒤 바꿉니다.
 - `--save-misses-dir`를 주면 작업자(`people`)가 없는 입력 프레임을 `<카메라>_<sec>_<nanosec>.png`로 저장하고 기록의 `saved_frame`에 경로를 남깁니다. 저장은 기본 300장까지(`--max-saved-misses`)이며 저장 시간은 `processing_ms`에 넣지 않지만 다음 프레임 처리를 늦출 수 있습니다. 처리율을 잴 때는 저장 없이 따로 실행하세요.
 
+### 백엔드 연결: 센서·작업자 스냅샷과 HazardEvent
+
+```bash
+python ros_camera_detect.py --topic /cctv_1/image_raw --topic /cctv_2/image_raw \
+  --model /path/to/florence-2-base --batch-cameras --num-beams 1 \
+  --backend-url http://127.0.0.1:8000 --covered-zone-id <감시 구역 ID> \
+  --hazard-zone-id <KEEP_OUT 구역 ID> --robot-id robot-01
+```
+
+**센서·작업자 스냅샷** (`--backend-url`, `--covered-zone-id`): 백엔드의 관측 공백·안전거리 검사(`BACKEND_PERCEPTION_SAFETY_ENABLED=1`, API 명세 3.8절)에 쓰입니다.
+
+- 0.5초마다 카메라별 Sensor를 `PUT /sensors/{sensor_id}`로 보냅니다. `last_frame_at`은 마지막으로 처리한 프레임의 수신 시각이고, 2초 넘게 처리한 프레임이 없으면 `DEGRADED`, 노드를 끝내면 `OFFLINE`으로 보냅니다. `covered_zone_ids`에는 `--covered-zone-id`를 넣으며 백엔드에 등록된 구역이어야 합니다.
+- 같은 주기로 `PUT /workers/snapshot`에 작업자 목록 전체를 보냅니다. 1초 이내 프레임이 있는 카메라만 쓰고, 서로 다른 카메라가 0.5m 안에서 본 사람은 한 명으로 합칩니다. `observed_at`은 포함한 카메라 프레임 중 가장 오래된 시각이며, 더 새 프레임이 없으면 보내지 않습니다. 아무도 안 보이면 빈 목록을 보냅니다.
+- 작업자 `worker_id`는 스냅샷마다 `worker-1`부터 매기는 번호이며 추적 ID가 아닙니다. 좌표계는 `world`, `current_zone_id`는 위치가 속한 구역(없으면 빈 문자열)이며, 구역이 겹치면 목록 순서와 관계없이 KEEP_OUT 구역을 고릅니다. `safety_status`는 KEEP_OUT 안이면 `DANGER`, 그 밖은 `UNKNOWN`입니다(거리 판정은 백엔드가 합니다). 구역 모양은 `world` 좌표계의 GeoJSON `Polygon`(`coordinates`)과 제어 계약 형식 `polygon`(`points`)을 모두 읽고, 그 밖의 구역은 건너뜁니다. `confidence`는 모델 점수 대신 해당 카메라의 최근 5프레임 중 사람을 본 비율입니다.
+- 전송은 별도 스레드에서 최신 값만 보내므로 백엔드가 느려도 추론을 막지 않습니다. 전송에 실패하면 같은 종류의 새 값이 없을 때 0.25초 간격으로 2번까지 다시 보냅니다. 노드를 끝낼 때는 남은 요청이 HTTP 시간 제한까지 걸려도 기다린 뒤 종료합니다. 요약에 `backend_feed_sent`·`backend_feed_failures`(재시도 실패 포함)가 남습니다.
+
+**금지구역 HazardEvent** (`--hazard-zone-id`, `--robot-id`, 둘은 함께 지정):
+
+- 시작할 때 백엔드 `GET /zones`에서 `--hazard-zone-id` 구역을 읽습니다. `KEEP_OUT`, `frame_id=world`이고, 고리 하나짜리 GeoJSON `Polygon`(`coordinates`)이나 제어 계약 형식 `polygon`(`points`, 열린 고리면 자동으로 닫음) 중 하나여야 합니다. 백엔드 안전 게이트가 받는 두 형식과 같습니다. CCTV 위치·방향은 `--scene`(기본 `control/mujoco/models/scenario_scene.xml`)에서 읽으므로 `mujoco` 패키지가 필요하고, 월드에 고정된 카메라만 쓸 수 있습니다.
+- 사람 상자의 아래 중앙을 바닥(z=0)에 투영해 금지구역 안인지 판정합니다. **카메라 1대라도 연속 2프레임**에서 금지구역 안 작업자를 보면 `CRITICAL` `WORKER_INTRUSION` HazardEvent를 `POST /hazards`로 한 번 등록합니다(팀 결정 2026-11-05). 진입은 **모든 카메라가 마지막 목격 뒤에도 계속 결과를 내면서** 2초 동안 금지구역 안 작업자를 못 볼 때만 끝난 것으로 봅니다. 카메라가 끊기거나 결과가 늦으면 작업자 부재로 보지 않고 진입을 유지합니다. 진입이 끝난 뒤 다시 들어오면 새 이벤트를 등록합니다(이전 이벤트가 아직 OPEN이면 같은 구역에 여러 건이 쌓일 수 있으며, 이벤트 재사용은 백엔드 조회 API가 필요해 PR #41에서 논의 중입니다).
+- `related_robot_ids`에 `--robot-id`를 넣습니다. 스키마 v1.1에 따라 빈 목록은 모든 로봇을 뜻하지 않으므로 막을 로봇을 꼭 지정합니다.
+- `CRITICAL`은 센서가 해제할 수 없어서, 작업자가 나가도 운영자가 `POST /hazards/{hazard_id}/resolve`로 해제해야 합니다. 이 노드는 이벤트를 열기만 하고 해제하거나 로봇에 직접 명령하지 않습니다.
+- Florence-2 `<OD>`는 점수가 없어 `confidence`에 모델 점수 대신 트리거한 카메라의 최근 5프레임 중 금지구역 안 탐지 비율(탐지 지속 비율)을 넣습니다. 모델 confidence와 의미가 다르므로 해석은 ONT와 정합니다. `source_observation_ids`는 이 프레임들의 결정적 ID이며, 같은 ID가 JSONL 기록의 `hazard.observation_ids`에 남아 원본 탐지로 추적할 수 있습니다. Observation 객체는 아직 백엔드에 등록하지 않습니다.
+- 진입마다 고정 `hazard_id`를 정해 보내므로, 응답 타임아웃 뒤 다시 보내도 같은 진입이 두 번 등록되지 않습니다(백엔드의 `409` 중복 ID 응답을 등록 완료로 처리). 등록에 실패하면 로그를 남기고 다음 프레임에서 다시 시도합니다. 재시도 때는 최초 트리거의 센서·관측 ID·신뢰도·감지 시각을 그대로 보내며, 등록될 때까지 진입을 끝내지 않아 실패한 사건이 사라지지 않습니다. 기록의 `hazard`에 투영 위치·금지구역 판정·등록된 `hazard_id`가, 요약에 `hazard_ids`·`hazard_post_failures`가 남습니다.
+- 미구현: 실행 중 로봇의 즉시 정지. 지금 백엔드는 열린 `CRITICAL` 이벤트로 이후 평가와 실행 직전 재검증을 막지만, 이벤트 등록만으로 이미 실행 중인 행동을 멈추지는 않습니다.
+
 ## 연속 추론 속도 측정 (CV-03)
 
 GPU 할당을 받은 터미널에서 아래처럼 실행하면 모델 로드와 워밍업 3회를 제외하고 두 정지 이미지를 순서대로 **60초 이상 반복 추론**합니다. 출력은 `vlm_results/benchmark.json`에 저장됩니다.

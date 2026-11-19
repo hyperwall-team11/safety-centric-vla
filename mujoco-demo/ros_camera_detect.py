@@ -1,6 +1,10 @@
 """Subscribe to MuJoCo ROS 2 cameras and run a person detector on recent frames.
 
-This records detections for CV integration and does not publish safety Observations.
+This records detections for CV integration. With ``--backend-url`` it also keeps the backend's
+Sensor heartbeats and Worker snapshot fresh (see ``perception_feed``), and with
+``--hazard-zone-id`` opens a CRITICAL WORKER_INTRUSION HazardEvent when any fixed CCTV sees a
+worker inside that KEEP_OUT Zone (see ``hazard_reporter``). It never resolves events or commands
+the robot directly.
 Florence-2 <OD> has no confidence score; RT-DETR scores are checked against the WORKER
 threshold, and every returned label is recorded for miss analysis. With several
 ``--topic`` options one detector serves the cameras in turn, newest frame per camera, or all
@@ -26,10 +30,38 @@ from camera_frames import (LatestFrameBuffer, frame_file_name, person_detections
                            take_round_robin)
 from detectors import DETECTORS, WORKER_SCORE_THRESHOLD
 from florence_detect import percentile
+from hazard_reporter import (BackendClient, IntrusionTracker, build_hazard, camera_from_pose,
+                             keep_out_ring, observation_id, workers_in_zone)
+from perception_feed import (FEED_INTERVAL_SECONDS, SEND_MAX_RETRIES, LatestSender, WorkerFusion,
+                             parse_utc, sensor_payload, utc_now)
 
 
 DEFAULT_TOPIC = "/cctv_1/image_raw"
 DEFAULT_MODELS = {"florence2": "microsoft/Florence-2-base", "rtdetr": "PekingU/rtdetr_r50vd"}
+DEFAULT_SCENE = Path(__file__).resolve().parents[1] / "control/mujoco/models/scenario_scene.xml"
+
+
+def fixed_cameras(scene_path, topics):
+    """World pose per topic of CCTVs attached to the world body, read once from the MuJoCo scene.
+
+    ``/cctv_1/image_raw`` maps to the scene camera ``cctv_1``.
+    """
+    import mujoco
+
+    model = mujoco.MjModel.from_xml_path(str(scene_path))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    cameras = {}
+    for topic in topics:
+        sensor_id = topic.strip("/").split("/")[0]
+        cam = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, sensor_id)
+        if cam < 0:
+            raise SystemExit(f"Camera {sensor_id} is not in {scene_path}")
+        if model.cam_bodyid[cam] != 0:
+            raise SystemExit(f"Camera {sensor_id} moves with a body; hazard reporting needs fixed CCTVs")
+        cameras[topic] = camera_from_pose(data.cam_xpos[cam], data.cam_xmat[cam].reshape(3, 3),
+                                              model.cam_fovy[cam])
+    return cameras
 
 
 class TopicStats:
@@ -71,6 +103,11 @@ class CameraDetector(Node):
         self.started = time.monotonic()
         self.processing_ms = []
         self.queue_age_ms = []
+        self.backend = getattr(args, "backend", None)
+        self.hazard = getattr(args, "hazard", None)
+        self.tracker = IntrusionTracker(topic.strip("/").split("/")[0] for topic in args.topic)
+        self.hazard_ids = []
+        self.hazard_failures = 0
         self.file = self.output.open("w", encoding="utf-8")
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT,
                          durability=DurabilityPolicy.VOLATILE)
@@ -81,6 +118,12 @@ class CameraDetector(Node):
             self.create_subscription(RosImage, stats.topic, stats.frames.put, qos,
                                      callback_group=self.receive_group)
         self.create_timer(0.01, self._process_latest)
+        if self.backend is not None:
+            keep_out = [z["zone_id"] for z in self.backend["zones"] if z.get("zone_type") == "KEEP_OUT"]
+            self.fusion = WorkerFusion(self.backend["zones"], keep_out)
+            self.sender = LatestSender(self._send_feed, self._feed_error)
+            self.create_timer(FEED_INTERVAL_SECONDS, self._publish_feed,
+                              callback_group=MutuallyExclusiveCallbackGroup())
         self.get_logger().info(
             f"Listening on {', '.join(args.topic)}; writing detections to {self.output}")
 
@@ -108,6 +151,57 @@ class CameraDetector(Node):
         image.save(path)
         self.saved_misses += 1
         return str(path)
+
+    def _send_feed(self, kind, payload):
+        client = self.backend["client"]
+        if kind == "workers":
+            client.put_worker_snapshot(payload)
+        else:
+            client.put_sensor(payload)
+
+    def _feed_error(self, key, exc):
+        self.get_logger().warning(f"Backend feed {key} failed: {exc}")
+
+    def _sensor_payloads(self, offline=False):
+        now = utc_now()
+        for topic, camera in self.backend["cameras"].items():
+            sensor_id = topic.strip("/").split("/")[0]
+            yield sensor_id, sensor_payload(sensor_id, topic, camera, self.backend["covered_zone_ids"],
+                                            self.fusion.last_frame_at(sensor_id), now, offline)
+
+    def _publish_feed(self):
+        """Sensor heartbeats every tick (DEGRADED once a camera stalls) and a Worker snapshot when newer."""
+        for sensor_id, payload in self._sensor_payloads():
+            self.sender.submit(f"sensor:{sensor_id}", "sensor", payload)
+        snapshot = self.fusion.snapshot(utc_now())
+        if snapshot is not None:
+            self.sender.submit("workers", "workers", snapshot)
+
+    def _report_hazard(self, topic, sensor_id, stamp, people, width, height):
+        """Project people to the floor, track KEEP_OUT entries and open a HazardEvent once per entry."""
+        camera = self.backend["cameras"][topic]
+        positions, in_zone = workers_in_zone(people, width, height, camera, self.hazard["ring"])
+        ids = [observation_id(sensor_id, stamp.sec, stamp.nanosec, index)
+               for index, point in enumerate(positions) if point["in_zone"]]
+        trigger = self.tracker.update(sensor_id, in_zone, time.monotonic(), ids)
+        # observation_ids는 이 기록(sensor_id, stamp)과 같은 키로 만들어 HazardEvent에서 JSONL로 추적된다.
+        result = {"ground_positions": positions, "in_keep_out": in_zone, "observation_ids": ids,
+                  "hazard_id": None}
+        if trigger is None:
+            return result
+        hazard = build_hazard(self.hazard["zone_id"], self.hazard["robot_ids"], trigger)
+        try:
+            created = self.hazard["client"].post_hazard(hazard)
+        except Exception as exc:  # 다음 프레임에서 다시 보낸다
+            self.hazard_failures += 1
+            self.get_logger().error(f"HazardEvent POST failed: {exc}")
+            return result
+        self.tracker.mark_reported()
+        self.hazard_ids.append(created["hazard_id"])
+        result["hazard_id"] = created["hazard_id"]
+        self.get_logger().warning(
+            f"CRITICAL WORKER_INTRUSION {created['hazard_id']} in {self.hazard['zone_id']} by {sensor_id}")
+        return result
 
     def _take_frames(self):
         """One frame in turn, or with ``--batch-cameras`` the latest frame of every camera that has one."""
@@ -179,6 +273,14 @@ class CameraDetector(Node):
                 "saved_frame": None if people else self._save_miss(image, sensor_id, stamp),
                 "note": "Detection record only; not an approved safety Observation or HazardEvent.",
             }
+            if self.hazard is not None:
+                record["hazard"] = self._report_hazard(stats.topic, sensor_id, stamp, people, msg.width, msg.height)
+            if self.backend is not None:
+                positions = (record["hazard"]["ground_positions"] if self.hazard is not None else
+                             workers_in_zone(people, msg.width, msg.height,
+                                             self.backend["cameras"][stats.topic], None)[0])
+                self.fusion.update(stats.topic.strip("/").split("/")[0],
+                                   parse_utc(frame.received_at_utc), positions)
             self.file.write(json.dumps(record, ensure_ascii=False) + "\n")
             for target in (stats, self):
                 target.processing_ms.append(processing_ms)
@@ -194,6 +296,13 @@ class CameraDetector(Node):
 
     def close(self):
         self.file.close()
+        if self.backend is not None:
+            # 종료하면 이 카메라로는 더 관측하지 않으므로 OFFLINE으로 알린다.
+            for sensor_id, payload in self._sensor_payloads(offline=True):
+                self.sender.submit(f"sensor:{sensor_id}", "sensor", payload)
+            # 남은 요청(카메라별 Sensor + 작업자 스냅샷)이 각자 HTTP 시간 제한까지 걸려도 기다린다.
+            requests = len(self.backend["cameras"]) + 1
+            self.sender.close(timeout=self.backend["client"].timeout * requests * (1 + SEND_MAX_RETRIES))
         now = time.monotonic()
         per_topic = {stats.topic: stats.summary(now) for stats in self.topics}
         firsts = [s.frames.snapshot()["first_received_monotonic"] for s in self.topics]
@@ -214,6 +323,9 @@ class CameraDetector(Node):
             "batch_cameras": self.args.batch_cameras, "num_beams": self.args.num_beams,
             "per_topic": per_topic,
             "saved_misses": self.saved_misses,
+            "hazard_ids": self.hazard_ids, "hazard_post_failures": self.hazard_failures,
+            "backend_feed_sent": self.sender.sent if self.backend is not None else 0,
+            "backend_feed_failures": self.sender.failures if self.backend is not None else 0,
             "measurement_note": (
                 "Local window starts at the first received callback on any topic; includes cold inference "
                 "and result writes. Per-topic rates share one detector. Queue age uses local monotonic time "
@@ -245,6 +357,15 @@ def main():
     parser.add_argument("--batch-cameras", action="store_true",
                         help="run the latest frame of every camera in one model call")
     parser.add_argument("--num-beams", type=int, default=3, help="Florence-2 beam search width")
+    parser.add_argument("--backend-url",
+                        help="send Sensor heartbeats and Worker snapshots to this backend (e.g. http://127.0.0.1:8000)")
+    parser.add_argument("--covered-zone-id", action="append", default=[],
+                        help="Zone the CCTVs cover (Sensor.covered_zone_ids); repeat for several zones")
+    parser.add_argument("--hazard-zone-id", help="registered KEEP_OUT Zone to watch for HazardEvents")
+    parser.add_argument("--robot-id", action="append", default=[],
+                        help="robot blocked by the HazardEvent; repeat for several robots")
+    parser.add_argument("--scene", type=Path, default=DEFAULT_SCENE,
+                        help="MuJoCo scene that defines the CCTV poses")
     args = parser.parse_args()
     args.topic = args.topic or [DEFAULT_TOPIC]
     args.model = args.model or DEFAULT_MODELS[args.detector]
@@ -265,6 +386,23 @@ def main():
         value = getattr(args, name)
         if value is not None and (not math.isfinite(value) or value <= 0):
             parser.error(f"--{name.replace('_', '-')} must be positive and finite")
+    if (args.covered_zone_id or args.hazard_zone_id or args.robot_id) and not args.backend_url:
+        parser.error("--covered-zone-id, --hazard-zone-id and --robot-id need --backend-url")
+    if args.backend_url and not args.covered_zone_id:
+        parser.error("--backend-url needs at least one --covered-zone-id")
+    if bool(args.hazard_zone_id) != bool(args.robot_id):
+        parser.error("--hazard-zone-id and --robot-id must be given together")
+    if args.backend_url:
+        client = BackendClient(args.backend_url)
+        zones = client.zones()
+        unknown = sorted(set(args.covered_zone_id) - {zone["zone_id"] for zone in zones})
+        if unknown:
+            parser.error(f"--covered-zone-id not registered in the backend: {', '.join(unknown)}")
+        args.backend = {"client": client, "zones": zones, "covered_zone_ids": args.covered_zone_id,
+                        "cameras": fixed_cameras(args.scene, args.topic)}
+    if args.hazard_zone_id:
+        args.hazard = {"client": client, "zone_id": args.hazard_zone_id, "robot_ids": args.robot_id,
+                       "ring": keep_out_ring(client.zone(args.hazard_zone_id))}
     if not torch.cuda.is_available():
         raise SystemExit("CUDA is unavailable. Run with ROS 2 and CUDA PyTorch in the same Python environment.")
     args.output.parent.mkdir(parents=True, exist_ok=True)

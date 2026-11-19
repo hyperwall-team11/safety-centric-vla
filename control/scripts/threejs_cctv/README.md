@@ -17,6 +17,10 @@ node render.mjs --data ../../outputs/threejs_cctv/data --out ../../outputs/three
 
 300프레임 × 카메라 2대 렌더는 Apple M3에서 약 70초 걸린다.
 
+### 브리지 실시간 렌더 → ROS 2 토픽 (#55)
+
+`node render.mjs --ros [http://127.0.0.1:8765]`는 브리지(`cctv_renderer:=threejs`)가 내보낸 장면(`outputs/threejs_live/data`)을 열고, 브리지의 최신 MuJoCo 프레임을 받아 렌더한 rgb8을 브리지로 돌려보냅니다. 브리지가 `/cctv_{n}/image_raw`로 발행합니다. 사용법은 [control/README.md](../../README.md)의 "Three.js CCTV 실시간 발행"을 봅니다.
+
 ### 지게차 모델
 
 `prop_forklift_*`는 `models/forklift.glb`로 그린다. 출처: Sketchfab [Forklift low poly](https://sketchfab.com/3d-models/forklift-low-poly-8ab650b3982243f8b661142de50f79c9), Ricardo Sanchez, **CC-BY-4.0** (영상·보고서에 출처 표기 필요).

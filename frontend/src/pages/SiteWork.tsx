@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { ApiError, api } from "../api/client";
+import { ApiError, NetworkError, api } from "../api/client";
+import { explainTaskError, type TaskErrorView } from "../api/taskError";
 import type { TaskOrderPreview } from "../api/types";
 import { usePolling } from "../hooks/usePolling";
 import { ProposalReview, latestLog, planOverlay } from "../components/ProposalReview";
@@ -27,7 +28,7 @@ const noop = () => Promise.resolve(undefined);
 export function SiteWork() {
   const [instruction, setInstruction] = useState("");
   const [preview, setPreview] = useState<TaskOrderPreview>();
-  const [error, setError] = useState<string>();
+  const [error, setError] = useState<TaskErrorView>();
   const [busy, setBusy] = useState(false);
   const [pickedRobot, setPickedRobot] = useState<string>();
   const [pickedZone, setPickedZone] = useState<string>();
@@ -36,6 +37,8 @@ export function SiteWork() {
   const task = usePolling(() => (taskId ? api.task(taskId) : noop()), 2000);
   const proposals = usePolling(() => (taskId ? api.taskProposals(taskId) : noop()), 2000);
   const logs = usePolling(() => (taskId ? api.executionLogs() : noop()), 2000);
+  const robots = usePolling(api.robots, 5000);
+  const zones = usePolling(api.zones, 5000);
   // 실시간 모드에서는 상태 변경 때만 다시 조회하므로, 작업이 바뀌면 직접 한 번 조회한다
   // (작업 생성 직후의 변경 알림이 taskId 반영보다 먼저 올 수 있다).
   const { refresh: refreshTask } = task;
@@ -45,6 +48,26 @@ export function SiteWork() {
   const proposal = [...(proposals.data ?? [])].sort((a, b) => b.proposed_at.localeCompare(a.proposed_at))[0];
   const log = latestLog(logs.data, proposal?.proposal_id);
   const overlay = planOverlay(task.data, proposal, log);
+  const presetRobot = robots.data?.find((robot) => robot.status === "IDLE") ?? robots.data?.[0];
+  const navigableZones = (zones.data ?? []).filter((zone) =>
+    zone.zone_type !== "KEEP_OUT" && "navigation_target" in zone.geometry
+  ).slice(0, 2);
+  const commandPresets = presetRobot
+    ? [
+        ...navigableZones.map((zone) => ({
+          label: `${zone.zone_id} 이동`,
+          instruction: `${presetRobot.robot_id} 로봇을 "${zone.zone_id}"으로 이동해`,
+          rejected: false,
+        })),
+        ...(navigableZones[0]
+          ? [{
+              label: "해석 거부 예시",
+              instruction: `${presetRobot.robot_id} 로봇을 "${navigableZones[0].zone_id}"으로 이동하면 알려줘`,
+              rejected: true,
+            }]
+          : []),
+      ]
+    : [];
 
   const pick = (robotId?: string, zoneId?: string) => {
     if (taskId) return; // 진행 중인 작업이 있으면 지도 선택으로 명령을 바꾸지 않는다.
@@ -53,13 +76,35 @@ export function SiteWork() {
     setInstruction(compose(robotId, zoneId));
     setPreview(undefined);
   };
+  const applyPreset = (instruction: string) => {
+    if (taskId) return;
+    setInstruction(instruction);
+    setPickedRobot(undefined);
+    setPickedZone(undefined);
+    setPreview(undefined);
+    setError(undefined);
+  };
   const destZone = preview?.destination.type === "ZONE" ? preview.destination.zone_id : undefined;
 
-  const run = async (fn: () => Promise<unknown>) => {
+  const run = async (fn: () => Promise<unknown>, taskParsing = false) => {
     setBusy(true);
     setError(undefined);
     try { await fn(); } catch (e) {
-      setError(e instanceof ApiError ? JSON.stringify(e.detail) : String(e));
+      if (taskParsing && e instanceof ApiError) {
+        setError(explainTaskError(e.detail));
+      } else if (e instanceof ApiError) {
+        setError({
+          title: "요청을 완료하지 못했습니다",
+          message: typeof e.detail === "string" ? e.detail : `Backend 응답 오류(HTTP ${e.status})`,
+        });
+      } else if (e instanceof NetworkError) {
+        setError({ title: "연결을 확인해 주세요", message: e.message });
+      } else {
+        setError({
+          title: "예상하지 못한 오류가 발생했습니다",
+          message: "화면을 새로고침한 뒤 다시 시도해 주세요.",
+        });
+      }
     } finally {
       setBusy(false);
       task.refresh(); proposals.refresh(); logs.refresh();
@@ -102,14 +147,33 @@ export function SiteWork() {
           </ol>
         </header>
 
-        <form className="command-bar" onSubmit={(e) => { e.preventDefault(); if (instruction.trim()) run(async () => setPreview(await api.previewTask(instruction))); }}>
+        <form className="command-bar" onSubmit={(e) => { e.preventDefault(); if (instruction.trim()) run(async () => setPreview(await api.previewTask(instruction)), true); }}>
           <input value={instruction} disabled={Boolean(taskId)} onChange={(e) => { setInstruction(e.target.value); setPreview(undefined); }}
                  placeholder="지도에서 로봇과 구역을 누르거나, 예: robot-01 로봇을 A구역으로 이동해" aria-label="자연어 명령" />
           {taskId
             ? <button type="button" onClick={reset}>새 요청</button>
             : <button className="primary" disabled={busy || !instruction.trim()}>명령 해석</button>}
         </form>
-        {error && <p className="error">{error}</p>}
+        {!taskId && (
+          <div className="command-presets" aria-label="명령 예시">
+            <span>예시 명령</span>
+            {commandPresets.length === 0 && <small>등록된 로봇과 이동 가능 구역을 불러오면 예시가 표시됩니다.</small>}
+            {commandPresets.map((preset) => (
+              <button key={preset.label} type="button" className="preset-chip"
+                      data-rejected={preset.rejected || undefined}
+                      onClick={() => applyPreset(preset.instruction)}>
+                {preset.label}
+              </button>
+            ))}
+          </div>
+        )}
+        {error && (
+          <div className="error task-error" role="alert">
+            <strong>{error.title}</strong>
+            <p>{error.message}</p>
+            {error.hint && <small>{error.hint}</small>}
+          </div>
+        )}
 
         {preview && (
           <div className="request-block">

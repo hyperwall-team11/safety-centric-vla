@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from pydantic import ValidationError
+
 from .instruction_intent import IntentDetectionError, detect_requested_action
 from .models import (
     ActionProposal,
@@ -10,6 +12,8 @@ from .models import (
     ProposalGenerationRequest,
     Robot,
     TaskOrder,
+    Vector3,
+    Zone,
 )
 
 
@@ -26,6 +30,8 @@ class ActionPlanner(Protocol):
         task: TaskOrder,
         robot: Robot,
         request: ProposalGenerationRequest,
+        *,
+        destination_zone: Zone | None = None,
     ) -> ActionProposal: ...
 
 
@@ -41,6 +47,8 @@ class RuleBasedActionPlanner:
         task: TaskOrder,
         robot: Robot,
         request: ProposalGenerationRequest,
+        *,
+        destination_zone: Zone | None = None,
     ) -> ActionProposal:
         if task.target_robot_id != robot.robot_id:
             raise ActionPlanningError("TaskOrder와 Robot의 ID가 일치하지 않습니다.")
@@ -99,12 +107,32 @@ class RuleBasedActionPlanner:
         if not default_frame_id.strip():
             raise ActionPlanningError("ActionProposal의 좌표계 frame_id를 결정할 수 없습니다.")
 
+        trajectory = None
+        if action_type == ActionType.MOVE_TO:
+            target_position = None
+            if isinstance(task.destination, CoordinateDestination):
+                target_position = task.destination.position
+            elif destination_zone is not None and destination_zone.frame_id == default_frame_id:
+                navigation_target = destination_zone.geometry.get("navigation_target")
+                if navigation_target is not None:
+                    try:
+                        target_position = Vector3.model_validate(navigation_target)
+                    except ValidationError as exc:
+                        raise ActionPlanningError("Zone의 navigation_target 좌표가 유효하지 않습니다.") from exc
+
+            # 좌표 변환 없이 검증할 수 있는 직선 경로만 제안한다.
+            if target_position is not None and robot.pose.frame_id == default_frame_id:
+                trajectory = [
+                    {"position": robot.pose.position.model_dump(mode="json")},
+                    {"position": target_position.model_dump(mode="json")},
+                ]
+
         return ActionProposal(
             task_id=task.task_id,
             robot_id=task.target_robot_id,
             action_type=action_type,
             parameters=parameters,
-            trajectory=None,
+            trajectory=trajectory,
             frame_id=default_frame_id,
             speed_limit=speed_limit,
             model_name=self.model_name,
