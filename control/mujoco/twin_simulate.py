@@ -105,7 +105,7 @@ def simulate(req):
     snapshot_id = req.get("snapshot_id") if isinstance(req, dict) else None
     try:
         return _simulate(req, started)
-    except (SimulationError, TwinError, KeyError, TypeError, ValueError) as exc:
+    except (SimulationError, TwinError, arms.ArmModelMissing, KeyError, TypeError, ValueError) as exc:
         return _response("ERROR", snapshot_id, started, detail=str(exc))
 
 
@@ -144,7 +144,11 @@ def _simulate(req, started):
         robot.setdefault("robot_type", CONSERVATIVE_ROBOT_TYPE)
     if robot_id not in {r.get("robot_id") for r in robots}:
         raise SimulationError(f"robot {robot_id!r} is not in state.robots")
-    model, data = build_twin({**state, "robots": robots})
+    if any(r.get("robot_model") in arms.ARM_MODELS for r in robots):
+        # 로봇 팔도 장애물이다. 원기둥 대신 실제 팔 모델(현재 관절각)을 붙여 접촉을 본다
+        model, data, _ = build_manipulation_twin({**state, "robots": robots})
+    else:
+        model, data = build_twin({**state, "robots": robots})
 
     name = f"robot:{robot_id}"
     geom_id = model.geom(name).id
@@ -301,17 +305,24 @@ def _simulate_manipulate(action, state, snapshot_id, started):
     workers = [g for g in range(model.ngeom) if model.geom(g).name.startswith("worker:")]
     fromto = np.zeros(6)
 
-    def gap():
-        # 팔·공구 표면과 작업자 몸 표면 사이 거리. 트윈의 작업자 캡슐에는 CV 여유 반경이 더해져 있어 다시 더한다
+    def gap(held):
+        # 팔·공구(들고 있으면 물체 포함) 표면과 작업자 몸 표면 사이 거리.
+        # 트윈의 작업자 캡슐에는 CV 여유 반경이 더해져 있어 다시 더한다
+        mine = list(kin.geom_ids) + ([obj_geom] if held else [])
         best = None
-        for g in kin.geom_ids:
+        for g in mine:
             for w in workers:
                 d = mujoco.mj_geomDistance(model, data, g, w, 10.0, fromto) + WORKER_MARGIN_M
                 best = d if best is None else min(best, d)
         return best
 
-    def contact():
-        own = kin.body_ids
+    own = kin.body_ids
+    # 들고 있는 물체와 부딪힐 수 있는 형상: 팔 자신과 물체를 뺀 충돌 형상 전부(작업자·다른 물체·다른 로봇)
+    held_targets = [g for g in range(model.ngeom)
+                    if g != obj_geom and model.geom_bodyid[g] not in own
+                    and (model.geom_contype[g] or model.geom_conaffinity[g])]
+
+    def contact(held):
         for c in data.contact[:data.ncon]:
             b1, b2 = model.geom_bodyid[c.geom1], model.geom_bodyid[c.geom2]
             mine1, mine2 = b1 in own, b2 in own
@@ -319,14 +330,20 @@ def _simulate_manipulate(action, state, snapshot_id, started):
                 continue  # 다른 물체끼리이거나 팔 자신의 링크끼리
             other = c.geom2 if mine1 else c.geom1
             if other == obj_geom:
-                continue  # 잡는 대상 물체와의 접촉은 정상
+                continue  # 잡는(들고 있는) 대상 물체와 팔의 접촉은 정상
             return True
+        if held:
+            # 물체와 작업자는 둘 다 mocap(고정) 바디라 MuJoCo가 접촉을 만들지 않으므로 거리로 직접 본다
+            for g in held_targets:
+                if mujoco.mj_geomDistance(model, data, obj_geom, g, 0.0, fromto) < 0:
+                    return True
         return False
 
     plan = arms.plan_manipulation(kin, data, kin.get(data), manipulation, goal, speed,
                                   dt=float(model.opt.timestep), holding=manipulation == "PLACE")
-    min_gap = gap()
-    if contact():
+    held = manipulation == "PLACE"
+    min_gap = gap(held)
+    if contact(held):
         return _response("COLLISION", snapshot_id, started, min_distance=min_gap, contact_at=0.0)
     t = 0.0
     for p in plan.points:
@@ -339,10 +356,10 @@ def _simulate_manipulate(action, state, snapshot_id, started):
         if p.holding:
             data.mocap_pos[obj_mocap] = kin.tcp(data)
         mujoco.mj_forward(model, data)
-        g = gap()
+        g = gap(p.holding)
         if g is not None:
             min_gap = g if min_gap is None else min(min_gap, g)
-        if contact():
+        if contact(p.holding):
             return _response("COLLISION", snapshot_id, started, min_distance=min_gap, contact_at=t, horizon=t)
     if min_gap is not None and min_gap < UNSAFE_DISTANCE_M:
         return _response("UNSAFE_DISTANCE", snapshot_id, started, min_distance=min_gap, horizon=t)

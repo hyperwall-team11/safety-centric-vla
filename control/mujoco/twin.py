@@ -10,7 +10,7 @@ MuJoCo ①(scenario_scene.xml)의 정답 좌표는 읽지 않는다. 정답은 `
      "zones": [{"zone_id", "zone_type", "frame_id", "geometry": {...}}],
      "objects": [{"object_id", "frame_id", "position": [x, y, z], "size": [sx, sy, sz]}]}  # 선택 (#95)
 
-로봇 팔(``robot_model``이 ``arms.ARM_MODELS``에 있는 로봇)은 원기둥을 만들지 않는다.
+로봇 팔(``robot_model``이 ``arms.ARM_MODELS``에 있는 로봇)은 원기둥을 만들지 않는다(MOVE_TO·MANIPULATE 모두).
 ``twin_simulate``가 실제 팔 모델을 그 자리에 붙인다. ``objects``는 상자 장애물이며 MANIPULATE의 대상 물체도 여기 있다.
 
 Backend 형식(Robot.pose, Worker.pose, Zone.geometry)은 ``state_from_backend``로 바꾼다.

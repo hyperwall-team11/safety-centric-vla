@@ -166,3 +166,46 @@ def test_move_to_still_uses_cylinder_and_ignores_objects_far_away():
     r["state"]["objects"][0]["position"] = [-1.5, -0.5, 0.05]
     assert ts.simulate(r)["result"] == "COLLISION"
     assert math.isfinite(ts.simulate(r)["first_contact_at_s"])
+
+
+def _held_box_req(worker_y, size):
+    objects = [{"object_id": "box-01", "frame_id": "world", "position": BOX, "size": [size] * 3}]
+    return manip_req("PLACE", target=[0.4, 0.4, 0.15], holding="box-01", objects=objects,
+                     workers=(("worker-01", 0.4, worker_y),))
+
+
+def test_held_box_contact_with_worker_is_collision():
+    # 팔만 보면 작업자와 닿지 않지만(UNSAFE_DISTANCE) 0.30 m 상자를 들고 지나가면 작업자와 겹친다
+    assert ts.simulate(_held_box_req(1.1, 0.02))["result"] == "UNSAFE_DISTANCE"
+    res = ts.simulate(_held_box_req(1.1, 0.30))
+    assert res["result"] == "COLLISION", res
+    assert res["first_contact_at_s"] is not None
+
+
+def test_held_box_counts_in_worker_distance():
+    assert ts.simulate(_held_box_req(1.5, 0.02))["result"] == "PASS"
+    res = ts.simulate(_held_box_req(1.5, 0.30))
+    assert res["result"] == "UNSAFE_DISTANCE", res
+
+
+def _move_past_arm(arm_position):
+    r = manip_req()
+    r["state"]["objects"] = []
+    r["state"]["robots"] = [
+        {"robot_id": "robot-01", "robot_type": "MOBILE", "frame_id": "world",
+         "position": [0.0, 0.0, 0.0], "yaw_rad": 0.0},
+        {"robot_id": "arm-ur10e", "robot_type": "MANIPULATOR", "frame_id": "world",
+         "position": list(arm_position), "yaw_rad": 0.0, "robot_model": "ur10e"}]
+    r["action"] = {"action_type": "MOVE_TO", "robot_id": "robot-01", "speed_limit": 0.5,
+                   "target_pose": {"frame_id": "world", "position": [3.0, 0.0, 0.0]}}
+    return r
+
+
+def test_move_to_through_arm_base_is_collision():
+    # MOVE_TO에서도 robot_model이 있는 팔을 실제 모델로 넣어 장애물로 본다
+    res = ts.simulate(_move_past_arm([1.5, 0.0, 0.0]))
+    assert res["result"] == "COLLISION", res
+
+
+def test_move_to_beside_arm_passes():
+    assert ts.simulate(_move_past_arm([1.5, 2.5, 0.0]))["result"] == "PASS"

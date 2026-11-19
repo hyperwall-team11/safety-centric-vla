@@ -281,12 +281,13 @@ pixi run arm-cycle-demo   # 데모: 4대가 상자를 계속 옮김 (검증 서�
 - `robots[].robot_model`: `ARM_MODELS` 키. 이 값이 있는 로봇은 원기둥 대신 실제 팔 모델로 붙입니다. `position`은 베이스(받침대 윗면) 위치입니다.
 - `joint_positions`: 생략하거나 `null`이면 모델의 `home` 자세. `holding_object_id`: 들고 있는 물체(`PLACE`에 필요).
 - `objects`: 상자 장애물(중심, 크기 m). `MOVE_TO`에서도 장애물로 쓰입니다.
-- 판정: 팔·공구가 다른 물체·로봇·작업자와 닿으면 `COLLISION`(잡는 대상 물체와의 접촉은 제외), 팔·공구 표면과 작업자 몸 표면 사이가 `UNSAFE_DISTANCE_M` 미만이면 `UNSAFE_DISTANCE`, 경유점 TCP 오차가 0.02 m를 넘으면 `GOAL_NOT_REACHED`.
+- `MOVE_TO`에서도 `robot_model`이 있는 팔은 실제 팔 모델(현재 `joint_positions`)로 넣어 이동 로봇과의 접촉을 봅니다. 팔 모델 파일이 없으면 `ERROR`(Fail-Closed)입니다.
+- 판정: 팔·공구 또는 들고 있는 물체가 다른 물체·로봇·작업자와 닿으면 `COLLISION`(팔과 대상 물체 사이 접촉은 제외), 팔·공구(들고 있는 동안은 물체 포함) 표면과 작업자 몸 표면 사이가 `UNSAFE_DISTANCE_M` 미만이면 `UNSAFE_DISTANCE`, 경유점 TCP 오차가 0.02 m를 넘으면 `GOAL_NOT_REACHED`.
 - `ERROR`: `robot_model`이 없는 로봇, `PICK`/`PLACE`가 아님, 물체 없음, `PICK`의 `target_pose`가 물체에서 0.05 m 넘게 떨어짐, `PLACE`인데 그 물체를 들고 있지 않음, `joint_positions` 개수 불일치.
 
 한계:
 - 파지는 물리 접촉 대신 운동학적으로 붙입니다(집으면 상자가 TCP를 따라감). 그리퍼 마찰·미끄러짐·하중은 다루지 않습니다.
-- 사전 시뮬레이션에서 들고 있는 상자와 다른 물체 사이의 접촉은 검사하지 않습니다(둘 다 고정 물체로 둠). 팔·공구의 접촉만 봅니다.
+- 들고 있는 상자의 접촉은 형상 사이 거리(`mj_geomDistance` < 0)로 판정합니다. 상자와 작업자가 모두 고정(mocap) 바디라 MuJoCo 접촉이 생기지 않기 때문입니다.
 - 브리지에서 팔은 위치 액추에이터로 움직이므로 빠른 동작에서 관절이 목표보다 늦습니다(측정 최대 약 0.2 rad, 0.25 m/s). 놓기 전 0.5 s 멈춰 이 차이를 줄입니다.
 - 이동형 운반 로봇(팔레트를 싣고 통로를 오가는 AMR)은 이 범위에 없습니다.
 
