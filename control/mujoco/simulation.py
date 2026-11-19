@@ -83,8 +83,9 @@ class DiffDriveSim:
         self.set_velocity(0.0, 0.0)
 
     def step(self, duration: float) -> None:
-        for _ in range(max(1, round(duration / self.model.opt.timestep))):
-            mujoco.mj_step(self.model, self.data)
+        # 한 번의 호출로 여러 스텝을 돈다. 스텝마다 따로 부르면 Python↔C 호출이 스텝 수만큼 늘어
+        # 물리 콜백이 길어진다(그동안 /odom 등 다른 발행이 멈춤).
+        mujoco.mj_step(self.model, self.data, nstep=max(1, round(duration / self.model.opt.timestep)))
 
     def pose(self):
         """(x, y, yaw) — world 좌표, yaw는 rad."""
