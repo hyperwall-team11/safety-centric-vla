@@ -128,6 +128,9 @@ pixi run cctv-threejs       # 터미널 2: 헤드리스 Chromium 렌더러, 5초
 3. 렌더러(`node render.mjs --ros`)가 새 프레임을 롱폴링으로 받아 카메라마다 렌더하고, 오프라인 영상과 같은 CCTV 효과를 거친 JPEG(품질 0.72)를 돌려보냅니다. 브리지가 rgb8로 풀어 발행합니다. JPEG 인코딩은 다음 카메라 렌더와, 전송은 다음 프레임 렌더와 겹쳐 돌립니다.
 4. 브리지는 그 영상을 **렌더한 프레임의 시뮬레이션 시각**을 `header.stamp`로 붙여 발행합니다. 렌더가 밀리면 중간 프레임은 건너뛰고 최신 프레임만 렌더합니다.
 
+- **stamp 기준**: CCTV stamp는 시뮬레이션 시각이라 **브리지를 실행할 때마다 0초부터 시작**합니다. 실행이 다르면 같은 stamp가 다시 나올 수 있습니다. 로봇 카메라(`/robot/head_camera/image_raw`)와 `/odom`·TF는 노드 시계(`get_clock().now()`)를 쓰므로 CCTV stamp와 기준이 다릅니다. 두 영상의 stamp를 서로 비교하지 않습니다.
+- **공장 장면 카메라 보정**: `bridge-threejs-plant`(`plant_scene.xml`)는 카메라 위치·방향이 `scenario_scene.xml`과 다릅니다. CV를 기본 보정으로 돌리면 바닥 투영이 틀리므로, 공장 장면은 CV에 그 장면의 보정 파일(`--camera-calib`)을 넘겨야 합니다(보정 파일은 #79 병합 뒤 CV 쪽에서 추가).
+
 - 렌더러가 멈추면 영상이 끊기고, Backend는 `OBSERVATION_GAP`(2초)으로 실행을 거부합니다(제어 계약 3장).
 - 같은 ROS 도메인에서 브리지를 둘 띄우면 같은 카메라 토픽에 두 영상이 섞입니다. 브리지는 5초마다 자기 카메라 토픽의 발행자 수를 확인해, 다른 발행자가 있으면 오류 로그를 남깁니다. 하나만 띄우거나 `ROS_DOMAIN_ID`를 나눕니다.
 - `plant_scene.xml`을 `model_path`로 주면 작업자 2·3(`worker_2`, `worker_3` mocap)도 오프라인 영상과 같은 경로로 함께 렌더합니다.
