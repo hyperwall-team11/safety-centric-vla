@@ -103,12 +103,14 @@ class ArmCore(MockRobotCore):
         if point.holding != self.gripper_closed:
             self.gripper_closed = point.holding
             self.outbox.append(("gripper", self.gripper_closed))
+            # 그리퍼를 닫고 여는 시점에 holding도 바꾼다. E-Stop·HOLD로 중간에 멈춰도 실제 파지 상태와 같게 유지한다
+            params = self.current.get("parameters") or {}
+            self.holding = params.get("object_id") if self.gripper_closed else None
         self.velocity = self.speed if point.phase in ("APPROACH", "DESCEND", "LIFT") else 0.0
         if elapsed < points[-1].t:
             return []
         params = self.current.get("parameters") or {}
         manipulation = str(params.get("manipulation")).upper()
-        self.holding = params.get("object_id") if manipulation == "PICK" else None
         pid = self.current["proposal_id"]
         self._clear_motion()
         self.status = "IDLE"

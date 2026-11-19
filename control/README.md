@@ -205,9 +205,11 @@ python mujoco/twin_simulate.py --request req.json          # 서버 없이 요�
 
 - 지원 범위: `MOVE_TO`와 `MANIPULATE`(#95, 아래 "로봇 팔")를 받습니다. 다른 `action_type`은 `ERROR`입니다.
 - 동작: 로봇을 현재 위치에서 `target_pose`까지 `speed_limit`으로 직선 이동시키며 0.01 s마다 MuJoCo 접촉을 검사합니다. 작업자는 스냅샷 위치에 멈춰 있다고 가정합니다(이동 예측 없음).
+- 실행 경로 계약: 사전 시뮬레이션은 **현재 위치 → `target_pose` 직선 경로**를 검증합니다. CTL 어댑터도 같은 직선 경로를 따르는 것을 전제로 하며(`diff_drive_core`: 목표 방향으로 회전 후 직선 전진, 장애물 회피 없음), 다른 경로(경유점·회피 경로)를 실행하는 어댑터는 실행 예정 궤적을 요청에 넣어 검증하도록 계약을 먼저 확장해야 합니다. 차동 구동의 방향 보정으로 생기는 직선 이탈(방향 오차 50° 이내에서 전진하며 회전)은 아직 판정에 반영하지 않습니다.
+- `target_pose.position`의 z는 바닥 평면 이동만 지원하므로 `|z| <= PLANAR_Z_TOLERANCE_M`(0.05 m)여야 하며, 벗어나면 `ERROR`입니다.
 - `result` 우선순위: `COLLISION`(이동하는 로봇이 여유 반경 포함 작업자 캡슐이나 다른 로봇과 접촉) → `UNSAFE_DISTANCE`(몸 표면 사이 거리가 `UNSAFE_DISTANCE_M` 미만) → `GOAL_NOT_REACHED`(최대 구간 안에 목표 0.05 m 이내 미도달) → `PASS`.
 - `min_worker_distance_m`은 로봇과 작업자 **몸 표면 사이** 최소 거리입니다(CV 여유 반경 제외). 작업자가 없으면 `null`, 접촉이 없으면 `first_contact_at_s`가 `null`입니다. `snapshot_id`는 요청 값을 그대로 돌려줍니다.
-- `ERROR`(Fail-Closed): `contract_version` 불일치, `snapshot_id`·`snapshot_at` 누락, Worker 스냅샷 없음, 스냅샷이 오래됨(`snapshot_at - observed_at > 2 s`) 또는 `observed_at`이 0.5 s 넘게 미래, 대상 로봇 없음, `speed_limit <= 0`, `world`가 아닌 좌표계. `ERROR` 응답에는 원인 `detail`이 붙습니다. JSON이 아닌 본문은 HTTP 400입니다.
+- `ERROR`(Fail-Closed): `contract_version` 불일치, `snapshot_id`·`snapshot_at` 누락, Worker 스냅샷 없음, 스냅샷이 오래됨(`snapshot_at - observed_at > 2 s`) 또는 `observed_at`이 0.5 s 넘게 미래, 대상 로봇 없음, `speed_limit <= 0`, `world`가 아닌 좌표계, 바닥 평면을 벗어난 `target_pose` z. `ERROR` 응답에는 원인 `detail`이 붙습니다. JSON이 아닌 본문은 HTTP 400입니다.
 - `robot_type`이 없는 로봇(계약 13.1 예시)은 가장 큰 반경의 형상으로 보수적으로 둡니다.
 
 | 상수 | 잠정값 | 근거 |
@@ -282,12 +284,13 @@ pixi run arm-cycle-demo   # 데모: 4대가 상자를 계속 옮김 (검증 서�
 - `robots[].robot_model`: `ARM_MODELS` 키. 이 값이 있는 로봇은 원기둥 대신 실제 팔 모델로 붙입니다. `position`은 베이스(받침대 윗면) 위치입니다.
 - `joint_positions`: 생략하거나 `null`이면 모델의 `home` 자세. `holding_object_id`: 들고 있는 물체(`PLACE`에 필요).
 - `objects`: 상자 장애물(중심, 크기 m). `MOVE_TO`에서도 장애물로 쓰입니다.
-- 판정: 팔·공구가 다른 물체·로봇·작업자와 닿으면 `COLLISION`(잡는 대상 물체와의 접촉은 제외), 팔·공구 표면과 작업자 몸 표면 사이가 `UNSAFE_DISTANCE_M` 미만이면 `UNSAFE_DISTANCE`, 경유점 TCP 오차가 0.02 m를 넘으면 `GOAL_NOT_REACHED`.
+- `MOVE_TO`에서도 `robot_model`이 있는 팔은 실제 팔 모델(현재 `joint_positions`)로 넣어 이동 로봇과의 접촉을 봅니다. 팔 모델 파일이 없으면 `ERROR`(Fail-Closed)입니다.
+- 판정: 팔·공구 또는 들고 있는 물체가 다른 물체·로봇·작업자와 닿으면 `COLLISION`(팔과 대상 물체 사이 접촉은 제외), 팔·공구(들고 있는 동안은 물체 포함) 표면과 작업자 몸 표면 사이가 `UNSAFE_DISTANCE_M` 미만이면 `UNSAFE_DISTANCE`, 경유점 TCP 오차가 0.02 m를 넘으면 `GOAL_NOT_REACHED`.
 - `ERROR`: `robot_model`이 없는 로봇, `PICK`/`PLACE`가 아님, 물체 없음, `PICK`의 `target_pose`가 물체에서 0.05 m 넘게 떨어짐, `PLACE`인데 그 물체를 들고 있지 않음, `joint_positions` 개수 불일치.
 
 한계:
 - 파지는 물리 접촉 대신 운동학적으로 붙입니다(집으면 상자가 TCP를 따라감). 그리퍼 마찰·미끄러짐·하중은 다루지 않습니다.
-- 사전 시뮬레이션에서 들고 있는 상자와 다른 물체 사이의 접촉은 검사하지 않습니다(둘 다 고정 물체로 둠). 팔·공구의 접촉만 봅니다.
+- 들고 있는 상자의 접촉은 형상 사이 거리(`mj_geomDistance` < 0)로 판정합니다. 상자와 작업자가 모두 고정(mocap) 바디라 MuJoCo 접촉이 생기지 않기 때문입니다.
 - 브리지에서 팔은 위치 액추에이터로 움직이므로 빠른 동작에서 관절이 목표보다 늦습니다(측정 최대 약 0.2 rad, 0.25 m/s). 놓기 전 0.5 s 멈춰 이 차이를 줄입니다.
 - 이동형 운반 로봇은 다음 절(AMR)에서 다룹니다.
 

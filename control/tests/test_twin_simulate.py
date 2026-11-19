@@ -89,6 +89,8 @@ def test_initial_contact_is_collision_at_zero():
     (lambda r: r["action"].update(robot_id="robot-99"), "not in state.robots"),
     (lambda r: r["action"].update(speed_limit=0), "speed_limit"),
     (lambda r: r["action"]["target_pose"].update(frame_id="map"), "frame_id"),
+    (lambda r: r["action"]["target_pose"].update(position=[1.2, -0.8, 0.5]), "planar"),
+    (lambda r: r["action"]["target_pose"].update(position=[1.2, -0.8, float("nan")]), "planar"),
 ])
 def test_invalid_requests_are_error_fail_closed(change, message):
     r = req()
