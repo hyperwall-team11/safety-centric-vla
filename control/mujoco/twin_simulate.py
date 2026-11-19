@@ -43,6 +43,8 @@ UNSAFE_DISTANCE_M = 0.6
 MAX_HORIZON_S = 30.0
 
 GOAL_TOLERANCE_M = 0.05
+# MOVE_TO는 바닥 평면(z=0) 이동만 판정한다. target_pose z가 이 범위를 벗어나면 판정 불가(ERROR)
+PLANAR_Z_TOLERANCE_M = 0.05
 SNAPSHOT_CLOCK_SKEW_S = 0.5  # observed_at이 snapshot_at보다 이만큼 넘게 미래면 시계 오류로 거부
 MAX_BODY_BYTES = 1_000_000
 # robot_type이 없는 로봇은 가장 큰 반경의 형상으로 보수적으로 둔다
@@ -134,6 +136,10 @@ def _simulate(req, started):
     if not isinstance(position, (list, tuple)) or len(position) != 3:
         raise SimulationError("target_pose.position needs [x, y, z]")
     goal = (float(position[0]), float(position[1]))
+    goal_z = float(position[2])
+    if not (math.isfinite(goal_z) and abs(goal_z) <= PLANAR_Z_TOLERANCE_M):
+        raise SimulationError(f"MOVE_TO is planar: target_pose z must be within "
+                              f"{PLANAR_Z_TOLERANCE_M} m of 0, got {position[2]!r}")
     speed = float(action.get("speed_limit"))
     if not (math.isfinite(speed) and speed > 0) or not all(math.isfinite(v) for v in goal):
         raise SimulationError("speed_limit and target_pose must be finite, speed_limit > 0")
