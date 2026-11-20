@@ -326,7 +326,7 @@ pixi run amr-cycle-demo   # 데모: 2대가 팔레트를 계속 나름 (검증 �
 | `/<seg>/cmd_vel` | 어댑터 → 브리지 | `geometry_msgs/Twist` |
 | `/<seg>/odom` | 브리지 → 어댑터 | `nav_msgs/Odometry` (world 좌표) |
 | `/<seg>/amr/load_command` | 어댑터 → 브리지 | `std_msgs/String` JSON `{command_id, manipulation: PICK·PLACE·CANCEL, object_id, target_pose}` |
-| `/<seg>/amr/load_result` | 브리지 → 어댑터 | `std_msgs/String` JSON `{command_id, success, reason_code, message}` |
+| `/<seg>/amr/load_result` | 브리지 → 어댑터 | `std_msgs/String` JSON `{command_id, success, reason_code, message, held_object_id}`. `held_object_id`는 결과 시점 실제 적재 상태로, 어댑터는 이 값으로 `holding`을 맞춘다. CANCEL은 진행 중 이송이 없어도 답한다 |
 
 **사전 시뮬레이션**: `MOVE_TO`는 기존 원기둥 판정을 그대로 씁니다. `state.robots[]`에 `"robot_model": "amr"`이 있으면 원기둥 크기를 차체 기준(반경 0.558 m, 높이 0.30 m)으로, `holding_object_id`가 있으면 실린 팔레트까지 덮는 크기(반경 0.692 m, 높이 1.04 m)로 둡니다. AMR의 `MANIPULATE` 사전 시뮬레이션은 아직 없습니다(`ERROR`).
 

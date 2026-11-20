@@ -61,7 +61,8 @@ def test_pick_drive_place_moves_pallet_kinematically():
     plant.set_velocity(a.robot_id, 0.4, 0.0)  # 이송 중 이동 명령은 무시
     settle(plant, data, amr.TRANSFER_S)
     assert plant.pop_results() == [(a.robot_id, {"command_id": "c1", "success": True, "reason_code": None,
-                                                  "message": "PICK (싣기) 완료"})]
+                                                  "message": "PICK (싣기) 완료",
+                                                  "held_object_id": a.pallet_id})]
     assert math.dist(plant.pose[a.robot_id][:2], a.warehouse_dock[:2]) < 0.05
     assert amr.drive_to(plant, model, data, a.robot_id, a.cell_dock[:2])
     amr.turn_to(plant, data, a.robot_id, a.cell_dock[2] + 0.3)  # 도착 방향이 어긋나 있어도
@@ -157,3 +158,15 @@ def test_cancelled_place_keeps_pallet_loaded():
                                   "target_pose": {"position": list(a.place_pose(a.warehouse_stand))}})
     settle(plant, data, amr.TRANSFER_S + 0.1)
     assert plant.pop_results()[-1][1]["success"]
+
+
+def test_cancel_after_finished_transfer_still_reports_held_state():
+    """PICK이 막 끝난 뒤 늦게 온 CANCEL에도 실제 적재 상태를 담아 답한다 (PR #104 리뷰 P1)."""
+    _, data, plant = fresh()
+    a = amr.PLANT_AMRS[0]
+    plant.load(data, a.robot_id, {"command_id": "c1", "manipulation": "PICK", "object_id": a.pallet_id})
+    settle(plant, data, amr.TRANSFER_S)
+    plant.load(data, a.robot_id, {"command_id": "c1", "manipulation": "CANCEL"})
+    results = [r for _, r in plant.pop_results()]
+    assert results[0]["success"] and results[-1]["reason_code"] == "CANCELLED"
+    assert all(r["held_object_id"] == a.pallet_id for r in results)
