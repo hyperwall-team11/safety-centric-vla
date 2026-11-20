@@ -237,8 +237,8 @@ python mujoco/twin_simulate.py --request req.json          # 서버 없이 요�
 ```
 
 - 지원 범위: `MOVE_TO`와 `MANIPULATE`(#95, 아래 "로봇 팔")를 받습니다. 다른 `action_type`은 `ERROR`입니다.
-- 동작: 로봇을 현재 위치에서 `target_pose`까지 `speed_limit`으로 직선 이동시키며 0.01 s마다 MuJoCo 접촉을 검사합니다. 작업자는 스냅샷 위치에 멈춰 있다고 가정합니다(이동 예측 없음).
-- 실행 경로 계약: 사전 시뮬레이션은 **현재 위치 → `target_pose` 직선 경로**를 검증합니다. CTL 어댑터도 같은 직선 경로를 따르는 것을 전제로 하며(`diff_drive_core`: 목표 방향으로 회전 후 직선 전진, 장애물 회피 없음), 다른 경로(경유점·회피 경로)를 실행하는 어댑터는 실행 예정 궤적을 요청에 넣어 검증하도록 계약을 먼저 확장해야 합니다. 차동 구동의 방향 보정으로 생기는 직선 이탈(방향 오차 50° 이내에서 전진하며 회전)은 아직 판정에 반영하지 않습니다.
+- 동작: 로봇을 현재 위치에서 `target_pose`까지 `speed_limit` 이하로, 실제 어댑터(`diff_drive_core`)와 같은 차동 구동 제어기(방향 오차 50° 초과 시 제자리 회전, 이내면 회전하며 전진, 도착 직전 감속)로 굴리며 0.01 s마다 MuJoCo 접촉을 검사합니다. 작업자는 스냅샷 위치에 멈춰 있다고 가정합니다(이동 예측 없음).
+- 실행 경로 계약: 사전 시뮬레이션은 CTL 어댑터가 실제로 낼 경로를 **같은 제어기로 적분해** 검증합니다(`twin_simulate.py`의 `DD_*` 상수는 `diff_drive_core`와 같아야 하며 테스트가 확인합니다). 경유점·회피 경로를 실행하는 어댑터는 실행 예정 궤적을 요청에 넣어 검증하도록 계약을 먼저 확장해야 합니다.
 - `target_pose.position`의 z는 바닥 평면 이동만 지원하므로 `|z| <= PLANAR_Z_TOLERANCE_M`(0.05 m)여야 하며, 벗어나면 `ERROR`입니다.
 - `result` 우선순위: `COLLISION`(이동하는 로봇이 여유 반경 포함 작업자 캡슐이나 다른 로봇과 접촉) → `UNSAFE_DISTANCE`(몸 표면 사이 거리가 `UNSAFE_DISTANCE_M` 미만) → `GOAL_NOT_REACHED`(최대 구간 안에 목표 0.05 m 이내 미도달) → `PASS`.
 - `min_worker_distance_m`은 로봇과 작업자 **몸 표면 사이** 최소 거리입니다(CV 여유 반경 제외). 작업자가 없으면 `null`, 접촉이 없으면 `first_contact_at_s`가 `null`입니다. `snapshot_id`는 요청 값을 그대로 돌려줍니다.
@@ -292,6 +292,7 @@ pixi run arm-cycle-demo   # 데모: 4대가 상자를 계속 옮김 (검증 서�
 |---|---|---|
 | `/<seg>/arm/joint_command` | 어댑터 → 브리지 | `sensor_msgs/JointState` 위치 목표 |
 | `/<seg>/arm/gripper` | 어댑터 → 브리지 | `std_msgs/Bool` (닫힘) |
+| `/<seg>/arm/grasp_state` | 브리지 → 어댑터 | `std_msgs/String` JSON `{closed, held}`. 그리퍼 명령마다 실제로 잡은 물체 이름(`held`, 못 잡으면 `null`)을 알린다. 어댑터는 이 결과로 파지 성공을 확정하고, 실패하거나 1초 안에 오지 않으면 `HW_ERROR`로 끝낸다 |
 | `/<seg>/joint_states` | 브리지 → 어댑터 | `sensor_msgs/JointState` 실제 관절각 |
 | `/adapter/<seg>/state` | 어댑터 → 검증 서버 | 기존 상태에 `robot_model`, `joints`, `tcp_position`, `gripper_closed`, `holding_object_id` 추가 |
 

@@ -17,10 +17,12 @@ UNSUPPORTED로 응답한다.
 """
 from __future__ import annotations
 
-from .core import INVALID, NO_HEARTBEAT, ROBOT_BUSY, ROBOT_HELD, MockRobotCore
+from .core import HW_ERROR, INVALID, NO_HEARTBEAT, ROBOT_BUSY, ROBOT_HELD, MockRobotCore
 
 MANIPULATIONS = ("PICK", "PLACE")
 DEFAULT_TCP_SPEED = 0.25  # m/s. ISO/TS 15066 협동 운전 권장 범위 안의 보수적 값 (온톨로지 확정 전 잠정값)
+# 그리퍼를 닫은 뒤 브리지의 파지 결과(grasp feedback)를 기다리는 최대 시간. 넘기면 파지 실패로 본다
+GRASP_FEEDBACK_TIMEOUT_S = 1.0
 
 
 class ArmCore(MockRobotCore):
@@ -39,12 +41,42 @@ class ArmCore(MockRobotCore):
         self.holding = None  # 들고 있는 object_id
         self.plan = None
         self.plan_started = None
+        self.grasp_object = None  # 마지막으로 그리퍼를 닫은 대상 object_id (정지 뒤 늦게 온 파지 결과 반영용)
+        self.grasp_wait_since = None  # 그리퍼를 닫고 파지 결과를 기다리기 시작한 시각 (그동안 궤적을 멈춘다)
         self.outbox = [("joints", list(self.q)), ("gripper", False)]
 
     # ---- 피드백 ----
     def update_joints(self, positions):
         if len(positions) == len(self.q):
             self.q_measured = [float(v) for v in positions]
+
+    def handle_grasp_feedback(self, held, now):
+        """브리지가 알려 준 실제 파지 결과(held: 잡은 물체 이름 또는 None). 적재 상태는 이 값이 기준이다.
+
+        그리퍼를 닫았다고 바로 들고 있다고 보지 않는다. 파지에 성공해야 궤적을 이어 가고,
+        실패하면 그 자리에서 멈추고 실패 RESULT를 보낸다 (PR #92 리뷰 P1)."""
+        if self.grasp_wait_since is None:
+            if not held:
+                self.holding = None  # 정지 뒤 늦게 온 결과도 실제 상태로 맞춘다
+            elif self.holding is None:
+                self.holding = self.grasp_object
+            return []
+        waited = now - self.grasp_wait_since
+        self.grasp_wait_since = None
+        if not held:
+            return self._fail_grasp(now, "그리퍼를 닫았지만 물체를 잡지 못함")
+        self.holding = (self.current.get("parameters") or {}).get("object_id")
+        self.plan_started += waited  # 기다린 시간만큼 궤적을 뒤로 민다
+        return []
+
+    def _fail_grasp(self, now, message):
+        pid = self.current["proposal_id"]
+        self.holding = None
+        self.gripper_closed = False
+        self.outbox.append(("gripper", False))
+        self._clear_motion()
+        self.status = "IDLE"
+        return [self._result(pid, False, HW_ERROR, message, now)]
 
     # ---- Action ----
     def _on_manipulate(self, msg, now):
@@ -91,21 +123,34 @@ class ArmCore(MockRobotCore):
 
     # ---- 주기 갱신 ----
     def _step(self, now, dt):
+        if self.grasp_wait_since is not None:
+            # 파지 결과를 기다리는 동안은 팔을 그 자리에 둔다
+            if now - self.grasp_wait_since > GRASP_FEEDBACK_TIMEOUT_S:
+                self.grasp_wait_since = None
+                return self._fail_grasp(now, "파지 결과가 오지 않음")
+            self.velocity = 0.0
+            return []
         points = self.plan.points
         elapsed = now - self.plan_started
-        point = points[-1]
+        # 이미 도달한 마지막 점을 고른다. 미래의 첫 점을 고르면 DESCEND 끝의 정지(dwell) 동안 GRASP 점이 먼저 선택돼
+        # 팔이 내려가기 전에 그리퍼를 닫는다 (PR #92 리뷰 P1)
+        point = points[0]
         for p in points:
-            if p.t >= elapsed:
-                point = p
+            if p.t > elapsed:
                 break
+            point = p
         self.q = [float(v) for v in point.q]
         self.outbox.append(("joints", list(self.q)))
         if point.holding != self.gripper_closed:
             self.gripper_closed = point.holding
             self.outbox.append(("gripper", self.gripper_closed))
-            # 그리퍼를 닫고 여는 시점에 holding도 바꾼다. E-Stop·HOLD로 중간에 멈춰도 실제 파지 상태와 같게 유지한다
-            params = self.current.get("parameters") or {}
-            self.holding = params.get("object_id") if self.gripper_closed else None
+            if self.gripper_closed:
+                # 닫았다고 바로 들고 있다고 보지 않는다. 브리지의 파지 결과를 기다린다
+                self.grasp_wait_since = now
+                self.grasp_object = (self.current.get("parameters") or {}).get("object_id")
+                self.velocity = 0.0
+                return []
+            self.holding = None
         self.velocity = self.speed if point.phase in ("APPROACH", "DESCEND", "LIFT") else 0.0
         if elapsed < points[-1].t:
             return []
@@ -117,6 +162,7 @@ class ArmCore(MockRobotCore):
         return [self._result(pid, True, None, f"{manipulation} 완료", now)]
 
     def _clear_motion(self):
+        self.grasp_wait_since = None
         if self.plan is not None:
             # 정지·취소: 마지막으로 보낸 관절각을 그대로 유지한다(그리퍼 상태도 유지해 물체를 떨어뜨리지 않음)
             self.outbox.append(("joints", list(self.q)))

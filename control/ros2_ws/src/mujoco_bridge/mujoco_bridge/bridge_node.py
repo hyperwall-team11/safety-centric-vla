@@ -26,6 +26,7 @@ cctv_renderer:=threejs이면 고정 CCTV(cctv_1, cctv_2)는 MuJoCo 렌더 대신
 지정하며, pixi 환경에서는 기본값($PIXI_PROJECT_ROOT/mujoco)을 그대로 쓰면 된다.
 """
 import array
+import json
 import math
 import os
 import sys
@@ -39,7 +40,7 @@ from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image, JointState
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
 ANY_NUMBER = ParameterDescriptor(dynamic_typing=True)  # 15와 15.0을 모두 받는다
@@ -170,7 +171,7 @@ class MujocoBridge(Node):
             # 물리 타이머마다 그리면 카메라 렌더가 밀리므로 화면 갱신은 30Hz로 따로
             self.create_timer(1.0 / 30.0, self._sync_viewer)
 
-        self.arm_joint_pubs = {}
+        self.arm_joint_pubs, self.grasp_pubs = {}, {}
         if self.plant_arms:
             from safety_control.interfaces import topic_segment
             for rid in self.plant_arms.kins:
@@ -179,6 +180,7 @@ class MujocoBridge(Node):
                                          lambda msg, r=rid: self._on_arm_command(r, msg), 10)
                 self.create_subscription(Bool, f"/{seg}/arm/gripper",
                                          lambda msg, r=rid: self._on_gripper(r, msg), 10)
+                self.grasp_pubs[rid] = self.create_publisher(String, f"/{seg}/arm/grasp_state", 10)
                 self.arm_joint_pubs[rid] = self.create_publisher(JointState, f"/{seg}/joint_states", 10)
 
         self.create_subscription(Twist, "/cmd_vel", self._on_cmd_vel, 10)
@@ -213,7 +215,11 @@ class MujocoBridge(Node):
             self.get_logger().warning(str(exc))
 
     def _on_gripper(self, robot_id, msg: Bool):
-        self.plant_arms.set_gripper(self.sim.data, robot_id, bool(msg.data))
+        held = self.plant_arms.set_gripper(self.sim.data, robot_id, bool(msg.data))
+        # 실제로 잡았는지 어댑터에 알린다. 어댑터는 이 결과를 받기 전에는 파지 성공으로 보지 않는다
+        name = self.plant_arms.box_name(held) if held is not None else None
+        self.grasp_pubs[robot_id].publish(String(data=json.dumps(
+            {"closed": bool(msg.data), "held": name}, ensure_ascii=False)))
 
     # ---- 물리 ----
     def _physics(self):

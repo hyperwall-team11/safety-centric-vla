@@ -193,6 +193,8 @@ def build_twin_xml(state, worker_margin=WORKER_MARGIN_M):
 
     return (
         '<mujoco model="twin">'
+        # yaw_rad를 euler에 그대로 넣으므로 각도 단위를 라디안으로 둔다 (MuJoCo 기본값은 도)
+        '<compiler angle="radian"/>'
         '<option timestep="0.01" gravity="0 0 0"/>'
         f'<asset>{"".join(assets)}</asset>'
         '<worldbody>'

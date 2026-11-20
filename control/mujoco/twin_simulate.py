@@ -43,6 +43,13 @@ UNSAFE_DISTANCE_M = 0.6
 MAX_HORIZON_S = 30.0
 
 GOAL_TOLERANCE_M = 0.05
+# MOVE_TO 경로는 실제 어댑터(robot_adapter/diff_drive_core.py)와 같은 제어기로 굴려 본다 (PR #92 리뷰 P1).
+# 직선을 가정하면 회전하며 전진하는 실제 궤적과 최대 수십 cm 어긋난다. 값은 diff_drive_core와 같아야 하며
+# tests/test_twin_simulate.py가 둘이 같은지 확인한다
+DD_HEADING_TOLERANCE_RAD = math.radians(50)
+DD_K_ANGULAR = 2.0
+DD_K_LINEAR = 1.0
+DD_MAX_ANGULAR = 0.8
 # MOVE_TO는 바닥 평면(z=0) 이동만 판정한다. target_pose z가 이 범위를 벗어나면 판정 불가(ERROR)
 PLANAR_Z_TOLERANCE_M = 0.05
 SNAPSHOT_CLOCK_SKEW_S = 0.5  # observed_at이 snapshot_at보다 이만큼 넘게 미래면 시계 오류로 거부
@@ -183,20 +190,27 @@ def _simulate(req, started):
         return min((math.dist((x, y), w) - robot_radius - WORKER_BODY_RADIUS_M for w in workers),
                    default=None)
 
-    distance = math.dist(start, goal)
     dt = float(model.opt.timestep)
-    horizon = min(distance / speed, MAX_HORIZON_S)
-    steps = math.ceil(horizon / dt - 1e-9)
     min_gap = gap(*start)
     if _robot_contacts(model, data, geom_id):
         return _response("COLLISION", snapshot_id, started, min_distance=min_gap, contact_at=0.0)
 
+    # 차동 구동 제어기를 그대로 적분한다: 방향 오차가 50°를 넘으면 제자리 회전, 아니면 회전하며 전진
+    x, y, heading = start[0], start[1], yaw
     t = 0.0
+    steps = math.ceil(MAX_HORIZON_S / dt - 1e-9)
     for step in range(1, steps + 1):
-        t = min(step * dt, horizon)
-        frac = min(speed * t / distance, 1.0) if distance > 0 else 1.0
-        x = start[0] + (goal[0] - start[0]) * frac
-        y = start[1] + (goal[1] - start[1]) * frac
+        dx, dy = goal[0] - x, goal[1] - y
+        dist = math.hypot(dx, dy)
+        if dist <= GOAL_TOLERANCE_M:
+            break
+        err = math.atan2(math.sin(math.atan2(dy, dx) - heading), math.cos(math.atan2(dy, dx) - heading))
+        w = max(-DD_MAX_ANGULAR, min(DD_MAX_ANGULAR, DD_K_ANGULAR * err))
+        v = 0.0 if abs(err) > DD_HEADING_TOLERANCE_RAD else min(speed, DD_K_LINEAR * dist)
+        x += v * math.cos(heading) * dt
+        y += v * math.sin(heading) * dt
+        heading += w * dt
+        t = step * dt
         set_world(x, y)
         mujoco.mj_forward(model, data)
         g = gap(x, y)

@@ -10,8 +10,9 @@ base_position·base_yaw 파라미터로 준다.
 
 MuJoCo 브리지(arms:=true)와는 아래 토픽으로 연결된다. <seg>는 robot_id의 토픽용 이름(arm-ur5e → arm_ur5e).
     발행: /<seg>/arm/joint_command (JointState 위치 목표), /<seg>/arm/gripper (Bool, 닫힘)
-    구독: /<seg>/joint_states (JointState, 실제 관절각)
+    구독: /<seg>/joint_states (JointState, 실제 관절각), /<seg>/arm/grasp_state (String JSON {closed, held}: 실제 파지 결과)
 """
+import json
 import os
 import sys
 import time
@@ -19,7 +20,7 @@ import time
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 
 from safety_control.interfaces import topic_segment
 
@@ -42,6 +43,7 @@ class ArmAdapterNode(MockAdapterNode):
         self.joint_pub = self.create_publisher(JointState, f"/{seg}/arm/joint_command", 10)
         self.gripper_pub = self.create_publisher(Bool, f"/{seg}/arm/gripper", 10)
         self.create_subscription(JointState, f"/{seg}/joint_states", self._on_joint_states, 10)
+        self.create_subscription(String, f"/{seg}/arm/grasp_state", self._on_grasp_state, 10)
         self._flush()
 
     def _make_core(self, robot_id):
@@ -68,6 +70,14 @@ class ArmAdapterNode(MockAdapterNode):
 
     def _on_joint_states(self, msg: JointState):
         self.core.update_joints(list(msg.position))
+
+    def _on_grasp_state(self, msg: String):
+        try:
+            state = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+        self._emit(self.core.handle_grasp_feedback(state.get("held"), time.time()))
+        self._flush()
 
     def _flush(self):
         while self.core.outbox:
