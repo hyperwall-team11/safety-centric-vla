@@ -8,6 +8,8 @@ export type SimScene = {
   frame_id: string;
   zones: { zone_id: string; zone_type: string; points: XY[] }[];
   tables: { name: string; points: XY[] }[];
+  /** 주변 설비(prop_*) 바닥 외곽. 이전 cctv_stream에는 없다 */
+  props?: { name: string; kind: string; label: string; points: XY[] }[];
   cameras: { sensor_id: string; position: [number, number, number]; yaw: number; hfov: number }[];
   robots: { robot_id: string; position: XY; yaw: number; updated_at: number }[];
   workers: { worker_id: string; position: XY; updated_at: number }[];

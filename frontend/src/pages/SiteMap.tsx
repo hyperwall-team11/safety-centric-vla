@@ -105,6 +105,7 @@ export function SiteMap({ selectedRobotId, selectedZoneId, onRobotClick, onZoneC
     const b = sim.data!.bounds;
     if (b) { add(b[0], b[1]); add(b[2], b[3]); }
     for (const f of fovs) for (const [x, y] of f.tri) add(x, y);
+    for (const p of sim.data!.props ?? []) for (const [x, y] of p.points) add(x, y);
   }
   if (simDynamicOn) {
     for (const w of sim.data!.workers) add(...w.position);
@@ -145,7 +146,8 @@ export function SiteMap({ selectedRobotId, selectedZoneId, onRobotClick, onZoneC
               const frameDiff = registered !== undefined && !sameFrame(registered.frame_id);
               const mismatch = registered !== undefined && !frameDiff && !sameRing(ring(registered), z.points);
               const label = !registered ? `${z.zone_id} (미등록)`
-                : frameDiff ? `${z.zone_id} 좌표계 다름 (${registered.frame_id} ≠ ${simFrame}) · 비교 안 함`
+                // 좌표계가 다르면 외곽선만 흐리게 그린다. 안내는 범례(otherFrames) 한 줄로 충분하다
+                : frameDiff ? undefined
                 : mismatch ? `${z.zone_id} 시뮬레이션 배치 불일치` : undefined;
               return (
                 <g key={z.zone_id} className="sim-zone" data-type={z.zone_type} data-registered={registered ? true : undefined} data-mismatch={mismatch || undefined} data-frame-diff={frameDiff || undefined}>
@@ -154,6 +156,15 @@ export function SiteMap({ selectedRobotId, selectedZoneId, onRobotClick, onZoneC
                 </g>
               );
             })}
+            {(sim.data!.props ?? []).map((p) => (
+              <g key={p.name} className="sim-prop" data-kind={p.kind}>
+                <polygon points={p.points.map(([x, y]) => `${x},${flip(y)}`).join(" ")}><title>{p.label}</title></polygon>
+                {!["fence", "rail", "pole", "manhole"].includes(p.kind) && (() => {
+                  const c = centroid(p.points);
+                  return <text x={c.x} y={flip(c.y) + 0.06 * k} style={{ fontSize: 0.17 * k }}>{p.label}</text>;
+                })()}
+              </g>
+            ))}
             {sim.data!.tables.map((t) => (
               <polygon key={t.name} className="sim-table" points={t.points.map(([x, y]) => `${x},${flip(y)}`).join(" ")}><title>{t.name}</title></polygon>
             ))}
