@@ -106,6 +106,34 @@ python ros_camera_detect.py --topic /cctv_1/image_raw --topic /cctv_2/image_raw 
 - `--num-beams`는 Florence-2 생성의 빔 수입니다(기본 3, 기존과 같음). 줄이면 빨라질 수 있지만 탐지 결과가 달라질 수 있어 정답 비교로 확인한 뒤 바꿉니다.
 - `--save-misses-dir`를 주면 작업자(`people`)가 없는 입력 프레임을 `<카메라>_<sec>_<nanosec>.png`로 저장하고 기록의 `saved_frame`에 경로를 남깁니다. 저장은 기본 300장까지(`--max-saved-misses`)이며 저장 시간은 `processing_ms`에 넣지 않지만 다음 프레임 처리를 늦출 수 있습니다. 처리율을 잴 때는 저장 없이 따로 실행하세요.
 
+### 카메라 보정 파일
+
+바닥 위치 투영(센서·작업자 스냅샷, HazardEvent)에는 고정 CCTV의 위치·방향·렌즈 정보가 필요합니다. `--camera-calib <파일>`을 주면 MuJoCo를 읽지 않고 이 파일만 쓰므로, MuJoCo 렌더링·Three.js 렌더링·실제 CCTV 어느 영상에도 같은 CV 노드를 쓸 수 있습니다. 파일이 없으면 기존처럼 `--scene`의 MuJoCo 장면에서 읽고 640×480으로 가정합니다.
+
+```bash
+# 시나리오 장면의 CCTV 2대 보정 파일 (저장소에 cameras/scenario_cctv.json으로 포함)
+python camera_calib.py --scene ../control/mujoco/models/scenario_scene.xml \
+  --camera cctv_1 --camera cctv_2 --output cameras/scenario_cctv.json
+```
+
+`scenario_scene.xml`의 CCTV 위치·방향·화각이 바뀌면 위 명령으로 파일을 다시 만들어 커밋합니다. 파일의 `source`에는 저장소 기준 장면 경로가 들어가며, `tests/test_camera_calib.py`가 커밋된 파일과 장면이 같은지 확인합니다(mujoco가 있을 때).
+
+```json
+{"version": 1, "cameras": [{
+  "sensor_id": "cctv_1", "topic": "/cctv_1/image_raw", "width": 640, "height": 480,
+  "position_m": [1.2, -4.2, 3.2],
+  "rotation_cam_to_world": [[1, 0, 0], [0, 0.568, -0.823], [0, 0.823, 0.568]],
+  "rotation_convention": "mujoco_camera", "world_frame": "mujoco_z_up",
+  "fovy_deg": 60, "ground_plane_z_m": 0.0}]}
+```
+
+- `world_frame`과 `rotation_convention`은 필수입니다. 빠뜨리면 기본값으로 읽지 않고 오류로 멈춥니다. 다른 좌표로 적은 파일이 조용히 잘못 투영되는 것을 막기 위해서입니다.
+- 위치·방향은 백엔드 Zone과 같은 월드 좌표(z 위)입니다. Three.js 좌표(y 위)로 적었다면 `"world_frame": "threejs_y_up"`을 주면 변환합니다(MuJoCo `(x, y, z)` = Three.js `(x, z, -y)`).
+- 방향은 `rotation_cam_to_world`(3×3, 카메라 축을 월드에서 본 열) 또는 `quaternion_wxyz` 중 하나입니다. 축 규약은 `mujoco_camera`(x 오른쪽, y 위, -z 앞, Three.js 카메라와 같음) 또는 `ros_optical`(x 오른쪽, y 아래, z 앞)입니다.
+- 렌즈는 `fovy_deg`(정사각 픽셀, 중심 주점) 또는 보정값 `intrinsics: {fx, fy, cx, cy}`(픽셀) 중 하나입니다. 렌즈 왜곡은 다루지 않으므로 필요하면 영상을 먼저 보정합니다.
+- 들어온 영상 크기가 파일의 `width`·`height`와 다르면 그 프레임은 백엔드에 보고하지 않습니다(작업자 없음으로 보내지 않음). 계속 다르면 센서가 `DEGRADED`가 되어 관측 공백 규칙이 실행을 막고, 요약의 `calibration_mismatch_frames`에 개수가 남습니다.
+- 보정 오차의 영향(시나리오 CCTV 2대, 2026-11-15 계산): 카메라 기울기가 0.5° 틀리면 바닥 위치가 최대 약 0.06 m, 1°면 약 0.13 m 어긋나고, 높이가 5 cm 틀리면 약 0.03 m 어긋납니다. 금지구역 경계 근처에서는 이만큼 판정이 바뀔 수 있으므로 실제 CCTV는 기울기 오차를 0.5° 안으로 맞추는 것을 권장합니다.
+
 ### 백엔드 연결: 센서·작업자 스냅샷과 HazardEvent
 
 ```bash
@@ -131,6 +159,34 @@ python ros_camera_detect.py --topic /cctv_1/image_raw --topic /cctv_2/image_raw 
 - Florence-2 `<OD>`는 점수가 없어 `confidence`에 모델 점수 대신 트리거한 카메라의 최근 5프레임 중 금지구역 안 탐지 비율(탐지 지속 비율)을 넣습니다. 모델 confidence와 의미가 다르므로 해석은 ONT와 정합니다. `source_observation_ids`는 이 프레임들의 결정적 ID이며, 같은 ID가 JSONL 기록의 `hazard.observation_ids`에 남아 원본 탐지로 추적할 수 있습니다. Observation 객체는 아직 백엔드에 등록하지 않습니다.
 - 진입마다 고정 `hazard_id`를 정해 보내므로, 응답 타임아웃 뒤 다시 보내도 같은 진입이 두 번 등록되지 않습니다(백엔드의 `409` 중복 ID 응답을 등록 완료로 처리). 등록에 실패하면 로그를 남기고 다음 프레임에서 다시 시도합니다. 재시도 때는 최초 트리거의 센서·관측 ID·신뢰도·감지 시각을 그대로 보내며, 등록될 때까지 진입을 끝내지 않아 실패한 사건이 사라지지 않습니다. 기록의 `hazard`에 투영 위치·금지구역 판정·등록된 `hazard_id`가, 요약에 `hazard_ids`·`hazard_post_failures`가 남습니다.
 - 미구현: 실행 중 로봇의 즉시 정지. 지금 백엔드는 열린 `CRITICAL` 이벤트로 이후 평가와 실행 직전 재검증을 막지만, 이벤트 등록만으로 이미 실행 중인 행동을 멈추지는 않습니다.
+
+## 가상 CCTV 오프라인 탐지 평가
+
+`control/scripts/threejs_cctv`(PR #45)가 만든 렌더 폴더(`cctv_N/000000.png`, `frames.csv`, `boxes.json`, `cameras.json`)로 탐지율·금지구역 경보·바닥 위치 오차를 잽니다. 탐지기는 PNG와 `cameras.json`의 카메라 정보만 보고, 정답(`frames.csv`, `boxes.json`)은 채점에만 씁니다.
+
+```bash
+# 1) 모델 없이 카메라 변환·금지구역 위치 점검 (정답 상자를 탐지 결과로 넣음, CPU)
+python offline_eval.py --render-dir ../control/outputs/threejs_cctv --detector truth --output-dir eval/truth
+# 2) GPU 노드에서 실제 측정
+python offline_eval.py --render-dir <렌더 폴더> --detector florence2 \
+  --model-id /abr/coss38/florence-2-base --output-dir eval/florence2 [--batch] [--num-beams 1]
+python offline_eval.py --render-dir <렌더 폴더> --detector rtdetr \
+  --model-id PekingU/rtdetr_r50vd --output-dir eval/rtdetr
+# 3) 모델을 다시 돌리지 않고 이전 frames.jsonl의 예측 상자를 새 채점 기준으로 다시 계산
+python offline_eval.py --render-dir <렌더 폴더> --replay-frames eval/rtdetr/frames.jsonl --output-dir eval/rtdetr_rescored
+```
+
+- 평가 프레임은 `boxes.json`에 있는 프레임입니다. 부분 렌더(`--frames f0:f1`) 폴더도 그대로 쓸 수 있습니다. `--stride`, `--limit`, `--min-visible-pixels`는 양의 정수만 받습니다.
+- 채점: 카메라마다 보이는 작업자(마스크 픽셀 400 이상)의 정답 상자와 예측 `person` 상자를 IoU 0.5 이상으로 1:1 대응합니다. 정답 상자는 가려진 부분을 뺀 보이는 영역입니다. 400 픽셀 미만으로 작게 보이는 작업자는 채점에서 빼고, 그 정답 상자와 IoU 0.5 이상 겹치는 예측은 오탐으로 세지 않고 무시합니다(`ignored_predictions`, COCO ignore 방식).
+- `summary.json`
+  - `cameras.<id>.recall`, `recall_in_keep_out`, `precision`, `position_error_m`(대응된 상자의 투영 위치와 정답 위치 거리)
+  - `combined_recall`: 어느 카메라든 보이는 작업자를 찾은 비율
+  - `keep_out_alarm`: 프레임 단위 경보. 정답상 금지구역 안에 작업자가 있는 프레임에서 어느 카메라든 투영 위치가 구역 안인 비율(`hit_when_inside`), 아무도 없는 프레임의 오경보 비율(`false_alarm_when_clear`). HazardEvent 등록률이 아닙니다.
+  - `keep_out_event`: HazardEvent 규칙(같은 카메라 연속 2프레임)으로 낸 같은 지표. 실제 등록에 가까운 값은 이쪽입니다. `--stride`가 1보다 크면 '연속'이 `stride` 프레임 간격이 되어 실시간 규칙과 의미가 달라지며, 요약의 `note`에 남습니다.
+  - 두 경보 모두 `entries`(정답상 연속 진입 구간 수), `entries_never_alarmed`, `first_alarm_delay_s`(진입 시작부터 첫 경보까지), `longest_unalarmed_inside`(진입 중 경보가 없던 가장 긴 연속 구간의 프레임 수·초)를 냅니다.
+  - `model_call_ms`(p95는 nearest-rank: 정렬한 값의 `ceil(0.95n)`번째), `per_camera_hz_model_only`, `per_camera_hz_wall`(PNG 읽기 포함). 프레임별 호출 시간은 `frames.jsonl`의 `model_call_ms`에 남습니다.
+- `--detector truth`로 `hit_when_inside`가 1.0에 가깝지 않으면 카메라 정보나 구역 좌표가 어긋난 것이니 모델 측정 전에 확인합니다. 가림으로 발이 안 보이면 정답 상자로도 위치 오차가 생깁니다.
+- 미구현: ROS 토픽 실시간 입력. 이 스크립트는 저장된 PNG만 처리하므로 처리율은 카메라 수신·전송 지연을 포함하지 않습니다.
 
 ## 연속 추론 속도 측정 (CV-03)
 

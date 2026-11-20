@@ -358,3 +358,7 @@ tbody tr.selected { background: rgba(0, 113, 227, .07); box-shadow: inset 3px 0 
 }
 .sim-zone[data-frame-diff] polygon { stroke-opacity: .35; }
 .sim-zone[data-frame-diff] text, .sim-frame-diff { color: #c77800; fill: #c77800; }
+.sim-prop polygon { fill: #8a8f9a; fill-opacity: .14; stroke: #8a8f9a; stroke-width: .025; }
+.sim-prop[data-kind="forklift"] polygon { fill: #e0a100; fill-opacity: .25; stroke: #c78f00; }
+.sim-prop[data-kind="fence"] polygon, .sim-prop[data-kind="rail"] polygon { fill: #e0a100; fill-opacity: .6; stroke: none; }
+.sim-prop text { fill: #6b6b72; font-weight: 600; text-anchor: middle; }
