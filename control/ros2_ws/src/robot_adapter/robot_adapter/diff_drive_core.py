@@ -4,8 +4,9 @@ Mock 어댑터와 같은 규약(APPROVED만 실행, ACK·RESULT, E-Stop·HOLD, 2
 위치는 /odom에서 받고 이동은 (선속도, 각속도) 명령으로 낸다. rclpy에 의존하지 않는다.
 
 MOVE_TO 제어기 (CT-07 경로 추종의 첫 단계):
-- 목표 방향과 50°(HEADING_TOLERANCE) 이상 어긋나 있으면 제자리 회전
-- 그 안이면 목표를 향해 전진하면서 방향 오차에 비례해 회전
+- 목표 방향과 5°(HEADING_TOLERANCE) 넘게 어긋나 있으면 제자리 회전
+- 그 안이면 목표를 향해 전진하면서 방향 오차에 비례해 회전. 먼저 방향을 맞추므로 실제 궤적은
+  현재 위치 → 목표 직선에서 ARRIVAL_TOLERANCE(0.05 m) 안에 머문다 (Backend 경로 검사·사전 시뮬레이션과 같은 경로)
 - 목표 0.05 m 안에 들어오면 정지하고 성공 보고
 - 직선 경로만 따라가므로 장애물 회피는 하지 않는다 (경로는 SR-02 검증 서버가 확인)
 
@@ -20,7 +21,10 @@ from .core import (HW_ERROR, INVALID, NO_HEARTBEAT, ROBOT_BUSY, ROBOT_HELD, TIME
                    MockRobotCore)
 
 ARRIVAL_TOLERANCE_M = 0.05
-HEADING_TOLERANCE_RAD = math.radians(50)
+# 이 각도 안으로 방향을 맞춘 뒤에만 전진한다. 50°처럼 크면 회전하며 전진하는 궤적이 직선에서
+# 0.4 m/s에 약 0.2 m 벗어나 Backend의 직선 경로 KEEP_OUT 검사를 빠져나간다(PR #92 리뷰 P1).
+# 5°면 0.4 m/s에서 약 0.016 m, 1.0 m/s에서도 약 0.038 m로 ARRIVAL_TOLERANCE_M 안이다(tests/test_diff_drive_core.py).
+HEADING_TOLERANCE_RAD = math.radians(5)
 K_ANGULAR = 2.0          # 방향 오차(rad) → 각속도(rad/s)
 K_LINEAR = 1.0           # 남은 거리(m) → 선속도(m/s), 도착 직전 감속
 MAX_ANGULAR = 0.8        # rad/s
