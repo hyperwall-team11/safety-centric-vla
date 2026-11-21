@@ -13,6 +13,7 @@ class OpenApiContractTest(unittest.TestCase):
         }
         expected_operations = {
             ("GET", "/health"),
+            ("GET", "/api/v1/objects/{type}"),
             ("POST", "/robots"),
             ("GET", "/robots"),
             ("POST", "/zones"),

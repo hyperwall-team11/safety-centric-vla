@@ -4,11 +4,12 @@
 - 기준 코드: `backend/app/main.py`, `backend/app/models.py`
 - 기준 버전: FastAPI application `0.2.0`
 - 작성일: 2026-10-30
+- 수정일: 2026-11-17
 - 기본 URL(로컬): `http://127.0.0.1:8000`
 - 대화형 문서: `/docs`
 - OpenAPI JSON: `/openapi.json`
 
-이 문서는 현재 저장소에서 실제 호출 가능한 HTTP API를 정의한다. [ontology-schema-v1.1.md](ontology-schema-v1.1.md)는 객체·상태·안전 의미의 기준이고, 이 문서는 그중 현재 백엔드 MVP가 구현한 전송 경로와 동작의 기준이다. 개발계획서의 `/api/v1/...` 표기는 목표 인터페이스 초안이며 아직 현재 코드에 적용되지 않았다.
+이 문서는 현재 저장소에서 실제 호출 가능한 HTTP API를 정의한다. [ontology-schema-v1.1.md](ontology-schema-v1.1.md)는 객체·상태·안전 의미의 기준이고, 이 문서는 그중 현재 백엔드 MVP가 구현한 전송 경로와 동작의 기준이다. 개발계획서의 `/api/v1/...` 표기 중 통합 객체 조회 경로를 우선 적용했으며, 나머지 기존 경로는 하위 호환을 위해 기존 경로를 유지한다.
 
 ## 1. 공통 규약
 
@@ -17,7 +18,7 @@
 - 시간은 UTC ISO 8601 문자열로 반환한다.
 - 거리 단위는 m, 속도 단위는 m/s이다.
 - ID는 문자열이다. 서버 생성 ID는 `task-`, `proposal-`, `hazard-`, `log-` 접두사와 UUID를 사용한다.
-- 현재 인증·인가와 `/api/v1` 접두사는 구현하지 않았다.
+- 현재 인증·인가는 구현하지 않았다. `/api/v1` 접두사는 통합 객체 조회 API에만 적용되어 있다.
 - 현재 저장소는 인메모리이므로 서버 재시작 시 등록 데이터가 사라진다.
 
 ### 공통 오류
@@ -27,6 +28,7 @@
 | `404` | 요청한 Robot, TaskOrder, ActionProposal 또는 HazardEvent가 없음 | `{"detail":"...찾을 수 없습니다."}` |
 | `409` | 현재 상태에서 실행 불가, ID 중복, 활성 Proposal 또는 멱등성 충돌 | `{"detail":"..."}` |
 | `422` | JSON 스키마 위반, 자연어 해석 실패 또는 안전한 제안 생성 불가 | FastAPI 검증 오류 배열 또는 `{"detail":"..."}` |
+| `503` | VLA 추론 서비스 연결 실패·시간 초과 또는 제어 어댑터 전송 실패 | `{"detail":"..."}` |
 
 ## 2. 구현 엔드포인트
 
@@ -35,6 +37,7 @@
 | Method | Path | 성공 | 용도 |
 |---|---|---:|---|
 | `GET` | `/health` | `200` | 서버 상태 확인 |
+| `GET` | `/api/v1/objects/{type}` | `200` | 저장된 온톨로지 객체를 타입별로 통합 조회 |
 | `POST` | `/robots` | `201` | Robot 등록 |
 | `GET` | `/robots` | `200` | Robot 전체 조회 |
 | `POST` | `/zones` | `201` | Zone 등록 |
@@ -59,6 +62,24 @@
 | `POST` | `/hazards/{hazard_id}/resolve` | `200` | HazardEvent 해제 |
 | `GET` | `/safety-rules` | `200` | 활성 안전 규칙 조회 |
 | `GET` | `/execution-logs` | `200` | 전체 ExecutionLog 조회 |
+
+### 2.1 통합 객체 조회
+
+`GET /api/v1/objects/{type}`은 현재 인메모리 저장소에 보관된 객체를 저장 순서대로 배열에 담아 반환한다. `type`은 대소문자를 구분하며 다음 온톨로지 클래스명만 허용한다.
+
+- `Robot`
+- `Sensor`
+- `Worker`
+- `Zone`
+- `TaskOrder`
+- `ActionProposal`
+- `HazardEvent`
+- `SafetyRule`
+- `ExecutionLog`
+
+`offset`(기본 0)과 `limit`(기본 50, 최대 100)으로 조회 범위를 제한하며, 응답의 `X-Total-Count`는 페이지네이션 전 전체 건수다. Worker를 제외한 타입은 저장된 객체가 없으면 `200`과 빈 배열 `[]`을 반환한다. Worker 관측 스냅샷이 한 번도 들어오지 않았으면 `404`를 반환하고, 관측 결과 작업자가 없으면 `200`, `[]`, 관측 시각 `X-Observed-At`을 반환한다. 지원하지 않는 타입이나 대소문자가 다른 값은 `422`를 반환한다. `SafetyRule`은 저장소가 빈 경우 기본 규칙을 생성한 뒤 반환한다. `Observation`과 `PhysicalObject`는 현재 저장 계층이 없어 조회 대상에서 제외한다.
+
+이 API는 저장소에 보관된 조회 시점의 스냅샷을 제공할 뿐 현재 안전 상태나 관측 최신성을 보장하지 않는다. 안전 판단에 사용할 때는 Robot의 `updated_at`·`last_heartbeat_at`, Sensor의 `last_frame_at`, Worker의 `X-Observed-At`과 각 Worker의 `last_seen_at`을 기존 최신성 정책과 비교해야 하며, Action 실행 승인에는 반드시 Backend의 평가·실행 API를 사용한다.
 
 WebSocket `WS /ws/state`는 연결 직후와 상태 변경 시 전체 상태 스냅샷을 전송한다. 연속 변경은 200ms 전송 간격 안에서 최신 전체 상태 하나로 합치며, 상태 변경이 없어도 15초마다 같은 형식의 스냅샷을 heartbeat로 전송한다. 이 heartbeat는 상태 구독 연결 유지용이며 ROS 2 안전 heartbeat나 Sensor·Worker 관측 최신성을 대신하지 않는다. WebSocket 경로는 HTTP OpenAPI path·operation 수에 포함하지 않는다.
 
@@ -210,7 +231,21 @@ MANIPULATE 예:
 - MOVE_TO에 물체 또는 manipulation이 지정됨
 - TaskOrder v1.1로 안전하게 표현할 수 없는 STOP/RESUME 명령
 
+VLA Provider 추론은 위험 이벤트·Worker 관측·Robot 상태 갱신을 지연시키지 않도록
+저장소 잠금 밖에서 실행한다. Backend는 추론 전 TaskOrder·Robot·Zone을 스냅샷화하고,
+저장 직전에 현재 문맥과 활성 Proposal·멱등성 기록을 다시 검증한다. 추론 중
+문맥이 변경되면 `409`로 거부하고 아무 제안도 저장하지 않는다. Provider 예외는 `503`으로
+정규화하며 TaskOrder 상태를 변경하지 않는다.
+
 `GET /task-orders/{task_id}/action-proposals`는 해당 TaskOrder의 Proposal만 배열로 반환한다.
+
+외부 VLA가 `POST /action-proposals`로 등록하는 제안은 요청 모델 검증 후 TaskOrder 문맥과도
+대조한다. `action_type`, `robot_id`, `parameters.target_pose`, MANIPULATE의 `object_id`,
+`frame_id`가 TaskOrder·Robot과 다르면 모델이 작업 문맥을 바꾼 것으로 보고 `422`로 거부한다.
+속도·경로의 안전성은 이 문맥 검증에서 승인하지 않고 이후 Action 제출 기준 평가에서 판정한다.
+`MOVE_TO trajectory`가 있으면 시작점은 Robot 현재 위치와 0.05m 이내여야 한다. 좌표
+목적지 또는 같은 좌표계의 Zone `navigation_target`이 있으면 끝점도 해당 좌표와 0.05m
+이내여야 한다. 물리 좌표가 없는 Zone은 `target_pose`의 Zone ID 일치만 검증한다.
 
 자동 생성한 `MOVE_TO`는 로봇의 현재 위치와 좌표 목적지 또는
 `Zone.geometry.navigation_target`을 잇는 직선 `trajectory`를 채운다.
@@ -219,7 +254,8 @@ MANIPULATE 예:
 
 이 직선은 백엔드의 사전 검사에 사용하는 예상 경로다. 현재 CTL 이동 제어기는
 목표 좌표와 주행 중 `/odom`을 바탕으로 속도와 방향을 계산하므로 실제 궤적과의
-일치는 보장되지 않는다. 실행 직전 Robot 위치와 예상 경로 출발점은 CTL diff-drive의
+일치는 보장되지 않는다. 자동 생성·외부 직접 등록 여부와 관계없이 실행 직전
+Robot 위치와 예상 경로 출발점은 CTL diff-drive의
 도착 판정과 같은 0.05m 허용 오차로 비교하며, 이를 넘으면 Proposal을 거절하고 재계획한다.
 CTL의 최종 실행 경로와 실시간 위치를 안전 검증에 반영하는 작업은 후속 연동 범위다.
 
@@ -251,7 +287,7 @@ CTL의 최종 실행 경로와 실시간 위치를 안전 검증에 반영하는
 
 `MOVE_TO parameters.speed_limit`와 최상위 `speed_limit`는 같아야 한다. `SAFETY` priority는 시스템이 발행하는 STOP·RESUME에만 허용한다.
 
-TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 VLA는 `POST /action-proposals`로 네 action_type을 직접 등록할 수 있으나, TaskOrder·Robot 존재 및 일치, 상태, 중복 활성 Proposal 검사를 모두 통과해야 한다.
+TaskOrder 기반 생성기와 외부 VLA 직접 등록은 현재 `MOVE_TO`와 `MANIPULATE`만 허용한다. `STOP`·`RESUME`은 일반 VLA 제안이 아니라 별도 안전 제어 경로에서만 생성한다. 직접 등록은 TaskOrder·Robot 존재 및 일치, 상태, 중복 활성 Proposal 검사를 모두 통과해야 한다.
 
 ### 3.5 평가와 실행
 
@@ -378,9 +414,9 @@ ResumeTask 전이와 실제 ROS 2 어댑터 결과 토픽 연결은 아직 구�
 
 | 항목 | 기준 문서의 목표 | v0.2 현재 구현 |
 |---|---|---|
-| API prefix | `/api/v1` | prefix 없음 |
+| API prefix | `/api/v1` | 통합 객체 조회에 적용, 나머지 경로는 prefix 없음 |
 | Proposal 제출·평가 | 한 경계에서 판정 결과 반환 | 등록, 평가, 실행 API 분리 |
-| 객체 조회 | `GET /api/v1/objects/{type}` | Robot, TaskOrder, Proposal, Rule, Log의 개별 API 일부 |
+| 객체 조회 | `GET /api/v1/objects/{type}` | 저장 계층이 있는 9개 객체 타입의 통합 조회 구현 |
 | ResumeTask | 관리자 승인 2단계 복귀 | 미구현, HELD 생성 요청은 `409` |
 | 인증·권한 | CRITICAL 해제와 Resume는 관리자 전용 | CRITICAL 해제 요청의 `resolved_by=OPERATOR` 검사 구현, 실제 인증·Resume는 미구현 |
 | 규칙 SR-01~06 | 속도·구역·거리·위험·상태·센서 공백 | SR-01 기본 0.4m/s·Robot·Zone 상한, 로봇 상태·adapter·관련 CRITICAL 위험 구현. KEEP_OUT 경로 검사를 구현하고 거리·센서 공백은 관측 안전 검사 활성화 시 적용 |

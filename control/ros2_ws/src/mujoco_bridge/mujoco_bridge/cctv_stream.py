@@ -208,6 +208,11 @@ def main():
                                 m.pose.pose.orientation.z, m.pose.pose.orientation.w)), 10)
         node.create_subscription(PoseStamped, "/sim/worker_pose", lambda m: scene.set_worker(
             "worker-01", m.pose.position.x, m.pose.position.y), 10)
+        # 추가 작업자(plant_scene 등): 브리지가 cctv_renderer:=threejs일 때 /sim/worker_pose_<n>으로 발행
+        from .sim_scene import MAX_WORKERS
+        for n in range(2, MAX_WORKERS + 1):
+            node.create_subscription(PoseStamped, f"/sim/worker_pose_{n}", lambda m, w=f"worker-{n:02d}": scene.set_worker(
+                w, m.pose.position.x, m.pose.position.y), 10)
 
     stop = threading.Event()
     server = serve(store, host, port, stop, scene)
