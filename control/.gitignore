@@ -6,8 +6,14 @@ ros2_ws/log/
 
 # 용량이 커서 저장소에 올리지 않는 모델 (scripts/fetch_models.sh로 받음)
 mujoco/models/franka_emika_panda/
+mujoco/models/universal_robots_ur5e/
+mujoco/models/universal_robots_ur10e/
+mujoco/models/kuka_iiwa_14/
 
 # 스냅샷·측정 결과물
 outputs/
 node_modules/
 scripts/threejs_cctv/assets/
+
+# MuJoCo 경고 로그
+MUJOCO_LOG.TXT
