@@ -1,7 +1,8 @@
 """ROS 2 ↔ MuJoCo 브리지.
 
 구독: /cmd_vel (Twist) → 바퀴 로봇
-발행: /odom, /joint_states, TF, 카메라 3대 영상(Image + CameraInfo), 작업자 실제 위치(/sim/worker_pose)
+발행: /odom, /joint_states, TF, 카메라 3대 영상(Image + CameraInfo), 작업자 실제 위치(/sim/worker_pose,
+      추가 작업자는 cctv_renderer:=threejs일 때 /sim/worker_pose_<n>, n = 2, 3, ...)
 
     ros2 run mujoco_bridge bridge                                  # 시나리오 장면 (기본)
     ros2 run mujoco_bridge bridge --ros-args -p robot:=simple      # 단순 시험용 바퀴 로봇
@@ -440,8 +441,21 @@ class MujocoBridge(Node):
         self.get_logger().info(f"Three.js CCTV {self.threejs_sensors}: 장면 {data_dir}, 프레임 http://127.0.0.1:{port}/frame")
 
     def _pack_threejs_frame(self):
-        frame, _ = self.packer.pack(self.sim.model, self.sim.data, self.sim.time)
+        frame, states = self.packer.pack(self.sim.model, self.sim.data, self.sim.time)
         self.live.set_frame(frame, self.sim.time)
+        # 추가 작업자(worker_2, worker_3 mocap) 실제 위치. 작업자 1의 /sim/worker_pose와 같은 형식
+        if not hasattr(self, "extra_worker_pubs"):
+            self.extra_worker_pubs = {i: self.create_publisher(PoseStamped, f"/sim/worker_pose_{i + 1}", 10)
+                                      for i, _ in self.packer.extra}
+        stamp = self.get_clock().now().to_msg()
+        for (i, _), (x, y, yaw) in zip(self.packer.extra, states):
+            pose = PoseStamped()
+            pose.header.stamp = stamp
+            pose.header.frame_id = self.world_frame
+            pose.pose.position.x, pose.pose.position.y = float(x), float(y)
+            q = pose.pose.orientation
+            q.z, q.w = math.sin(yaw / 2), math.cos(yaw / 2)
+            self.extra_worker_pubs[i].publish(pose)
 
     def _camera_info(self, sensor):
         fx, fy, cx, cy = self.scn.camera_intrinsics(self.sim.model, self.scn.CAMERAS[sensor][0],
