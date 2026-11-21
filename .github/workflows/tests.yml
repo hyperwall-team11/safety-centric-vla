@@ -1,0 +1,50 @@
+name: Tests
+
+# develop·main 대상 PR과 두 브랜치 push에서 backend·control 테스트를 돌린다 (이슈 #94).
+# Three.js 렌더·GPU가 필요한 측정은 CI 범위가 아니다.
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install
+        run: python -m pip install -r requirements.txt pytest httpx
+      - name: Test
+        run: python -m pytest -q
+
+  control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # GPU 없는 러너: MuJoCo 카메라 렌더 테스트를 EGL + Mesa 소프트웨어 렌더(llvmpipe)로 돌린다
+      MUJOCO_GL: egl
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Mesa EGL
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libegl1 libegl-mesa0 libgl1-mesa-dri
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          manifest-path: control/pixi.toml
+          cache: true
+      - name: Test
+        working-directory: control
+        run: pixi run test

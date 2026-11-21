@@ -573,6 +573,10 @@ class PlantArms:
             return best[1]
         return None
 
+    def box_name(self, mocap_id):
+        """set_gripper가 돌려준 mocap id의 물체 이름."""
+        return next((name for name, m in self.boxes.items() if m == mocap_id), None)
+
     def after_step(self, data):
         for robot_id, mocap in self.held.items():
             data.mocap_pos[mocap] = self.kins[robot_id].tcp(data)

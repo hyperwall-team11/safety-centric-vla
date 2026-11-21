@@ -8,7 +8,7 @@
 4. 승인된 제안만 mock 또는 ROS 2 제어 어댑터에 전달
 5. 승인, 거절, 실행, 완료·실패 판단을 `ExecutionLog`에 기록
 
-현재 저장소는 시연용 인메모리 구현입니다. 프로세스를 재시작하면 데이터가 초기화되며, 이후 Redis 저장소로 교체할 수 있도록 파서·안전규칙·API를 분리했습니다.
+현재 저장소는 시연용 인메모리 구현입니다. 프로세스를 재시작하면 데이터가 초기화되며, 이후 Redis 저장소로 교체할 수 있도록 파서·안전규칙·API를 분리했습니다. 운영 화면은 `WS /ws/state`에서 연결 직후와 상태 변경 시 전체 상태 스냅샷을 구독할 수 있습니다. 연속 변경은 최소 200ms 간격으로 합쳐 전송하고 ExecutionLog는 최근 100건만 포함하며, 전체 로그는 `GET /execution-logs`로 조회합니다.
 
 금지구역 이동 경로 검사는 기존 GeoJSON `Polygon/coordinates`와
 [Backend–CTL 계약](../docs/backend-ctl-contract-v0.1.md)의 `polygon/points`를 지원합니다.
@@ -63,6 +63,26 @@ ROS 2 모드에서는 실행 직전 재검증을 통과한 승인 스냅샷만 `
 cd backend
 python3 -m unittest discover -s tests -v
 ```
+
+## KPI 9 proxy: 명령→Action publish API 응답 지연 측정
+
+Backend를 실행한 상태에서 자연어 명령 생성부터 안전 평가와 승인 Action publish API 응답까지
+10회 왕복 시간을 측정합니다. 각 회차의 실행 성공률과 1초 이내 지연 통과율을 별도로 집계하며,
+한 회차가 실패해도 나머지 측정을 계속합니다. 실행 요청 뒤 실패한 경우 `FAILED` 결과를 보고해
+로봇이 `EXECUTING`/`MOVING` 상태에 남지 않도록 복구를 시도합니다.
+
+```bash
+cd backend
+python3 scripts/benchmark_command_to_dispatch.py --runs 10 --threshold-ms 1000
+```
+
+기본 Backend의 mock dispatcher와 ROS 2 dispatcher 모두 사용할 수 있습니다. 이 수치는 승인 Action을
+publish한 API 응답까지의 시간이며 CTL이 별도로 보내는 ACK 시각은 현재 Backend가 저장하지 않으므로
+**어댑터 ACK가 제외된 KPI 9 proxy**입니다. CTL ACK 저장 계약이 추가되면 종료 시점을 확장합니다.
+
+> **주의:** ROS 2 dispatcher를 활성화한 환경에서는 벤치마크 MOVE가 실제 ROS Action을 발행하므로
+> mock 또는 격리된 시험 환경에서만 실행합니다. 현재 Robot 삭제 API가 없어 벤치마크가 등록한 Robot은
+> 저장소에 남으므로 측정 뒤 개발 서버의 저장소를 초기화해야 합니다.
 
 ## 자연어 파서 예시
 

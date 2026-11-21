@@ -8,7 +8,7 @@ ROS 2 제어 어댑터, 안전 경로(HOLD·E-Stop), MuJoCo 시뮬레이션 환�
 |---|---|---|---|
 | 1~5 | Python·MuJoCo·ROS 2 설치, 작업공간 빌드 | 완료 | `pixi run build` |
 | 6~7 | 바퀴 로봇 모델(TIAGo), 전진·회전·정지 | 완료 | `pixi run sim` |
-| 8 | ROS 2 브리지 (`/cmd_vel` → MuJoCo → `/odom`) | 완료 | `pixi run cctv-stream` | 카메라 토픽을 웹 콘솔용 MJPEG로 내보냄 (`http://127.0.0.1:8081/stream/cctv_1`). 브리지와 함께 실행. 처음 한 번은 `pixi run build` 후 브리지와 따로 띄운다(동시 빌드 충돌) |
+| 8 | ROS 2 브리지 (`/cmd_vel` → MuJoCo → `/odom`) | 완료 | `pixi run cctv-stream` | 카메라 토픽을 웹 콘솔용 MJPEG로 내보냄 (`http://127.0.0.1:8081/stream/cctv_1`). 지도용 시뮬레이션 장면도 `GET /scene`으로 제공(구역 표시·작업대·주변 설비 `prop_*`·CCTV 시야는 장면 XML, 로봇·작업자는 `/odom`·`/sim/worker_pose`·`/sim/worker_pose_<n>`, 정답값. 장면 파일은 `-p scene_xml:=...`, 기본 `scenario_scene.xml`). 브리지와 함께 실행. 처음 한 번은 `pixi run build` 후 브리지와 따로 띄운다(동시 빌드 충돌) |
 | `pixi run cmd-vel-demo` |
 | 9 | Mock 어댑터 (공통 Action, ACK·RESULT, E-Stop·HOLD) | 완료 | `pixi run roundtrip` |
 | CT-01 | 브리지 확장: `/joint_states`, 카메라 3대(Image + CameraInfo), TF, 주기 측정 | 완료 | `pixi run measure` |
@@ -17,6 +17,7 @@ ROS 2 제어 어댑터, 안전 경로(HOLD·E-Stop), MuJoCo 시뮬레이션 환�
 | #54 | MuJoCo ② 디지털 트윈 재구성: 온톨로지 상태(Robot·Worker 스냅샷·Zone)로 장면 생성, 정답 대비 위치 오차 | 완료 | `pixi run test` |
 | #53 | MuJoCo ② 사전 시뮬레이션 서비스 `POST /twin/simulate`: `MOVE_TO` 경로 접촉·안전거리·목표 도달 판정 (판정 수치는 #50 확정 전 잠정값) | 완료 | `pixi run test`, `pixi run twin-sim` |
 | #95 | 로봇 팔 공통 어댑터(UR5e·UR10e·iiwa14·Panda), 창고형 적재·포장 구역, `MANIPULATE` 사전 시뮬레이션 (요청 형식 잠정) | 완료 | `pixi run arms-demo`, `pixi run test` |
+| #55 | Three.js CCTV 실시간 발행: 브리지 MuJoCo 상태 → Three.js 렌더 → `/cctv_{n}/image_raw`(stamp = 시뮬레이션 시각) | 완료 (카메라당 15Hz) | `pixi run bridge-threejs` + `pixi run cctv-threejs` |
 | AMR | 이동형 운반 로봇(AMR) 2대: 창고 ↔ TIAGo 작업 셀 팔레트 운반, `MOVE_TO`·`MANIPULATE`(싣기·내리기) 어댑터, 사전 시뮬레이션 차체 크기에 실린 팔레트 반영 | 완료 | `pixi run amr-demo`, `pixi run test` |
 
 다음 단계는 Backend와 TIAGo 어댑터를 함께 띄운 통합 시나리오 자동화입니다.
@@ -84,6 +85,7 @@ macOS에서는 같은 Mac 안의 노드끼리도 서로 못 찾는 문제가 있
 | `pixi run build` | `ros2_ws`를 colcon으로 빌드 |
 | `pixi run sim` / `sim-view` | 바퀴 로봇 전진·회전·정지 시험 / 뷰어로 보기 |
 | `pixi run bridge` / `bridge-view` | MuJoCo 브리지 실행 (카메라 포함) / 뷰어와 함께 실행 (카메라 끔) |
+| `pixi run bridge-threejs` / `cctv-threejs` | CCTV를 Three.js로 렌더하는 브리지 / 렌더러 (#55) |
 | `pixi run cmd-vel-demo` | 브리지를 띄우고 `/cmd_vel`로 전진·회전·정지 후 `/odom` 출력 |
 | `pixi run measure` | 브리지(물리 + 카메라 3대)를 띄우고 토픽 주기 1분 측정. 인자: `-- 초 카메라Hz 가로 세로` |
 | `pixi run snapshot` | 카메라 3대 이미지를 `outputs/snapshots/`에 PNG로 저장 |
@@ -113,6 +115,38 @@ ros2 topic pub -r 10 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.3}, angula
 
 멈추려면 `Ctrl+C`를 누릅니다. 브리지는 `/cmd_vel`이 0.5초 동안 들어오지 않으면 로봇을 세웁니다. 위치는 `ros2 run mujoco_bridge odom_echo` 또는 `ros2 topic echo /odom`으로 확인합니다.
 
+## Three.js CCTV 실시간 발행 (#55)
+
+브리지를 `cctv_renderer:=threejs`로 띄우면 고정 CCTV(`cctv_1`, `cctv_2`)를 MuJoCo 렌더 대신 Three.js(#45) 렌더로 발행합니다. 로봇 머리 카메라는 그대로 MuJoCo가 렌더합니다.
+
+```bash
+cd scripts/threejs_cctv && npm install && python fetch_assets.py   # 처음 한 번 (에셋은 커밋하지 않음)
+pixi run bridge-threejs     # 터미널 1: 브리지 (카메라 15Hz, 장면을 outputs/threejs_live/data에 씀)
+pixi run bridge-threejs-plant   # 또는: 공장 장면(plant_scene.xml, 작업자 3명, 카메라 10Hz)
+pixi run cctv-threejs       # 터미널 2: 헤드리스 Chromium 렌더러, 5초마다 처리율 출력
+```
+
+1. 브리지가 시작할 때 자기 장면(기본 `scenario_scene.xml`)을 `scene.json`·텍스처로 내보냅니다. 카메라 위치·방향·fovy는 장면의 `cctv_1`, `cctv_2`와 같습니다.
+2. `camera_hz`마다 MuJoCo 상태(geom 자세, 작업자 skin 정점)를 한 프레임으로 묶어 `http://127.0.0.1:8765/frame`에 둡니다(`threejs_live.py`). 프레임 형식은 오프라인 `export_scene.py`의 `FramePacker`와 같습니다.
+3. 렌더러(`node render.mjs --ros`)가 새 프레임을 롱폴링으로 받아 카메라마다 렌더하고, 오프라인 영상과 같은 CCTV 효과를 거친 JPEG(품질 0.72)를 돌려보냅니다. 브리지가 rgb8로 풀어 발행합니다. JPEG 인코딩은 다음 카메라 렌더와, 전송은 다음 프레임 렌더와 겹쳐 돌립니다.
+4. 브리지는 그 영상을 **렌더한 프레임의 시뮬레이션 시각**을 `header.stamp`로 붙여 발행합니다. 렌더가 밀리면 중간 프레임은 건너뛰고 최신 프레임만 렌더합니다.
+
+- 렌더러가 멈추면 영상이 끊기고, Backend는 `OBSERVATION_GAP`(2초)으로 실행을 거부합니다(제어 계약 3장).
+- 같은 ROS 도메인에서 브리지를 둘 띄우면 같은 카메라 토픽에 두 영상이 섞입니다. 브리지는 5초마다 자기 카메라 토픽의 발행자 수를 확인해, 다른 발행자가 있으면 오류 로그를 남깁니다. 하나만 띄우거나 `ROS_DOMAIN_ID`를 나눕니다.
+- `plant_scene.xml`을 `model_path`로 주면 작업자 2·3(`worker_2`, `worker_3` mocap)도 오프라인 영상과 같은 경로로 함께 렌더합니다.
+
+처리율 (Apple M3, 별도 `ROS_DOMAIN_ID`, 2026-11-15 측정, 물리는 모든 경우 실시간 대비 1.00배):
+
+| 장면 | `camera_hz` | 카메라당 발행 | 프레임당 시간 (카메라 2대) |
+|---|---|---|---|
+| `scenario_scene.xml` | 10 | 10.0 Hz | |
+| `scenario_scene.xml` | 15 | **15.0 Hz** | |
+| `scenario_scene.xml` | 20 | 약 12~13 Hz | 렌더 약 35 ms, 다음 프레임 대기 약 30 ms |
+| `plant_scene.xml` (작업자 3명) | 10 | **10.0 Hz** | 자세 10 ms, 렌더 33 ms |
+| `plant_scene.xml` (작업자 3명) | 15 | 약 11 Hz | 자세 17 ms, 렌더 45 ms |
+
+`bridge-threejs`는 15Hz, `bridge-threejs-plant`는 10Hz로 띄웁니다. 그보다 높이면 렌더(GPU 제출)와 브리지 쪽 프레임 준비가 한계입니다. 렌더러는 5초마다 단계별 시간을 출력합니다.
+
 ## 토픽
 
 | 토픽 | 방향 | QoS | 내용 |
@@ -120,7 +154,7 @@ ros2 topic pub -r 10 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.3}, angula
 | `/cmd_vel` | 외부 → 브리지 | 기본 | `geometry_msgs/Twist` (linear.x m/s, angular.z rad/s) |
 | `/odom` | 브리지 → 외부 | 기본, 50Hz | `nav_msgs/Odometry` (`odom` → `base_link`, TF 함께 발행) |
 | `/joint_states` | 브리지 → 외부 | 기본, 50Hz | `sensor_msgs/JointState`: 팔 7, 몸통, 머리 2, 그리퍼 2, 바퀴 2 (위치·속도) |
-| `/cctv_1/image_raw`, `/cctv_2/image_raw` | 브리지 → 외부 | sensor data, 15Hz | `sensor_msgs/Image` rgb8 640×480, frame_id `camera_cctv_1`·`camera_cctv_2` |
+| `/cctv_1/image_raw`, `/cctv_2/image_raw` | 브리지 → 외부 | sensor data, 15Hz | `sensor_msgs/Image` rgb8 640×480, frame_id `camera_cctv_1`·`camera_cctv_2`. `cctv_renderer:=threejs`이면 Three.js 렌더 영상, stamp는 시뮬레이션 시각 |
 | `/robot/head_camera/image_raw` | 브리지 → 외부 | sensor data, 15Hz | 로봇 머리 카메라, frame_id `camera_head_camera` |
 | `.../camera_info` | 브리지 → 외부 | sensor data, 15Hz | 각 카메라의 `CameraInfo` (fovy로 계산한 K·P, 왜곡 없음) |
 | `/sim/worker_pose` | 브리지 → 외부 | 기본, 50Hz | `geometry_msgs/PoseStamped` 작업자 실제 위치 (`world`) |
@@ -204,8 +238,8 @@ python mujoco/twin_simulate.py --request req.json          # 서버 없이 요�
 ```
 
 - 지원 범위: `MOVE_TO`와 `MANIPULATE`(#95, 아래 "로봇 팔")를 받습니다. 다른 `action_type`은 `ERROR`입니다.
-- 동작: 로봇을 현재 위치에서 `target_pose`까지 `speed_limit`으로 직선 이동시키며 0.01 s마다 MuJoCo 접촉을 검사합니다. 작업자는 스냅샷 위치에 멈춰 있다고 가정합니다(이동 예측 없음).
-- 실행 경로 계약: 사전 시뮬레이션은 **현재 위치 → `target_pose` 직선 경로**를 검증합니다. CTL 어댑터도 같은 직선 경로를 따르는 것을 전제로 하며(`diff_drive_core`: 목표 방향으로 회전 후 직선 전진, 장애물 회피 없음), 다른 경로(경유점·회피 경로)를 실행하는 어댑터는 실행 예정 궤적을 요청에 넣어 검증하도록 계약을 먼저 확장해야 합니다. 차동 구동의 방향 보정으로 생기는 직선 이탈(방향 오차 50° 이내에서 전진하며 회전)은 아직 판정에 반영하지 않습니다.
+- 동작: 로봇을 현재 위치에서 `target_pose`까지 `speed_limit` 이하로, 실제 어댑터(`diff_drive_core`)와 같은 차동 구동 제어기(방향 오차 50° 초과 시 제자리 회전, 이내면 회전하며 전진, 도착 직전 감속)로 굴리며 0.01 s마다 MuJoCo 접촉을 검사합니다. 작업자는 스냅샷 위치에 멈춰 있다고 가정합니다(이동 예측 없음).
+- 실행 경로 계약: 사전 시뮬레이션은 CTL 어댑터가 실제로 낼 경로를 **같은 제어기로 적분해** 검증합니다(`twin_simulate.py`의 `DD_*` 상수는 `diff_drive_core`와 같아야 하며 테스트가 확인합니다). 경유점·회피 경로를 실행하는 어댑터는 실행 예정 궤적을 요청에 넣어 검증하도록 계약을 먼저 확장해야 합니다.
 - `target_pose.position`의 z는 바닥 평면 이동만 지원하므로 `|z| <= PLANAR_Z_TOLERANCE_M`(0.05 m)여야 하며, 벗어나면 `ERROR`입니다.
 - `result` 우선순위: `COLLISION`(이동하는 로봇이 여유 반경 포함 작업자 캡슐이나 다른 로봇과 접촉) → `UNSAFE_DISTANCE`(몸 표면 사이 거리가 `UNSAFE_DISTANCE_M` 미만) → `GOAL_NOT_REACHED`(최대 구간 안에 목표 0.05 m 이내 미도달) → `PASS`.
 - `min_worker_distance_m`은 로봇과 작업자 **몸 표면 사이** 최소 거리입니다(CV 여유 반경 제외). 작업자가 없으면 `null`, 접촉이 없으면 `first_contact_at_s`가 `null`입니다. `snapshot_id`는 요청 값을 그대로 돌려줍니다.
@@ -259,6 +293,7 @@ pixi run arm-cycle-demo   # 데모: 4대가 상자를 계속 옮김 (검증 서�
 |---|---|---|
 | `/<seg>/arm/joint_command` | 어댑터 → 브리지 | `sensor_msgs/JointState` 위치 목표 |
 | `/<seg>/arm/gripper` | 어댑터 → 브리지 | `std_msgs/Bool` (닫힘) |
+| `/<seg>/arm/grasp_state` | 브리지 → 어댑터 | `std_msgs/String` JSON `{closed, held}`. 그리퍼 명령마다 실제로 잡은 물체 이름(`held`, 못 잡으면 `null`)을 알린다. 어댑터는 이 결과로 파지 성공을 확정하고, 실패하거나 1초 안에 오지 않으면 `HW_ERROR`로 끝낸다 |
 | `/<seg>/joint_states` | 브리지 → 어댑터 | `sensor_msgs/JointState` 실제 관절각 |
 | `/adapter/<seg>/state` | 어댑터 → 검증 서버 | 기존 상태에 `robot_model`, `joints`, `tcp_position`, `gripper_closed`, `holding_object_id` 추가 |
 
