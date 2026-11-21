@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from enum import Enum
 from hashlib import sha256
 from math import dist
 from os import getenv
@@ -93,6 +94,52 @@ ACTIVE_PROPOSAL_STATUSES = {
 PLANNABLE_TASK_STATUSES = {
     TaskStatus.CREATED,
     TaskStatus.PLANNING,
+}
+
+
+class OntologyObjectType(str, Enum):
+    ROBOT = "Robot"
+    SENSOR = "Sensor"
+    WORKER = "Worker"
+    ZONE = "Zone"
+    TASK_ORDER = "TaskOrder"
+    ACTION_PROPOSAL = "ActionProposal"
+    HAZARD_EVENT = "HazardEvent"
+    SAFETY_RULE = "SafetyRule"
+    EXECUTION_LOG = "ExecutionLog"
+
+
+OntologyObject = (
+    Robot
+    | Sensor
+    | Worker
+    | Zone
+    | TaskOrder
+    | ActionProposal
+    | HazardEvent
+    | SafetyRule
+    | ExecutionLog
+)
+OBJECT_STORE_ATTRIBUTES = {
+    OntologyObjectType.ROBOT: "robots",
+    OntologyObjectType.SENSOR: "sensors",
+    OntologyObjectType.WORKER: "workers",
+    OntologyObjectType.ZONE: "zones",
+    OntologyObjectType.TASK_ORDER: "tasks",
+    OntologyObjectType.ACTION_PROPOSAL: "proposals",
+    OntologyObjectType.HAZARD_EVENT: "hazards",
+    OntologyObjectType.SAFETY_RULE: "rules",
+    OntologyObjectType.EXECUTION_LOG: "logs",
+}
+OBJECT_LIST_RESPONSE_HEADERS = {
+    "X-Total-Count": {
+        "description": "페이지네이션 전 해당 객체 타입의 전체 건수",
+        "schema": {"type": "integer", "minimum": 0},
+    },
+    "X-Observed-At": {
+        "description": "Worker 전체 스냅샷의 관측 시각(Worker 조회에만 포함)",
+        "schema": {"type": "string", "format": "date-time"},
+    },
 }
 TASK_LIST_RESPONSE_HEADERS = {
     "X-Total-Count": {
@@ -366,6 +413,55 @@ def stop_action_dispatcher() -> None:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get(
+    "/api/v1/objects/{type}",
+    response_model=list[OntologyObject],
+    responses={
+        status.HTTP_200_OK: {
+            "description": "페이지네이션된 온톨로지 객체 목록",
+            "headers": OBJECT_LIST_RESPONSE_HEADERS,
+        },
+        status.HTTP_404_NOT_FOUND: {
+            "description": "Worker 관측 스냅샷이 아직 없음",
+        },
+    },
+)
+def list_ontology_objects(
+    type: OntologyObjectType,
+    response: Response,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> list[OntologyObject]:
+    if type == OntologyObjectType.SAFETY_RULE:
+        seed_rules()
+    with store.lock:
+        collection = getattr(store, OBJECT_STORE_ATTRIBUTES[type])
+        if collection is None:
+            if type == OntologyObjectType.WORKER:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Worker 관측 스냅샷이 아직 없습니다.",
+                )
+            collection = []
+        if isinstance(collection, dict):
+            collection = list(collection.values())
+        else:
+            collection = list(collection)
+        response.headers["X-Total-Count"] = str(len(collection))
+        if type == OntologyObjectType.WORKER:
+            observed_at = store.workers_observed_at
+            if observed_at is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Worker 관측 스냅샷이 아직 없습니다.",
+                )
+            response.headers["X-Observed-At"] = observed_at.isoformat()
+        return [
+            item.model_copy(deep=True)
+            for item in collection[offset : offset + limit]
+        ]
 
 
 @app.get("/console", include_in_schema=False)
