@@ -11,7 +11,7 @@ export const M = {
   steel: mat(0xc9ccd0, 0.28, 0.9), darkSteel: mat(0x3a3d42, 0.5, 0.7), galv: mat(0x9a9fa5, 0.45, 0.8),
   black: mat(0x161616, 0.8, 0.1), rubber: mat(0x1b1b1b, 0.95, 0), concrete: mat(0xb8b4ab, 0.92, 0),
   grey: mat(0x7d8288, 0.6, 0.3), wood: mat(0xa7835a, 0.85, 0), carton: mat(0xc9b08a, 0.9, 0),
-  red: mat(0xb3261e, 0.6, 0.1), green: mat(0x3f7f4a, 0.5, 0.3), blue: mat(0x2f5f9e, 0.5, 0.3),
+  red: mat(0xb3261e, 0.6, 0.1), orange: mat(0xe0601a, 0.55, 0.1), green: mat(0x3f7f4a, 0.5, 0.3), blue: mat(0x2f5f9e, 0.5, 0.3),
   hole: new THREE.MeshBasicMaterial({ color: 0x050505 }),
 };
 
@@ -72,10 +72,10 @@ export async function applyAssets(manifest, base) {
   // 금속: 판재 법선·거칠기 맵, 도장면: 녹슨 도장의 법선·거칠기 맵 (색은 유지)
   // Blender 렌더용 표시: 텍스처는 GLB에 넣지 않고 Blender가 원본 파일을 다시 붙인다
   for (const [k, m] of Object.entries(M)) { m.name = `m_${k}`;
-    m.userData.pbr = ['steel', 'galv', 'darkSteel', 'grey'].includes(k) ? 'metal' : ['yellow', 'yellowPaint', 'red', 'green', 'blue'].includes(k) ? 'rust' : undefined;
+    m.userData.pbr = ['steel', 'galv', 'darkSteel', 'grey'].includes(k) ? 'metal' : ['yellow', 'yellowPaint', 'red', 'orange', 'green', 'blue'].includes(k) ? 'rust' : undefined;
     if (m.userData.pbr) { m.userData.repeat = [2, 2]; m.userData.mapsOnly = 'detail'; } }
   for (const k of ['steel', 'galv', 'darkSteel', 'grey']) Object.assign(M[k], { normalMap: metal.normalMap, roughnessMap: metal.roughnessMap, metalnessMap: metal.roughnessMap, normalScale: new THREE.Vector2(0.6, 0.6) });
-  for (const k of ['yellow', 'yellowPaint', 'red', 'green', 'blue']) Object.assign(M[k], { normalMap: rust.normalMap, roughnessMap: rust.roughnessMap, metalnessMap: rust.roughnessMap, normalScale: new THREE.Vector2(0.4, 0.4) });
+  for (const k of ['yellow', 'yellowPaint', 'red', 'orange', 'green', 'blue']) Object.assign(M[k], { normalMap: rust.normalMap, roughnessMap: rust.roughnessMap, metalnessMap: rust.roughnessMap, normalScale: new THREE.Vector2(0.4, 0.4) });
   Object.values(M).forEach(m => { m.needsUpdate = true; });
 }
 const pbr = (role, rx, ry, extra = {}) => {
@@ -185,6 +185,36 @@ B.piperack = ([sx, sy, sz]) => {
     g.add(at(cylX(r, 2 * sx + 1, m), 0, y, level + 0.1 + r));
   });
   g.add(at(cylX(0.35, 2 * sx + 1, M.steel), 0, 0, sz + 0.25));
+  return g;
+};
+
+// 물류창고 팔레트 랙: 길이 방향 x, 양면(±y)에서 적재. 파란 기둥·주황 빔, 칸마다 팔레트 + 적재물.
+// 가운데 메시 칸막이로 막아 MuJoCo 박스와 같은 가림(정답 마스크 일치)을 유지한다.
+B.rack = ([sx, sy, sz]) => {
+  const g = new THREE.Group();
+  const bays = Math.max(1, Math.round(sx / 1.35)), bw = (2 * sx) / bays;
+  const levels = [-sz + 0.12, -sz + 1.45, -sz + 2.75];
+  for (let i = 0; i <= bays; i++) { const x = -sx + i * bw;
+    for (const y of [-sy + 0.04, sy - 0.04]) g.add(at(box(0.08, 0.08, 2 * sz, M.blue), x, y, 0));
+    for (let z = -sz + 0.3; z < sz; z += 0.6) g.add(at(box(0.03, 2 * sy - 0.1, 0.03, M.blue), x, 0, z));
+  }
+  const panel = new THREE.MeshStandardMaterial({ color: 0x55595e, roughness: 0.7, metalness: 0.4 });
+  g.add(at(box(2 * sx, 0.02, 2 * sz - 0.05, panel), 0, 0, -0.02));
+  const loads = [M.carton, M.carton, M.blue, M.carton, M.green, M.carton];
+  let k = 0;
+  for (let i = 0; i < bays; i++) { const cx = -sx + (i + 0.5) * bw;
+    levels.forEach((z, li) => {
+      for (const s of [-1, 1]) {
+        g.add(at(box(bw - 0.02, 0.1, 0.12, M.orange), cx, s * (sy - 0.05), z + 0.06));   // 빔
+        const top = (li + 1 < levels.length ? levels[li + 1] : sz) - z - 0.25;
+        for (const px of [-bw / 4, bw / 4]) {
+          const yc = s * sy / 2, h = Math.min(top - 0.15, 0.7 + ((k * 37) % 5) * 0.12);
+          g.add(at(box(bw / 2 - 0.12, sy - 0.12, 0.14, M.wood), cx + px, yc, z + 0.19));   // 팔레트
+          if ((k++ % 7) !== 3) g.add(at(box(bw / 2 - 0.18, sy - 0.2, h, loads[k % loads.length]), cx + px, yc, z + 0.26 + h / 2));
+        }
+      }
+    });
+  }
   return g;
 };
 
