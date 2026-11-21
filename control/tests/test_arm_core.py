@@ -57,12 +57,15 @@ def arm():
     return core
 
 
-def run(core, start, until=2.0, dt=0.1):
+def run(core, start, until=2.0, dt=0.1, grasp="ok"):
+    """grasp: 그리퍼를 닫았을 때 브리지 응답. "ok"=바로 성공, "fail"=못 잡음, None=응답 없음."""
     now, events = start, []
     while now < start + until:
         now += dt
         core.handle_heartbeat(now)
         events += core.tick(now, dt)
+        if core.grasp_wait_since is not None and grasp is not None:
+            events += core.handle_grasp_feedback("box-1" if grasp == "ok" else None, now)
     return events
 
 
@@ -114,6 +117,19 @@ def test_estop_freezes_joints_and_keeps_gripper(arm):
     assert arm.status == "ESTOP"
     assert arm.outbox == [("joints", q_before)]  # 그 자리에서 멈추고 그리퍼는 그대로(물체 유지)
     assert arm.gripper_closed
+    assert arm.holding == "box-1"  # 그리퍼를 닫은 뒤 멈췄으므로 상자를 들고 있다고 보고한다
+    assert arm.state(T0 + 1.25)["holding_object_id"] == "box-1"
+
+
+def test_estop_after_release_reports_not_holding(arm):
+    arm.handle_action(manip(), T0)
+    run(arm, T0)
+    assert arm.holding == "box-1"
+    arm.handle_action(manip("PLACE", pid="p2"), T0 + 3)
+    run(arm, T0 + 3, until=1.2)  # 놓은 뒤 들어 올리는 중
+    arm.handle_estop({"active": True, "triggered_by": "RULE_ENGINE"}, T0 + 4.25)
+    assert not arm.gripper_closed
+    assert arm.holding is None
 
 
 def test_duplicate_proposal_is_not_executed_twice(arm):
@@ -128,3 +144,50 @@ def test_joint_feedback_is_used_as_plan_start(arm):
     arm.update_joints([0.2, -0.1])
     arm.handle_action(manip(), T0)
     assert arm.planner.calls[0][3] == [0.2, -0.1]
+
+
+def test_gripper_closes_only_after_reaching_grasp_point(arm):
+    """DESCEND 끝(0.5 s)~GRASP(1.0 s) 사이 정지 구간에 그리퍼를 미리 닫지 않는다 (PR #92 리뷰 P1)."""
+    arm.handle_action(manip(), T0)
+    run(arm, T0, until=0.9)
+    assert ("gripper", True) not in arm.outbox and not arm.gripper_closed
+    assert arm.q == [0.5, 0.5]  # 내려간 자리에서 기다린다
+    run(arm, T0 + 0.9, until=0.2)
+    assert arm.gripper_closed
+
+
+def test_failed_grasp_stops_and_reports_failure(arm):
+    arm.handle_action(manip(), T0)
+    events = run(arm, T0, grasp="fail")
+    result = [e for e in events if e["kind"] == "RESULT"]
+    assert len(result) == 1 and not result[0]["success"] and result[0]["reason_code"] == "HW_ERROR"
+    assert arm.holding is None and not arm.gripper_closed and arm.status == "IDLE"
+    assert arm.outbox[-2:] == [("gripper", False), ("joints", [1.0, 1.0])]
+
+
+def test_missing_grasp_feedback_times_out(arm):
+    arm.handle_action(manip(), T0)
+    events = run(arm, T0, until=3.0, grasp=None)
+    result = [e for e in events if e["kind"] == "RESULT"]
+    assert len(result) == 1 and result[0]["reason_code"] == "HW_ERROR"
+    assert arm.holding is None
+
+
+def test_success_waits_for_feedback_before_lifting(arm):
+    arm.handle_action(manip(), T0)
+    run(arm, T0, until=1.05, grasp=None)  # 닫았지만 아직 응답 없음
+    assert arm.gripper_closed and arm.holding is None
+    assert arm.state(T0 + 1.05)["holding_object_id"] is None
+    events = arm.handle_grasp_feedback("box-1", T0 + 1.5)
+    assert events == [] and arm.holding == "box-1"
+    events = run(arm, T0 + 1.5, until=1.0)
+    assert any(e["kind"] == "RESULT" and e["success"] for e in events)
+
+
+def test_late_grasp_feedback_after_estop_syncs_holding(arm):
+    arm.handle_action(manip(), T0)
+    run(arm, T0, until=1.05, grasp=None)
+    arm.handle_estop({"active": True, "triggered_by": "RULE_ENGINE"}, T0 + 1.1)
+    assert arm.holding is None
+    assert arm.handle_grasp_feedback("box-1", T0 + 1.2) == []
+    assert arm.holding == "box-1"  # 브리지가 실제로 잡았으면 그 상태를 따른다

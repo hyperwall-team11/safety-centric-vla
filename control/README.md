@@ -8,7 +8,7 @@ ROS 2 제어 어댑터, 안전 경로(HOLD·E-Stop), MuJoCo 시뮬레이션 환�
 |---|---|---|---|
 | 1~5 | Python·MuJoCo·ROS 2 설치, 작업공간 빌드 | 완료 | `pixi run build` |
 | 6~7 | 바퀴 로봇 모델(TIAGo), 전진·회전·정지 | 완료 | `pixi run sim` |
-| 8 | ROS 2 브리지 (`/cmd_vel` → MuJoCo → `/odom`) | 완료 | `pixi run cctv-stream` | 카메라 토픽을 웹 콘솔용 MJPEG로 내보냄 (`http://127.0.0.1:8081/stream/cctv_1`). 브리지와 함께 실행. 처음 한 번은 `pixi run build` 후 브리지와 따로 띄운다(동시 빌드 충돌) |
+| 8 | ROS 2 브리지 (`/cmd_vel` → MuJoCo → `/odom`) | 완료 | `pixi run cctv-stream` | 카메라 토픽을 웹 콘솔용 MJPEG로 내보냄 (`http://127.0.0.1:8081/stream/cctv_1`). 지도용 시뮬레이션 장면도 `GET /scene`으로 제공(구역 표시·작업대·주변 설비 `prop_*`·CCTV 시야는 장면 XML, 로봇·작업자는 `/odom`·`/sim/worker_pose`·`/sim/worker_pose_<n>`, 정답값. 장면 파일은 `-p scene_xml:=...`, 기본 `scenario_scene.xml`). 브리지와 함께 실행. 처음 한 번은 `pixi run build` 후 브리지와 따로 띄운다(동시 빌드 충돌) |
 | `pixi run cmd-vel-demo` |
 | 9 | Mock 어댑터 (공통 Action, ACK·RESULT, E-Stop·HOLD) | 완료 | `pixi run roundtrip` |
 | CT-01 | 브리지 확장: `/joint_states`, 카메라 3대(Image + CameraInfo), TF, 주기 측정 | 완료 | `pixi run measure` |
@@ -17,8 +17,8 @@ ROS 2 제어 어댑터, 안전 경로(HOLD·E-Stop), MuJoCo 시뮬레이션 환�
 | #54 | MuJoCo ② 디지털 트윈 재구성: 온톨로지 상태(Robot·Worker 스냅샷·Zone)로 장면 생성, 정답 대비 위치 오차 | 완료 | `pixi run test` |
 | #53 | MuJoCo ② 사전 시뮬레이션 서비스 `POST /twin/simulate`: `MOVE_TO` 경로 접촉·안전거리·목표 도달 판정 (판정 수치는 #50 확정 전 잠정값) | 완료 | `pixi run test`, `pixi run twin-sim` |
 | #95 | 로봇 팔 공통 어댑터(UR5e·UR10e·iiwa14·Panda), 창고형 적재·포장 구역, `MANIPULATE` 사전 시뮬레이션 (요청 형식 잠정) | 완료 | `pixi run arms-demo`, `pixi run test` |
-| AMR | 이동형 운반 로봇(AMR) 2대: 창고 ↔ TIAGo 작업 셀 팔레트 운반, `MOVE_TO`·`MANIPULATE`(싣기·내리기) 어댑터, 사전 시뮬레이션 차체 크기에 실린 팔레트 반영 | 완료 | `pixi run amr-demo`, `pixi run test` |
 | #55 | Three.js CCTV 실시간 발행: 브리지 MuJoCo 상태 → Three.js 렌더 → `/cctv_{n}/image_raw`(stamp = 시뮬레이션 시각) | 완료 (카메라당 15Hz) | `pixi run bridge-threejs` + `pixi run cctv-threejs` |
+| AMR | 이동형 운반 로봇(AMR) 2대: 창고 ↔ TIAGo 작업 셀 팔레트 운반, `MOVE_TO`·`MANIPULATE`(싣기·내리기) 어댑터, 사전 시뮬레이션 차체 크기에 실린 팔레트 반영 | 완료 | `pixi run amr-demo`, `pixi run test` |
 
 다음 단계는 Backend와 TIAGo 어댑터를 함께 띄운 통합 시나리오 자동화입니다.
 
@@ -256,10 +256,12 @@ python mujoco/twin_simulate.py --request req.json          # 서버 없이 요�
 ```
 
 - 지원 범위: `MOVE_TO`와 `MANIPULATE`(#95, 아래 "로봇 팔")를 받습니다. 다른 `action_type`은 `ERROR`입니다.
-- 동작: 로봇을 현재 위치에서 `target_pose`까지 `speed_limit`으로 직선 이동시키며 0.01 s마다 MuJoCo 접촉을 검사합니다. 작업자는 스냅샷 위치에 멈춰 있다고 가정합니다(이동 예측 없음).
+- 동작: 로봇을 현재 위치에서 `target_pose`까지 `speed_limit` 이하로, 실제 어댑터(`diff_drive_core`)와 같은 차동 구동 제어기(방향 오차 50° 초과 시 제자리 회전, 이내면 회전하며 전진, 도착 직전 감속)로 굴리며 0.01 s마다 MuJoCo 접촉을 검사합니다. 작업자는 스냅샷 위치에 멈춰 있다고 가정합니다(이동 예측 없음).
+- 실행 경로 계약: 사전 시뮬레이션은 CTL 어댑터가 실제로 낼 경로를 **같은 제어기로 적분해** 검증합니다(`twin_simulate.py`의 `DD_*` 상수는 `diff_drive_core`와 같아야 하며 테스트가 확인합니다). 경유점·회피 경로를 실행하는 어댑터는 실행 예정 궤적을 요청에 넣어 검증하도록 계약을 먼저 확장해야 합니다.
+- `target_pose.position`의 z는 바닥 평면 이동만 지원하므로 `|z| <= PLANAR_Z_TOLERANCE_M`(0.05 m)여야 하며, 벗어나면 `ERROR`입니다.
 - `result` 우선순위: `COLLISION`(이동하는 로봇이 여유 반경 포함 작업자 캡슐이나 다른 로봇과 접촉) → `UNSAFE_DISTANCE`(몸 표면 사이 거리가 `UNSAFE_DISTANCE_M` 미만) → `GOAL_NOT_REACHED`(최대 구간 안에 목표 0.05 m 이내 미도달) → `PASS`.
 - `min_worker_distance_m`은 로봇과 작업자 **몸 표면 사이** 최소 거리입니다(CV 여유 반경 제외). 작업자가 없으면 `null`, 접촉이 없으면 `first_contact_at_s`가 `null`입니다. `snapshot_id`는 요청 값을 그대로 돌려줍니다.
-- `ERROR`(Fail-Closed): `contract_version` 불일치, `snapshot_id`·`snapshot_at` 누락, Worker 스냅샷 없음, 스냅샷이 오래됨(`snapshot_at - observed_at > 2 s`) 또는 `observed_at`이 0.5 s 넘게 미래, 대상 로봇 없음, `speed_limit <= 0`, `world`가 아닌 좌표계. `ERROR` 응답에는 원인 `detail`이 붙습니다. JSON이 아닌 본문은 HTTP 400입니다.
+- `ERROR`(Fail-Closed): `contract_version` 불일치, `snapshot_id`·`snapshot_at` 누락, Worker 스냅샷 없음, 스냅샷이 오래됨(`snapshot_at - observed_at > 2 s`) 또는 `observed_at`이 0.5 s 넘게 미래, 대상 로봇 없음, `speed_limit <= 0`, `world`가 아닌 좌표계, 바닥 평면을 벗어난 `target_pose` z. `ERROR` 응답에는 원인 `detail`이 붙습니다. JSON이 아닌 본문은 HTTP 400입니다.
 - `robot_type`이 없는 로봇(계약 13.1 예시)은 가장 큰 반경의 형상으로 보수적으로 둡니다.
 
 | 상수 | 잠정값 | 근거 |
@@ -309,6 +311,7 @@ pixi run arm-cycle-demo   # 데모: 4대가 상자를 계속 옮김 (검증 서�
 |---|---|---|
 | `/<seg>/arm/joint_command` | 어댑터 → 브리지 | `sensor_msgs/JointState` 위치 목표 |
 | `/<seg>/arm/gripper` | 어댑터 → 브리지 | `std_msgs/Bool` (닫힘) |
+| `/<seg>/arm/grasp_state` | 브리지 → 어댑터 | `std_msgs/String` JSON `{closed, held}`. 그리퍼 명령마다 실제로 잡은 물체 이름(`held`, 못 잡으면 `null`)을 알린다. 어댑터는 이 결과로 파지 성공을 확정하고, 실패하거나 1초 안에 오지 않으면 `HW_ERROR`로 끝낸다 |
 | `/<seg>/joint_states` | 브리지 → 어댑터 | `sensor_msgs/JointState` 실제 관절각 |
 | `/adapter/<seg>/state` | 어댑터 → 검증 서버 | 기존 상태에 `robot_model`, `joints`, `tcp_position`, `gripper_closed`, `holding_object_id` 추가 |
 
@@ -334,12 +337,13 @@ pixi run arm-cycle-demo   # 데모: 4대가 상자를 계속 옮김 (검증 서�
 - `robots[].robot_model`: `ARM_MODELS` 키. 이 값이 있는 로봇은 원기둥 대신 실제 팔 모델로 붙입니다. `position`은 베이스(받침대 윗면) 위치입니다.
 - `joint_positions`: 생략하거나 `null`이면 모델의 `home` 자세. `holding_object_id`: 들고 있는 물체(`PLACE`에 필요).
 - `objects`: 상자 장애물(중심, 크기 m). `MOVE_TO`에서도 장애물로 쓰입니다.
-- 판정: 팔·공구가 다른 물체·로봇·작업자와 닿으면 `COLLISION`(잡는 대상 물체와의 접촉은 제외), 팔·공구 표면과 작업자 몸 표면 사이가 `UNSAFE_DISTANCE_M` 미만이면 `UNSAFE_DISTANCE`, 경유점 TCP 오차가 0.02 m를 넘으면 `GOAL_NOT_REACHED`.
+- `MOVE_TO`에서도 `robot_model`이 있는 팔은 실제 팔 모델(현재 `joint_positions`)로 넣어 이동 로봇과의 접촉을 봅니다. 팔 모델 파일이 없으면 `ERROR`(Fail-Closed)입니다.
+- 판정: 팔·공구 또는 들고 있는 물체가 다른 물체·로봇·작업자와 닿으면 `COLLISION`(팔과 대상 물체 사이 접촉은 제외), 팔·공구(들고 있는 동안은 물체 포함) 표면과 작업자 몸 표면 사이가 `UNSAFE_DISTANCE_M` 미만이면 `UNSAFE_DISTANCE`, 경유점 TCP 오차가 0.02 m를 넘으면 `GOAL_NOT_REACHED`.
 - `ERROR`: `robot_model`이 없는 로봇, `PICK`/`PLACE`가 아님, 물체 없음, `PICK`의 `target_pose`가 물체에서 0.05 m 넘게 떨어짐, `PLACE`인데 그 물체를 들고 있지 않음, `joint_positions` 개수 불일치.
 
 한계:
 - 파지는 물리 접촉 대신 운동학적으로 붙입니다(집으면 상자가 TCP를 따라감). 그리퍼 마찰·미끄러짐·하중은 다루지 않습니다.
-- 사전 시뮬레이션에서 들고 있는 상자와 다른 물체 사이의 접촉은 검사하지 않습니다(둘 다 고정 물체로 둠). 팔·공구의 접촉만 봅니다.
+- 들고 있는 상자의 접촉은 형상 사이 거리(`mj_geomDistance` < 0)로 판정합니다. 상자와 작업자가 모두 고정(mocap) 바디라 MuJoCo 접촉이 생기지 않기 때문입니다.
 - 브리지에서 팔은 위치 액추에이터로 움직이므로 빠른 동작에서 관절이 목표보다 늦습니다(측정 최대 약 0.2 rad, 0.25 m/s). 놓기 전 0.5 s 멈춰 이 차이를 줄입니다.
 - 이동형 운반 로봇은 다음 절(AMR)에서 다룹니다.
 
@@ -375,7 +379,7 @@ pixi run amr-cycle-demo   # 데모: 2대가 팔레트를 계속 나름 (검증 �
 | `/<seg>/cmd_vel` | 어댑터 → 브리지 | `geometry_msgs/Twist` |
 | `/<seg>/odom` | 브리지 → 어댑터 | `nav_msgs/Odometry` (world 좌표) |
 | `/<seg>/amr/load_command` | 어댑터 → 브리지 | `std_msgs/String` JSON `{command_id, manipulation: PICK·PLACE·CANCEL, object_id, target_pose}` |
-| `/<seg>/amr/load_result` | 브리지 → 어댑터 | `std_msgs/String` JSON `{command_id, success, reason_code, message}` |
+| `/<seg>/amr/load_result` | 브리지 → 어댑터 | `std_msgs/String` JSON `{command_id, success, reason_code, message, held_object_id}`. `held_object_id`는 결과 시점 실제 적재 상태로, 어댑터는 이 값으로 `holding`을 맞춘다. CANCEL은 진행 중 이송이 없어도 답한다 |
 
 **사전 시뮬레이션**: `MOVE_TO`는 기존 원기둥 판정을 그대로 씁니다. `state.robots[]`에 `"robot_model": "amr"`이 있으면 원기둥 크기를 차체 기준(반경 0.558 m, 높이 0.30 m)으로, `holding_object_id`가 있으면 실린 팔레트까지 덮는 크기(반경 0.692 m, 높이 1.04 m)로 둡니다. AMR의 `MANIPULATE` 사전 시뮬레이션은 아직 없습니다(`ERROR`).
 

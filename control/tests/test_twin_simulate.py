@@ -41,7 +41,8 @@ def test_contract_example_passes_and_echoes_snapshot_id():
     assert res["snapshot_id"] == "snap-1"
     assert res["first_contact_at_s"] is None
     assert res["min_worker_distance_m"] >= ts.UNSAFE_DISTANCE_M
-    assert res["simulated_horizon_s"] == pytest.approx(1.4422 / 0.3, abs=0.01)  # 1.4422 m / 0.3 m/s
+    # 실제 제어기는 회전하며 전진하고 도착 직전 감속하므로 직선 최단 시간(1.4422 m / 0.3 m/s)보다 길다
+    assert 1.4422 / 0.3 < res["simulated_horizon_s"] < ts.MAX_HORIZON_S
     assert set(res) >= {"result", "snapshot_id", "min_worker_distance_m", "first_contact_at_s",
                         "simulated_horizon_s", "elapsed_ms"}
 
@@ -89,6 +90,8 @@ def test_initial_contact_is_collision_at_zero():
     (lambda r: r["action"].update(robot_id="robot-99"), "not in state.robots"),
     (lambda r: r["action"].update(speed_limit=0), "speed_limit"),
     (lambda r: r["action"]["target_pose"].update(frame_id="map"), "frame_id"),
+    (lambda r: r["action"]["target_pose"].update(position=[1.2, -0.8, 0.5]), "planar"),
+    (lambda r: r["action"]["target_pose"].update(position=[1.2, -0.8, float("nan")]), "planar"),
 ])
 def test_invalid_requests_are_error_fail_closed(change, message):
     r = req()
@@ -144,7 +147,7 @@ def test_robot_away_from_origin_moves_to_world_target(yaw):
     r["state"]["robots"][0].update(position=[-2.0, 0.0, 0.0], yaw_rad=yaw)
     res = ts.simulate(r)
     assert res["result"] == "PASS", res
-    assert res["simulated_horizon_s"] == pytest.approx(math.sqrt(2) / 0.3, abs=0.01)
+    assert math.sqrt(2) / 0.3 < res["simulated_horizon_s"] < ts.MAX_HORIZON_S
 
 
 def test_worker_on_path_of_robot_away_from_origin_is_collision():
@@ -152,3 +155,34 @@ def test_worker_on_path_of_robot_away_from_origin_is_collision():
     r["state"]["zones"] = []
     r["state"]["robots"][0].update(position=[-2.0, 0.0, 0.0], yaw_rad=0.7)
     assert ts.simulate(r)["result"] == "COLLISION"
+
+
+def test_controller_constants_match_adapter():
+    """사전 시뮬레이션이 굴리는 제어기는 실제 어댑터와 같아야 한다 (PR #92 리뷰 P1)."""
+    from robot_adapter import diff_drive_core as dd
+    assert ts.DD_HEADING_TOLERANCE_RAD == dd.HEADING_TOLERANCE_RAD
+    assert ts.DD_K_ANGULAR == dd.K_ANGULAR
+    assert ts.DD_K_LINEAR == dd.K_LINEAR
+    assert ts.DD_MAX_ANGULAR == dd.MAX_ANGULAR
+    assert ts.GOAL_TOLERANCE_M == dd.ARRIVAL_TOLERANCE_M
+
+
+def test_curved_diff_drive_path_hits_robot_off_straight_line():
+    """시작 yaw 49°에서 (3, 0)으로 가면 실제 경로가 직선 위로 휘어 (0.55, 0.75)의 로봇과 닿는다.
+    직선 가정이면 PASS가 나오던 리뷰 재현 사례."""
+    r = req(target=(3.0, 0.0), workers=(), speed=0.4)
+    r["state"]["robots"][0]["yaw_rad"] = math.radians(49)
+    r["state"]["robots"].append({"robot_id": "robot-02", "frame_id": "world", "position": [0.55, 0.75, 0.0],
+                                 "yaw_rad": 0.0, "robot_type": "MOBILE"})
+    r["state"]["zones"] = []
+    assert ts.simulate(r)["result"] == "COLLISION"
+
+
+def test_twin_robot_yaw_is_radians():
+    """yaw_rad는 라디안이다. MuJoCo euler 기본 단위(도)로 읽히면 회전이 57배 작아진다."""
+    from twin import build_twin
+    state = req()["state"]
+    state["robots"][0]["yaw_rad"] = math.radians(49)
+    model, _ = build_twin(state)
+    quat = model.body("robot:robot-01").quat
+    assert 2 * math.atan2(quat[3], quat[0]) == pytest.approx(math.radians(49), abs=1e-6)

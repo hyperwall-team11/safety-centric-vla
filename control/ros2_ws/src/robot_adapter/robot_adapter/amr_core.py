@@ -45,7 +45,11 @@ class AmrCore(DiffDriveCore):
     def handle_arm_result(self, result, now):
         params = (self.current or {}).get("parameters") or {}
         events = super().handle_arm_result(result, now)
-        if events and events[-1].get("success"):
+        if "held_object_id" in result:
+            # 브리지가 보낸 실제 적재 상태가 기준이다. E-Stop·CANCEL이 완료 결과보다 먼저 처리돼
+            # 결과 자체는 무시되더라도(이미 보고한 제안) 적재 상태는 여기서 다시 맞춘다 (PR #104 리뷰 P1)
+            self.holding = result["held_object_id"]
+        elif events and events[-1].get("success"):
             self.holding = params.get("object_id") if params.get("manipulation") == "PICK" else None
         return events
 

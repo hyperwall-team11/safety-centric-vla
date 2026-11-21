@@ -43,6 +43,15 @@ UNSAFE_DISTANCE_M = 0.6
 MAX_HORIZON_S = 30.0
 
 GOAL_TOLERANCE_M = 0.05
+# MOVE_TO 경로는 실제 어댑터(robot_adapter/diff_drive_core.py)와 같은 제어기로 굴려 본다 (PR #92 리뷰 P1).
+# 직선을 가정하면 회전하며 전진하는 실제 궤적과 최대 수십 cm 어긋난다. 값은 diff_drive_core와 같아야 하며
+# tests/test_twin_simulate.py가 둘이 같은지 확인한다
+DD_HEADING_TOLERANCE_RAD = math.radians(50)
+DD_K_ANGULAR = 2.0
+DD_K_LINEAR = 1.0
+DD_MAX_ANGULAR = 0.8
+# MOVE_TO는 바닥 평면(z=0) 이동만 판정한다. target_pose z가 이 범위를 벗어나면 판정 불가(ERROR)
+PLANAR_Z_TOLERANCE_M = 0.05
 SNAPSHOT_CLOCK_SKEW_S = 0.5  # observed_at이 snapshot_at보다 이만큼 넘게 미래면 시계 오류로 거부
 MAX_BODY_BYTES = 1_000_000
 # robot_type이 없는 로봇은 가장 큰 반경의 형상으로 보수적으로 둔다
@@ -105,7 +114,7 @@ def simulate(req):
     snapshot_id = req.get("snapshot_id") if isinstance(req, dict) else None
     try:
         return _simulate(req, started)
-    except (SimulationError, TwinError, KeyError, TypeError, ValueError) as exc:
+    except (SimulationError, TwinError, arms.ArmModelMissing, KeyError, TypeError, ValueError) as exc:
         return _response("ERROR", snapshot_id, started, detail=str(exc))
 
 
@@ -134,6 +143,10 @@ def _simulate(req, started):
     if not isinstance(position, (list, tuple)) or len(position) != 3:
         raise SimulationError("target_pose.position needs [x, y, z]")
     goal = (float(position[0]), float(position[1]))
+    goal_z = float(position[2])
+    if not (math.isfinite(goal_z) and abs(goal_z) <= PLANAR_Z_TOLERANCE_M):
+        raise SimulationError(f"MOVE_TO is planar: target_pose z must be within "
+                              f"{PLANAR_Z_TOLERANCE_M} m of 0, got {position[2]!r}")
     speed = float(action.get("speed_limit"))
     if not (math.isfinite(speed) and speed > 0) or not all(math.isfinite(v) for v in goal):
         raise SimulationError("speed_limit and target_pose must be finite, speed_limit > 0")
@@ -144,7 +157,11 @@ def _simulate(req, started):
         robot.setdefault("robot_type", CONSERVATIVE_ROBOT_TYPE)
     if robot_id not in {r.get("robot_id") for r in robots}:
         raise SimulationError(f"robot {robot_id!r} is not in state.robots")
-    model, data = build_twin({**state, "robots": robots})
+    if any(r.get("robot_model") in arms.ARM_MODELS for r in robots):
+        # 로봇 팔도 장애물이다. 원기둥 대신 실제 팔 모델(현재 관절각)을 붙여 접촉을 본다
+        model, data, _ = build_manipulation_twin({**state, "robots": robots})
+    else:
+        model, data = build_twin({**state, "robots": robots})
 
     name = f"robot:{robot_id}"
     geom_id = model.geom(name).id
@@ -173,20 +190,27 @@ def _simulate(req, started):
         return min((math.dist((x, y), w) - robot_radius - WORKER_BODY_RADIUS_M for w in workers),
                    default=None)
 
-    distance = math.dist(start, goal)
     dt = float(model.opt.timestep)
-    horizon = min(distance / speed, MAX_HORIZON_S)
-    steps = math.ceil(horizon / dt - 1e-9)
     min_gap = gap(*start)
     if _robot_contacts(model, data, geom_id):
         return _response("COLLISION", snapshot_id, started, min_distance=min_gap, contact_at=0.0)
 
+    # 차동 구동 제어기를 그대로 적분한다: 방향 오차가 50°를 넘으면 제자리 회전, 아니면 회전하며 전진
+    x, y, heading = start[0], start[1], yaw
     t = 0.0
+    steps = math.ceil(MAX_HORIZON_S / dt - 1e-9)
     for step in range(1, steps + 1):
-        t = min(step * dt, horizon)
-        frac = min(speed * t / distance, 1.0) if distance > 0 else 1.0
-        x = start[0] + (goal[0] - start[0]) * frac
-        y = start[1] + (goal[1] - start[1]) * frac
+        dx, dy = goal[0] - x, goal[1] - y
+        dist = math.hypot(dx, dy)
+        if dist <= GOAL_TOLERANCE_M:
+            break
+        err = math.atan2(math.sin(math.atan2(dy, dx) - heading), math.cos(math.atan2(dy, dx) - heading))
+        w = max(-DD_MAX_ANGULAR, min(DD_MAX_ANGULAR, DD_K_ANGULAR * err))
+        v = 0.0 if abs(err) > DD_HEADING_TOLERANCE_RAD else min(speed, DD_K_LINEAR * dist)
+        x += v * math.cos(heading) * dt
+        y += v * math.sin(heading) * dt
+        heading += w * dt
+        t = step * dt
         set_world(x, y)
         mujoco.mj_forward(model, data)
         g = gap(x, y)
@@ -301,17 +325,24 @@ def _simulate_manipulate(action, state, snapshot_id, started):
     workers = [g for g in range(model.ngeom) if model.geom(g).name.startswith("worker:")]
     fromto = np.zeros(6)
 
-    def gap():
-        # 팔·공구 표면과 작업자 몸 표면 사이 거리. 트윈의 작업자 캡슐에는 CV 여유 반경이 더해져 있어 다시 더한다
+    def gap(held):
+        # 팔·공구(들고 있으면 물체 포함) 표면과 작업자 몸 표면 사이 거리.
+        # 트윈의 작업자 캡슐에는 CV 여유 반경이 더해져 있어 다시 더한다
+        mine = list(kin.geom_ids) + ([obj_geom] if held else [])
         best = None
-        for g in kin.geom_ids:
+        for g in mine:
             for w in workers:
                 d = mujoco.mj_geomDistance(model, data, g, w, 10.0, fromto) + WORKER_MARGIN_M
                 best = d if best is None else min(best, d)
         return best
 
-    def contact():
-        own = kin.body_ids
+    own = kin.body_ids
+    # 들고 있는 물체와 부딪힐 수 있는 형상: 팔 자신과 물체를 뺀 충돌 형상 전부(작업자·다른 물체·다른 로봇)
+    held_targets = [g for g in range(model.ngeom)
+                    if g != obj_geom and model.geom_bodyid[g] not in own
+                    and (model.geom_contype[g] or model.geom_conaffinity[g])]
+
+    def contact(held):
         for c in data.contact[:data.ncon]:
             b1, b2 = model.geom_bodyid[c.geom1], model.geom_bodyid[c.geom2]
             mine1, mine2 = b1 in own, b2 in own
@@ -319,14 +350,20 @@ def _simulate_manipulate(action, state, snapshot_id, started):
                 continue  # 다른 물체끼리이거나 팔 자신의 링크끼리
             other = c.geom2 if mine1 else c.geom1
             if other == obj_geom:
-                continue  # 잡는 대상 물체와의 접촉은 정상
+                continue  # 잡는(들고 있는) 대상 물체와 팔의 접촉은 정상
             return True
+        if held:
+            # 물체와 작업자는 둘 다 mocap(고정) 바디라 MuJoCo가 접촉을 만들지 않으므로 거리로 직접 본다
+            for g in held_targets:
+                if mujoco.mj_geomDistance(model, data, obj_geom, g, 0.0, fromto) < 0:
+                    return True
         return False
 
     plan = arms.plan_manipulation(kin, data, kin.get(data), manipulation, goal, speed,
                                   dt=float(model.opt.timestep), holding=manipulation == "PLACE")
-    min_gap = gap()
-    if contact():
+    held = manipulation == "PLACE"
+    min_gap = gap(held)
+    if contact(held):
         return _response("COLLISION", snapshot_id, started, min_distance=min_gap, contact_at=0.0)
     t = 0.0
     for p in plan.points:
@@ -339,10 +376,10 @@ def _simulate_manipulate(action, state, snapshot_id, started):
         if p.holding:
             data.mocap_pos[obj_mocap] = kin.tcp(data)
         mujoco.mj_forward(model, data)
-        g = gap()
+        g = gap(p.holding)
         if g is not None:
             min_gap = g if min_gap is None else min(min_gap, g)
-        if contact():
+        if contact(p.holding):
             return _response("COLLISION", snapshot_id, started, min_distance=min_gap, contact_at=t, horizon=t)
     if min_gap is not None and min_gap < UNSAFE_DISTANCE_M:
         return _response("UNSAFE_DISTANCE", snapshot_id, started, min_distance=min_gap, horizon=t)
