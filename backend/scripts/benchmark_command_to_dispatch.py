@@ -3,11 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
 import statistics
 import sys
 from dataclasses import asdict, dataclass
-from time import perf_counter, time
+from time import monotonic, sleep
 from typing import Any, Callable
 from urllib import error, request
 from uuid import uuid4
@@ -16,6 +15,8 @@ from uuid import uuid4
 KPI9_THRESHOLD_MS = 1000.0  # 개발계획서 v1.0 9장 KPI 9
 SCENARIO_A_RUNS = 10  # 사용자정의서 시스템구조도 v0.1 시나리오 A
 SCENARIO_A_MIN_SUCCESS_RATE_PERCENT = 90.0  # 사용자정의서 시스템구조도 v0.1 시나리오 A
+ACK_POLL_INTERVAL_SECONDS = 0.02
+RESULT_POLL_INTERVAL_SECONDS = 0.1
 
 
 @dataclass(frozen=True)
@@ -75,15 +76,67 @@ class BackendClient:
         except error.URLError as exc:
             raise RuntimeError(f"Backend 연결 실패({self.base_url}): {exc.reason}") from exc
 
+    def get(self, path: str) -> Any:
+        req = request.Request(
+            f"{self.base_url}{path}",
+            method="GET",
+            headers={"Accept": "application/json"},
+        )
+        try:
+            with request.urlopen(req, timeout=self.timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"GET {path} → HTTP {exc.code}: {detail}") from exc
+        except error.URLError as exc:
+            raise RuntimeError(f"Backend 연결 실패({self.base_url}): {exc.reason}") from exc
 
-def register_robot(client: BackendClient, robot_id: str) -> None:
+
+def wait_for_ack(client: BackendClient, proposal_id: str, timeout_seconds: float) -> dict[str, Any]:
+    deadline = monotonic() + timeout_seconds
+    while True:
+        record = client.get(f"/action-proposals/{proposal_id}/ack")
+        if record.get("status") != "PENDING":
+            return record
+        if monotonic() >= deadline:
+            raise RuntimeError("Backend ACK 기록 대기 시간을 초과했습니다.")
+        sleep(ACK_POLL_INTERVAL_SECONDS)
+
+
+def wait_for_result(
+    client: BackendClient,
+    task_id: str,
+    proposal_id: str,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    """실제 CTL RESULT가 반영될 때까지 기다린다. 벤치마크가 결과를 대신 만들지 않는다."""
+    deadline = monotonic() + timeout_seconds
+    while True:
+        proposals = client.get(f"/task-orders/{task_id}/action-proposals")
+        proposal = next(
+            (item for item in proposals if item.get("proposal_id") == proposal_id),
+            None,
+        )
+        if proposal is None:
+            raise RuntimeError("실행 중인 ActionProposal을 조회할 수 없습니다.")
+        if proposal.get("status") != "EXECUTING":
+            return proposal
+        if monotonic() >= deadline:
+            raise RuntimeError("실제 CTL RESULT 대기 시간을 초과했습니다.")
+        sleep(RESULT_POLL_INTERVAL_SECONDS)
+
+
+def register_robot(client: BackendClient, robot_id: str, frame_id: str) -> None:
+    existing = client.get("/robots")
+    if any(robot.get("robot_id") == robot_id for robot in existing):
+        return
     client.post("/robots", {
         "robot_id": robot_id,
         "robot_type": "MOBILE",
         "control_adapter": "mock-mobile-adapter",
         "status": "IDLE",
         "pose": {
-            "frame_id": "map",
+            "frame_id": frame_id,
             "position": {"x": 0, "y": 0, "z": 0},
             "orientation": {"x": 0, "y": 0, "z": 0, "w": 1},
         },
@@ -92,20 +145,28 @@ def register_robot(client: BackendClient, robot_id: str) -> None:
     })
 
 
-def run_trial(client: BackendClient, robot_id: str, index: int, threshold_ms: float) -> Trial:
-    instruction = f"{robot_id} 로봇을 좌표 ({index + 1}, 0, 0)로 이동해"
-    started = perf_counter()
+def run_trial(
+    client: BackendClient,
+    robot_id: str,
+    index: int,
+    threshold_ms: float,
+    *,
+    frame_id: str = "world",
+    result_timeout_seconds: float = 120.0,
+) -> Trial:
+    target_x = 1 if index % 2 == 0 else 0
+    instruction = f"{robot_id} 로봇을 좌표 ({target_x}, 0, 0)로 이동해"
     task_id: str | None = None
     proposal_id: str | None = None
     elapsed_ms: float | None = None
-    execution_requested = False
+    ack_succeeded = False
     finalized = False
     failure: str | None = None
 
     try:
         task = client.post(
             "/task-orders/from-natural-language",
-            {"instruction": instruction},
+            {"instruction": instruction, "frame_id": frame_id},
             {"Idempotency-Key": f"benchmark-task-{uuid4()}"},
         )
         task_id = task["task_id"]
@@ -119,42 +180,50 @@ def run_trial(client: BackendClient, robot_id: str, index: int, threshold_ms: fl
         if approved.get("status") != "APPROVED":
             raise RuntimeError(f"안전 평가가 승인되지 않았습니다: {approved.get('status')}")
 
-        execution_requested = True
         executing = client.post(f"/action-proposals/{proposal_id}/execute", {})
-        elapsed_ms = (perf_counter() - started) * 1000
         if executing.get("status") != "EXECUTING":
             raise RuntimeError(f"Action publish 상태가 EXECUTING이 아닙니다: {executing.get('status')}")
+        ack_failure: str | None = None
+        try:
+            ack = wait_for_ack(
+                client,
+                proposal_id,
+                max(client.timeout, threshold_ms / 1000 + 1),
+            )
+            elapsed_ms = ack.get("command_to_ack_ms")
+            if ack.get("status") != "ACKNOWLEDGED" or elapsed_ms is None:
+                ack_failure = f"어댑터 ACK가 기한 내 도착하지 않았습니다: {ack.get('status')}"
+            else:
+                ack_succeeded = True
+        except RuntimeError as exc:
+            ack_failure = str(exc)
 
-        client.post(
-            f"/action-proposals/{proposal_id}/result",
-            {"status": "SUCCEEDED", "detail": "지연 측정 후 상태 복구"},
+        completed = wait_for_result(
+            client,
+            task_id,
+            proposal_id,
+            result_timeout_seconds,
         )
+        if completed.get("status") != "COMPLETED":
+            raise RuntimeError(f"실제 CTL RESULT가 성공이 아닙니다: {completed.get('status')}")
         finalized = True
+        failure = ack_failure
     except (KeyError, RuntimeError) as exc:
         failure = str(exc)
-    finally:
-        if execution_requested and proposal_id is not None and not finalized:
-            try:
-                client.post(
-                    f"/action-proposals/{proposal_id}/result",
-                    {
-                        "status": "FAILED",
-                        "reason_code": "TIMEOUT",
-                        "detail": "지연 측정 실패 후 실행 상태 복구",
-                    },
-                )
-            except RuntimeError as cleanup_exc:
-                cleanup_message = f"실행 상태 복구 실패: {cleanup_exc}"
-                failure = f"{failure}; {cleanup_message}" if failure else cleanup_message
 
-    execution_succeeded = finalized and failure is None
+    execution_succeeded = finalized
     return Trial(
         index=index + 1,
         execution_succeeded=execution_succeeded,
         elapsed_ms=elapsed_ms,
         task_id=task_id,
         proposal_id=proposal_id,
-        latency_passed=execution_succeeded and elapsed_ms is not None and elapsed_ms <= threshold_ms,
+        latency_passed=(
+            execution_succeeded
+            and ack_succeeded
+            and elapsed_ms is not None
+            and elapsed_ms <= threshold_ms
+        ),
         error=failure,
     )
 
@@ -170,28 +239,52 @@ def main(
     argv: list[str] | None = None,
     client_factory: Callable[[str, float], BackendClient] = BackendClient,
 ) -> int:
-    parser = argparse.ArgumentParser(description="자연어 명령부터 승인 Action publish API 응답까지 KPI 9 proxy 측정")
+    parser = argparse.ArgumentParser(description="자연어 명령부터 어댑터 ACK까지 KPI 9 측정")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--runs", type=int, default=SCENARIO_A_RUNS)
     parser.add_argument("--threshold-ms", type=float, default=KPI9_THRESHOLD_MS)
     parser.add_argument("--timeout", type=float, default=5)
+    parser.add_argument(
+        "--result-timeout",
+        type=float,
+        default=120,
+        help="각 회차에서 실제 CTL RESULT를 기다리는 최대 시간(초)",
+    )
+    parser.add_argument(
+        "--robot-id",
+        default="robot-01",
+        help="실행 중인 CTL 어댑터와 같은 Robot ID",
+    )
+    parser.add_argument("--frame-id", default="world")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     if args.runs < 1:
         parser.error("--runs는 1 이상이어야 합니다.")
+    if args.result_timeout <= 0:
+        parser.error("--result-timeout은 0보다 커야 합니다.")
 
     client = client_factory(args.base_url, args.timeout)
-    robot_id = f"benchmark-{os.getpid()}-{int(time())}"
+    robot_id = args.robot_id
     try:
-        register_robot(client, robot_id)
+        register_robot(client, robot_id, args.frame_id)
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
-    trials = [run_trial(client, robot_id, index, args.threshold_ms) for index in range(args.runs)]
+    trials = [
+        run_trial(
+            client,
+            robot_id,
+            index,
+            args.threshold_ms,
+            frame_id=args.frame_id,
+            result_timeout_seconds=args.result_timeout,
+        )
+        for index in range(args.runs)
+    ]
     summary = build_summary(trials, args.threshold_ms)
     report = {
-        "scope": "KPI 9 proxy (어댑터 ACK 제외): 자연어 TaskOrder 생성 → 안전 평가 → 승인 Action publish API 응답",
+        "scope": "KPI 9: 자연어 명령 Backend 수신 → 어댑터 ACK Backend 수신",
         "scenario_a_min_success_rate_percent": SCENARIO_A_MIN_SUCCESS_RATE_PERCENT,
         "summary": summary,
         "trials": [asdict(trial) for trial in trials],

@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 
 NonBlankString = Annotated[
@@ -497,6 +497,34 @@ class AdapterResultReport(OntologyModel):
         if self.status == AdapterResultStatus.FAILED and self.reason_code is None:
             raise ValueError("FAILED 결과에는 reason_code가 필요합니다.")
         return self
+
+
+class AdapterAckStatus(str, Enum):
+    PENDING = "PENDING"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    TIMED_OUT = "TIMED_OUT"
+
+
+class AdapterAckEvent(OntologyModel):
+    kind: Literal["ACK"] = "ACK"
+    proposal_id: NonBlankString
+    robot_id: NonBlankString
+    timestamp: AwareDatetime
+
+
+class AdapterAckRecord(OntologyModel):
+    proposal_id: NonBlankString
+    task_id: NonBlankString
+    robot_id: NonBlankString
+    status: AdapterAckStatus = AdapterAckStatus.PENDING
+    command_received_at: AwareDatetime
+    dispatched_at: AwareDatetime
+    timeout_at: AwareDatetime
+    adapter_ack_at: AwareDatetime | None = None
+    ack_received_at: AwareDatetime | None = None
+    command_to_ack_ms: float | None = Field(default=None, ge=0)
+    dispatch_to_ack_ms: float | None = Field(default=None, ge=0)
+    duplicate_count: int = Field(default=0, ge=0)
 
 
 class Decision(str, Enum):

@@ -124,7 +124,9 @@ def _keep_out_result(proposal, task, zones):
 WORKER_SNAPSHOT_MAX_AGE_SECONDS = 2.0  # ONT MVP 정책
 
 
-def default_rules(*, perception_enabled: bool = False) -> list[SafetyRule]:
+def default_rules(
+    *, perception_enabled: bool = False, collision_simulation_enabled: bool = False
+) -> list[SafetyRule]:
     return [
         SafetyRule(
             rule_id="rule-speed-limit",
@@ -167,6 +169,17 @@ def default_rules(*, perception_enabled: bool = False) -> list[SafetyRule]:
             condition={},
             severity=RuleSeverity.CRITICAL,
             enabled=perception_enabled,
+            on_violation=ViolationAction.REJECT,
+        ),
+        # 스키마 v1.1 5장 9번: 1~8번을 통과한 후보만 MuJoCo ② 사전 시뮬레이션으로 판정한다.
+        # 판정은 HTTP 대기 중 저장소 잠금을 풀어야 해서 evaluate_proposal이 아니라 main.py에서 한다.
+        SafetyRule(
+            rule_id="rule-collision",
+            rule_type=RuleType.COLLISION,
+            target_robot_type="ALL",
+            condition={"simulation_result": "PASS"},
+            severity=RuleSeverity.CRITICAL,
+            enabled=collision_simulation_enabled,
             on_violation=ViolationAction.REJECT,
         ),
     ]

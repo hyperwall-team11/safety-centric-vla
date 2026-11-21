@@ -71,6 +71,7 @@ class ExecutionResultApiTest(unittest.TestCase):
         self.assertEqual(store.robots["robot-01"].status, "IDLE")
         self.assertEqual(store.logs[-1].decision, "COMPLETE")
         self.assertEqual(store.logs[-1].result_message, "목적지 도착")
+        self.assertNotIn(task["task_id"], store.task_received_at)
 
     def test_unsupported_returns_task_to_planning_for_replan(self) -> None:
         task, proposal = self.start_execution()
