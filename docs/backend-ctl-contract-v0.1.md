@@ -2,7 +2,7 @@
 
 - 상태: Draft (팀 승인 전)
 - 작성일: 2026-11-04
-- 개정: 2026-11-06 v0.2 — 가상 CCTV 영상 출력(3장)과 MuJoCo ② 사전 시뮬레이션 서비스(13장) 추가. 기존 1~12장 변경 없음. 파일명은 링크 유지를 위해 v0.1 그대로 둔다.
+- 개정: 2026-11-06 v0.2 — 가상 CCTV 영상 출력(3장)과 MuJoCo ② 사전 시뮬레이션 서비스(13장) 추가. 2026-11-15 3장에 CCTV 보정 파일 필드 추가(#79). 기존 1~12장 변경 없음. 파일명은 링크 유지를 위해 v0.1 그대로 둔다.
 - 적용 대상: `backend` 검증 서버, `control` ROS 2 제어 어댑터
 - 승인 필요: ONT 임성현, CTL 최민서
 - 관련 이슈: #28
@@ -60,6 +60,19 @@ Backend가 ROS 2 노드를 같은 프로세스에서 실행하지 않는 경우,
 - 시연용 안내 문구는 CV 입력 영상에 넣지 않는다.
 - 작업자 정답 좌표(`/sim/worker_pose`)는 평가용이며 CV·MuJoCo ②·Backend 안전 판정에 쓰지 않는다.
 - 렌더러가 멈추면 프레임이 끊기고, Backend는 `OBSERVATION_GAP`(2초)으로 실행을 거부한다.
+- CCTV 보정 파일 [v0.2]: CV는 카메라 위치·방향·렌즈를 `mujoco-demo/cameras/*.json` 보정 파일에서 읽는다(형식 상세: `mujoco-demo/README.md` "카메라 보정 파일"). 시나리오 CCTV 파일 `mujoco-demo/cameras/scenario_cctv.json`은 `scenario_scene.xml`에서 생성하므로, CTL이 장면의 CCTV를 바꾸면 이 파일도 다시 만든다.
+
+  | 필드 | 필수 | 값 |
+  |---|---|---|
+  | `version` | 예 | `1` (파일 최상위) |
+  | `sensor_id`, `topic` | `sensor_id` 예 | `cctv_{n}`, `/cctv_{n}/image_raw`(생략 시 이 값) |
+  | `width`, `height` | 예 | 영상 크기(px). 다른 크기의 프레임은 투영하지 않아 Sensor가 `DEGRADED`가 된다 |
+  | `position_m` | 예 | 카메라 위치 `[x, y, z]`(m) |
+  | `rotation_cam_to_world` 또는 `quaternion_wxyz` | 둘 중 하나 | 카메라 축을 월드에서 본 3×3 행렬 또는 `[w, x, y, z]` |
+  | `world_frame` | 예 | `mujoco_z_up`(Backend Zone과 같은 월드) 또는 `threejs_y_up` |
+  | `rotation_convention` | 예 | `mujoco_camera`(x 오른쪽, y 위, -z 앞) 또는 `ros_optical`(x 오른쪽, y 아래, z 앞) |
+  | `fovy_deg` 또는 `intrinsics` | 둘 중 하나 | 세로 화각(°) 또는 `{fx, fy, cx, cy}`(px) |
+  | `ground_plane_z_m` | 아니오 | 바닥 높이(m), 기본 `0.0` |
 
 `robot_topic_id`는 원본 `robot_id`의 영문·숫자·`_` 외 문자를 `_`로 바꾸고, 첫 문자가 숫자이면 `r_`를 붙인다.
 

@@ -18,6 +18,7 @@ class OpenApiContractTest(unittest.TestCase):
             ("POST", "/zones"),
             ("GET", "/zones"),
             ("PUT", "/sensors/{sensor_id}"),
+            ("GET", "/workers/snapshot"),
             ("PUT", "/workers/snapshot"),
             ("GET", "/task-orders"),
             ("POST", "/task-orders/preview"),
@@ -30,6 +31,7 @@ class OpenApiContractTest(unittest.TestCase):
             ("POST", "/action-proposals/{proposal_id}/evaluate"),
             ("POST", "/action-proposals/{proposal_id}/execute"),
             ("POST", "/action-proposals/{proposal_id}/result"),
+            ("GET", "/hazards"),
             ("POST", "/hazards"),
             ("POST", "/hazards/{hazard_id}/resolve"),
             ("GET", "/safety-rules"),
@@ -39,6 +41,7 @@ class OpenApiContractTest(unittest.TestCase):
         self.assertEqual(schema["info"]["version"], "0.2.0")
         self.assertEqual(len(schema["paths"]), 19)
         self.assertEqual(actual_operations, expected_operations)
+        self.assertEqual(len(actual_operations), 24)
         list_operation = schema["paths"]["/task-orders"]["get"]
         self.assertEqual(
             {parameter["name"] for parameter in list_operation["parameters"]},
@@ -47,6 +50,15 @@ class OpenApiContractTest(unittest.TestCase):
         self.assertIn(
             "X-Total-Count",
             list_operation["responses"]["200"]["headers"],
+        )
+        hazard_list_operation = schema["paths"]["/hazards"]["get"]
+        self.assertEqual(
+            {parameter["name"] for parameter in hazard_list_operation["parameters"]},
+            {"status", "severity", "robot_id"},
+        )
+        self.assertIn(
+            "404",
+            schema["paths"]["/workers/snapshot"]["get"]["responses"],
         )
 
 
