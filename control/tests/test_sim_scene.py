@@ -69,3 +69,25 @@ def test_scene_404_when_not_loaded():
     finally:
         stop.set()
         srv.shutdown()
+
+
+PLANT = SCENE.with_name("plant_scene.xml")
+
+
+def test_plant_props_on_map():
+    """plant_scene의 주변 설비(prop_*)를 바닥 외곽으로 내보낸다."""
+    props = {p["name"]: p for p in load_static_scene(str(PLANT))["props"]}
+    fork = props["prop_forklift_1"]  # box pos (4.6, -3.0), size (1.3, 0.6)
+    assert fork["label"] == "지게차"
+    xs, ys = [p[0] for p in fork["points"]], [p[1] for p in fork["points"]]
+    assert (min(xs), max(xs), min(ys), max(ys)) == pytest.approx((3.3, 5.9, -3.6, -2.4))
+    tank = props["prop_tank_1"]  # 세운 원기둥 pos (-3.5, -4.5), r 1.1 → 12각형
+    assert len(tank["points"]) == 12
+    assert all(math.hypot(x + 3.5, y + 4.5) == pytest.approx(1.1, abs=1e-3) for x, y in tank["points"])
+    drum = props["prop_drum_1"]  # 눕힌 원기둥(euler 90 0 0): 길이 1.2 × 지름 1.6 사각형
+    xs, ys = [p[0] for p in drum["points"]], [p[1] for p in drum["points"]]
+    assert sorted([max(xs) - min(xs), max(ys) - min(ys)]) == pytest.approx([1.2, 1.6])
+
+
+def test_scenario_has_no_props(static):
+    assert static["props"] == []

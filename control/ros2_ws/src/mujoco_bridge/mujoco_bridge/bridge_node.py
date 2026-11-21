@@ -38,6 +38,7 @@ from std_msgs.msg import Bool
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
 ANY_NUMBER = ParameterDescriptor(dynamic_typing=True)  # 15와 15.0을 모두 받는다
+SLOW_CALLBACK_S = 0.2  # 이보다 오래 걸린 물리 콜백은 경고
 DUPLICATE_CHECK_S = 5.0  # 카메라 토픽에 다른 발행자가 있는지 확인하는 주기
 MAX_CATCHUP_S = 0.1  # 한 번의 물리 타이머에서 따라잡을 최대 시뮬 시간 (밀리면 실시간보다 느려짐)
 
@@ -186,6 +187,12 @@ class MujocoBridge(Node):
             if self.worker:
                 self.worker.apply(self.sim.model, self.sim.data)
             self.sim.step(min(lag, MAX_CATCHUP_S))
+        spent = time.monotonic() - now
+        if spent > SLOW_CALLBACK_S:
+            # 콜백이 길면 그동안 /odom 등 다른 발행이 멈춘다 (어댑터는 /odom 0.5초 끊김을 HW_ERROR로 본다)
+            self.get_logger().warning(
+                f"물리 콜백 {spent * 1000:.0f} ms (lag {lag * 1000:.0f} ms)", throttle_duration_sec=5.0
+            )
         if now - self.last_rtf_log >= 10.0:
             rtf = (self.sim.time - self.sim_start) / (now - self.wall_start)
             self.get_logger().info(f"sim {self.sim.time:.1f} s / wall {now - self.wall_start:.1f} s "
