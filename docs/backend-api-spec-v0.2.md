@@ -28,6 +28,7 @@
 | `404` | 요청한 Robot, TaskOrder, ActionProposal 또는 HazardEvent가 없음 | `{"detail":"...찾을 수 없습니다."}` |
 | `409` | 현재 상태에서 실행 불가, ID 중복, 활성 Proposal 또는 멱등성 충돌 | `{"detail":"..."}` |
 | `422` | JSON 스키마 위반, 자연어 해석 실패 또는 안전한 제안 생성 불가 | FastAPI 검증 오류 배열 또는 `{"detail":"..."}` |
+| `503` | VLA 추론 서비스 연결 실패·시간 초과 또는 제어 어댑터 전송 실패 | `{"detail":"..."}` |
 
 ## 2. 구현 엔드포인트
 
@@ -229,7 +230,21 @@ MANIPULATE 예:
 - MOVE_TO에 물체 또는 manipulation이 지정됨
 - TaskOrder v1.1로 안전하게 표현할 수 없는 STOP/RESUME 명령
 
+VLA Provider 추론은 위험 이벤트·Worker 관측·Robot 상태 갱신을 지연시키지 않도록
+저장소 잠금 밖에서 실행한다. Backend는 추론 전 TaskOrder·Robot·Zone을 스냅샷화하고,
+저장 직전에 현재 문맥과 활성 Proposal·멱등성 기록을 다시 검증한다. 추론 중
+문맥이 변경되면 `409`로 거부하고 아무 제안도 저장하지 않는다. Provider 예외는 `503`으로
+정규화하며 TaskOrder 상태를 변경하지 않는다.
+
 `GET /task-orders/{task_id}/action-proposals`는 해당 TaskOrder의 Proposal만 배열로 반환한다.
+
+외부 VLA가 `POST /action-proposals`로 등록하는 제안은 요청 모델 검증 후 TaskOrder 문맥과도
+대조한다. `action_type`, `robot_id`, `parameters.target_pose`, MANIPULATE의 `object_id`,
+`frame_id`가 TaskOrder·Robot과 다르면 모델이 작업 문맥을 바꾼 것으로 보고 `422`로 거부한다.
+속도·경로의 안전성은 이 문맥 검증에서 승인하지 않고 이후 Action 제출 기준 평가에서 판정한다.
+`MOVE_TO trajectory`가 있으면 시작점은 Robot 현재 위치와 0.05m 이내여야 한다. 좌표
+목적지 또는 같은 좌표계의 Zone `navigation_target`이 있으면 끝점도 해당 좌표와 0.05m
+이내여야 한다. 물리 좌표가 없는 Zone은 `target_pose`의 Zone ID 일치만 검증한다.
 
 자동 생성한 `MOVE_TO`는 로봇의 현재 위치와 좌표 목적지 또는
 `Zone.geometry.navigation_target`을 잇는 직선 `trajectory`를 채운다.
@@ -238,7 +253,8 @@ MANIPULATE 예:
 
 이 직선은 백엔드의 사전 검사에 사용하는 예상 경로다. 현재 CTL 이동 제어기는
 목표 좌표와 주행 중 `/odom`을 바탕으로 속도와 방향을 계산하므로 실제 궤적과의
-일치는 보장되지 않는다. 실행 직전 Robot 위치와 예상 경로 출발점은 CTL diff-drive의
+일치는 보장되지 않는다. 자동 생성·외부 직접 등록 여부와 관계없이 실행 직전
+Robot 위치와 예상 경로 출발점은 CTL diff-drive의
 도착 판정과 같은 0.05m 허용 오차로 비교하며, 이를 넘으면 Proposal을 거절하고 재계획한다.
 CTL의 최종 실행 경로와 실시간 위치를 안전 검증에 반영하는 작업은 후속 연동 범위다.
 
@@ -270,7 +286,7 @@ CTL의 최종 실행 경로와 실시간 위치를 안전 검증에 반영하는
 
 `MOVE_TO parameters.speed_limit`와 최상위 `speed_limit`는 같아야 한다. `SAFETY` priority는 시스템이 발행하는 STOP·RESUME에만 허용한다.
 
-TaskOrder 기반 생성기는 현재 MOVE_TO와 MANIPULATE만 만든다. 외부 VLA는 `POST /action-proposals`로 네 action_type을 직접 등록할 수 있으나, TaskOrder·Robot 존재 및 일치, 상태, 중복 활성 Proposal 검사를 모두 통과해야 한다.
+TaskOrder 기반 생성기와 외부 VLA 직접 등록은 현재 `MOVE_TO`와 `MANIPULATE`만 허용한다. `STOP`·`RESUME`은 일반 VLA 제안이 아니라 별도 안전 제어 경로에서만 생성한다. 직접 등록은 TaskOrder·Robot 존재 및 일치, 상태, 중복 활성 Proposal 검사를 모두 통과해야 한다.
 
 ### 3.5 평가와 실행
 
