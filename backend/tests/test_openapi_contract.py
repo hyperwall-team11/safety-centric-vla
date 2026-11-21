@@ -41,9 +41,9 @@ class OpenApiContractTest(unittest.TestCase):
         }
 
         self.assertEqual(schema["info"]["version"], "0.2.0")
-        self.assertEqual(len(schema["paths"]), 20)
+        self.assertEqual(len(schema["paths"]), 21)
         self.assertEqual(actual_operations, expected_operations)
-        self.assertEqual(len(actual_operations), 25)
+        self.assertEqual(len(actual_operations), 26)
         list_operation = schema["paths"]["/task-orders"]["get"]
         self.assertEqual(
             {parameter["name"] for parameter in list_operation["parameters"]},
