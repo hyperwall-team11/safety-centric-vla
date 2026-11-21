@@ -7,6 +7,11 @@
     ros2 run mujoco_bridge bridge --ros-args -p robot:=simple      # 단순 시험용 바퀴 로봇
     ros2 run mujoco_bridge bridge --ros-args -p worker_motion:=false -p camera_hz:=10.0
     mjpython <install>/lib/mujoco_bridge/bridge --ros-args -p viewer:=true   # 뷰어 (macOS)
+    ros2 run mujoco_bridge bridge --ros-args -p cctv_renderer:=threejs        # CCTV를 Three.js로 렌더 (#55)
+
+cctv_renderer:=threejs이면 고정 CCTV(cctv_1, cctv_2)는 MuJoCo 렌더 대신 Three.js 렌더 영상을 발행한다.
+브리지는 camera_hz로 MuJoCo 상태를 프레임으로 묶어 로컬 HTTP(threejs_port)로 내주고, 렌더러
+(`node render.mjs --ros`)가 렌더한 RGB를 돌려받아 그 프레임의 시뮬레이션 시각으로 발행한다(threejs_live.py).
 
 물리와 렌더는 타이머를 나눈다. 물리 타이머는 시뮬 시각이 실제 시각을 따라가도록 필요한 만큼 스텝을 돌리고
 (기본 timestep 0.002 s = 500Hz), 카메라 타이머는 camera_hz로 렌더한다. 모든 콜백은 rclpy.spin을 돌리는
@@ -33,6 +38,7 @@ from std_msgs.msg import Bool
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
 ANY_NUMBER = ParameterDescriptor(dynamic_typing=True)  # 15와 15.0을 모두 받는다
+DUPLICATE_CHECK_S = 5.0  # 카메라 토픽에 다른 발행자가 있는지 확인하는 주기
 MAX_CATCHUP_S = 0.1  # 한 번의 물리 타이머에서 따라잡을 최대 시뮬 시간 (밀리면 실시간보다 느려짐)
 
 
@@ -77,6 +83,13 @@ class MujocoBridge(Node):
         use_cameras = self.declare_parameter("cameras", True).value
         use_worker = self.declare_parameter("worker_motion", True).value
         use_viewer = self.declare_parameter("viewer", False).value
+        cctv_renderer = self.declare_parameter("cctv_renderer", "mujoco").value
+        if cctv_renderer not in ("mujoco", "threejs"):
+            raise ValueError(f"cctv_renderer must be mujoco or threejs, got {cctv_renderer!r}")
+        root = os.environ.get("PIXI_PROJECT_ROOT", "")
+        threejs_dir = self.declare_parameter("threejs_dir", os.path.join(root, "scripts", "threejs_cctv")).value
+        threejs_data = self.declare_parameter("threejs_data", os.path.join(root, "outputs", "threejs_live", "data")).value
+        threejs_port = int(self.declare_parameter("threejs_port", 8765, ANY_NUMBER).value)
 
         self.sim = simulation.DiffDriveSim(robot, model_path)
         m = self.sim.model
@@ -101,20 +114,34 @@ class MujocoBridge(Node):
 
         cams = {m.camera(i).name for i in range(m.ncam)}
         self.sensors = [s for s, (cam, _, _) in self.scn.CAMERAS.items() if cam in cams] if use_cameras else []
+        # Three.js 모드: 고정 CCTV는 Three.js가, 로봇 카메라는 그대로 MuJoCo가 렌더한다
+        self.threejs_sensors = ([s for s in self.sensors if self.scn.CAMERAS[s][2] == "world"]
+                                if cctv_renderer == "threejs" else [])
+        self.rig_sensors = [s for s in self.sensors if s not in self.threejs_sensors]
         self.rig = None
+        self.live = self.live_server = None
         self.image_pubs, self.info_msgs, self.render_counts = {}, {}, {}
         if self.sensors:
-            # 렌더러는 이 스레드(= spin 스레드)에서 생성
-            self.rig = self.scn.CameraRig(m, self.image_width, self.image_height, self.sensors)
             for sensor in self.sensors:
                 prefix = self.scn.CAMERAS[sensor][1]
                 self.image_pubs[sensor] = (
                     self.create_publisher(Image, f"{prefix}/image_raw", qos_profile_sensor_data),
                     self.create_publisher(CameraInfo, f"{prefix}/camera_info", qos_profile_sensor_data))
                 self.info_msgs[sensor] = self._camera_info(sensor)
+        if self.rig_sensors:
+            # 렌더러는 이 스레드(= spin 스레드)에서 생성
+            self.rig = self.scn.CameraRig(m, self.image_width, self.image_height, self.rig_sensors)
             # 카메라를 한 틱에 한 대씩 돌아가며 렌더 → 한 번에 막히는 시간이 짧아 상태 토픽 주기가 덜 흔들린다
             self.next_camera = 0
-            self.create_timer(1.0 / (self.camera_hz * len(self.sensors)), self._render)
+            self.create_timer(1.0 / (self.camera_hz * len(self.rig_sensors)), self._render)
+        if self.threejs_sensors:
+            self._start_threejs(threejs_dir, threejs_data, threejs_port)
+        if self.sensors:
+            # 다른 브리지가 같은 도메인에서 같은 카메라 토픽을 발행하면 CV 입력에 두 영상이 섞인다
+            self.duplicate_topics = set()
+            self.create_timer(DUPLICATE_CHECK_S, self._check_duplicate_publishers)
+        elif cctv_renderer == "threejs":
+            raise RuntimeError("cctv_renderer:=threejs needs cameras:=true and fixed CCTV cameras in the scene")
 
         self.viewer = None
         if use_viewer:
@@ -132,6 +159,9 @@ class MujocoBridge(Node):
         self.create_timer(1.0 / physics_hz, self._physics)
         self.create_timer(1.0 / state_hz, self._publish_state)
 
+        # 실시간 기준점은 초기화(렌더러·Three.js 장면 준비)가 끝난 뒤로 잡는다. 아니면 시작하자마자 시뮬 시각이 한꺼번에 뛴다
+        self.wall_start = self.last_rtf_log = time.monotonic()
+        self.sim_start = self.sim.time
         max_linear = self.sim.max_wheel_speed * self.sim.wheel_radius
         self.get_logger().info(
             f"MuJoCo bridge ready: {robot} ({model_path or self.sim.spec.model_path.name}), "
@@ -211,23 +241,10 @@ class MujocoBridge(Node):
     def _render(self):
         stamp = self.get_clock().now().to_msg()
         m, d = self.sim.model, self.sim.data
-        sensor = self.sensors[self.next_camera]
-        self.next_camera = (self.next_camera + 1) % len(self.sensors)
+        sensor = self.rig_sensors[self.next_camera]
+        self.next_camera = (self.next_camera + 1) % len(self.rig_sensors)
         pixels = self.rig.render(d, sensor)
-        img = Image()
-        img.header.stamp = stamp
-        img.header.frame_id = f"camera_{sensor}"
-        img.height, img.width = pixels.shape[:2]
-        img.encoding = "rgb8"
-        img.is_bigendian = 0
-        img.step = img.width * 3
-        # bytes를 그대로 넣으면 원소 단위 변환으로 장당 약 70 ms가 걸린다. array('B')는 복사만 한다.
-        img.data = array.array("B", pixels.tobytes())
-        info = self.info_msgs[sensor]
-        info.header.stamp = stamp
-        image_pub, info_pub = self.image_pubs[sensor]
-        image_pub.publish(img)
-        info_pub.publish(info)
+        self._publish_image(sensor, stamp, pixels.shape[1], pixels.shape[0], pixels.tobytes())
         if self.scn.CAMERAS[sensor][2] == "base_link":
             # 로봇 카메라: 머리 관절에 따라 움직이므로 렌더할 때마다 base_link 기준 TF 갱신
             cam_pos, cam_rot = self.scn.camera_pose_world(d, m, self.scn.CAMERAS[sensor][0])
@@ -235,6 +252,69 @@ class MujocoBridge(Node):
             pos, rot = self.scn.relative_pose(base_pos, base_rot, cam_pos, cam_rot)
             self.tf_pub.sendTransform(make_tf(stamp, self.base_frame, f"camera_{sensor}",
                                               pos, self.scn.rot_to_quat(rot)))
+
+    def _publish_image(self, sensor, stamp, width, height, rgb: bytes):
+        img = Image()
+        img.header.stamp = stamp
+        img.header.frame_id = f"camera_{sensor}"
+        img.height, img.width = height, width
+        img.encoding = "rgb8"
+        img.is_bigendian = 0
+        img.step = width * 3
+        # bytes를 그대로 넣으면 원소 단위 변환으로 장당 약 70 ms가 걸린다. array('B')는 복사만 한다.
+        img.data = array.array("B", rgb)
+        info = self.info_msgs[sensor]
+        info.header.stamp = stamp
+        image_pub, info_pub = self.image_pubs[sensor]
+        image_pub.publish(img)
+        info_pub.publish(info)
+
+    def _check_duplicate_publishers(self):
+        for sensor in self.sensors:
+            topic = f"{self.scn.CAMERAS[sensor][1]}/image_raw"
+            count = self.count_publishers(topic)
+            if count > 1 and topic not in self.duplicate_topics:
+                self.get_logger().error(
+                    f"{topic}에 이 브리지 말고도 발행자가 {count - 1}개 더 있습니다. 영상이 섞이므로 다른 브리지를 끄거나 "
+                    f"ROS_DOMAIN_ID를 나누세요")
+                self.duplicate_topics.add(topic)
+            elif count <= 1 and topic in self.duplicate_topics:
+                self.get_logger().info(f"{topic}: 다른 발행자가 없어졌습니다")
+                self.duplicate_topics.discard(topic)
+
+    # ---- Three.js CCTV ----
+    def _start_threejs(self, threejs_dir, data_dir, port):
+        from pathlib import Path
+
+        from builtin_interfaces.msg import Time
+
+        from mujoco_bridge.threejs_live import LiveFrames, stamp_parts, start_server
+
+        if not os.path.isfile(os.path.join(threejs_dir, "export_scene.py")):
+            raise FileNotFoundError(f"export_scene.py 없음: {threejs_dir} (threejs_dir 파라미터 확인)")
+        sys.path.insert(0, threejs_dir)
+        import export_scene
+
+        m, d = self.sim.model, self.sim.data
+        if "worker_head" not in {m.body(i).name for i in range(m.nbody)}:
+            raise RuntimeError("cctv_renderer:=threejs needs a scene with the worker model")
+        # 렌더러가 읽을 정적 장면(scene.json·텍스처). 작업자 1은 브리지의 작업자 스크립트 위치 그대로 둔다
+        meta, self.packer = export_scene.prepare(m, d, Path(data_dir), self.worker or False)
+        meta.update({"frames": 1, "fps": self.camera_hz, "live": True})
+        (Path(data_dir) / "scene.json").write_text(__import__("json").dumps(meta))
+
+        def publish(sensor, sim_time, rgb):
+            sec, nanosec = stamp_parts(sim_time)
+            self._publish_image(sensor, Time(sec=sec, nanosec=nanosec), self.image_width, self.image_height, rgb)
+
+        self.live = LiveFrames(self.threejs_sensors, self.image_width, self.image_height, publish)
+        self.live_server = start_server(self.live, port=port)
+        self.create_timer(1.0 / self.camera_hz, self._pack_threejs_frame)
+        self.get_logger().info(f"Three.js CCTV {self.threejs_sensors}: 장면 {data_dir}, 프레임 http://127.0.0.1:{port}/frame")
+
+    def _pack_threejs_frame(self):
+        frame, _ = self.packer.pack(self.sim.model, self.sim.data, self.sim.time)
+        self.live.set_frame(frame, self.sim.time)
 
     def _camera_info(self, sensor):
         fx, fy, cx, cy = self.scn.camera_intrinsics(self.sim.model, self.scn.CAMERAS[sensor][0],
@@ -264,6 +344,8 @@ class MujocoBridge(Node):
         self.static_tf_pub.sendTransform(tfs)
 
     def close(self):
+        if self.live_server is not None:
+            self.live_server.shutdown()
         if self.rig is not None:
             self.rig.close()
         if self.viewer is not None:
