@@ -14,6 +14,12 @@ arms:=true이면 plant_scene.xml에 팔 4대(arms.PLANT_ARMS)를 더한 장면�
 /<seg>/arm/joint_command(JointState 위치 목표)·/<seg>/arm/gripper(Bool, 닫힘)를 구독해
 /<seg>/joint_states를 발행한다. <seg>는 robot_id의 토픽용 이름(arm-ur5e → arm_ur5e). 팔 명령은 robot_adapter의 arm_adapter가 보낸다.
 
+    ros2 run mujoco_bridge bridge --ros-args -p arms:=true -p amrs:=true   # + 이동형 운반 로봇(AMR) 2대
+
+amrs:=true이면 AMR 2대(amr.PLANT_AMRS)와 팔레트·거치대를 더하고, AMR마다 /<seg>/cmd_vel(Twist)·
+/<seg>/amr/load_command(String JSON, 싣기·내리기)를 구독해 /<seg>/odom·/<seg>/amr/load_result를 발행한다.
+AMR 차체와 실린 팔레트는 운동학으로 움직인다(물리 접촉 없음). 명령은 robot_adapter의 amr_adapter가 보낸다.
+
 cctv_renderer:=threejs이면 고정 CCTV(cctv_1, cctv_2)는 MuJoCo 렌더 대신 Three.js 렌더 영상을 발행한다.
 브리지는 camera_hz로 MuJoCo 상태를 프레임으로 묶어 로컬 HTTP(threejs_port)로 내주고, 렌더러
 (`node render.mjs --ros`)가 렌더한 RGB를 돌려받아 그 프레임의 시뮬레이션 시각으로 발행한다(threejs_live.py).
@@ -64,6 +70,12 @@ def load_arms(mujoco_dir: str):
     return arms
 
 
+def load_amr(mujoco_dir: str):
+    sys.path.insert(0, mujoco_dir)
+    import amr
+    return amr
+
+
 def make_tf(stamp, parent, child, pos, quat):
     tf = TransformStamped()
     tf.header.stamp = stamp
@@ -97,6 +109,7 @@ class MujocoBridge(Node):
         use_worker = self.declare_parameter("worker_motion", True).value
         use_viewer = self.declare_parameter("viewer", False).value
         use_arms = self.declare_parameter("arms", False).value
+        use_amrs = self.declare_parameter("amrs", False).value
         cctv_renderer = self.declare_parameter("cctv_renderer", "mujoco").value
         if cctv_renderer not in ("mujoco", "threejs"):
             raise ValueError(f"cctv_renderer must be mujoco or threejs, got {cctv_renderer!r}")
@@ -106,12 +119,18 @@ class MujocoBridge(Node):
         threejs_port = int(self.declare_parameter("threejs_port", 8765, ANY_NUMBER).value)
 
         self.plant_arms = None
-        if use_arms:
+        self.plant_amrs = None
+        if use_arms or use_amrs:
             arms = load_arms(mujoco_dir)
-            model, data, kins = arms.build_plant_with_arms()
+            amr = load_amr(mujoco_dir) if use_amrs else None
+            model, data, kins = arms.build_plant_with_arms(arms.PLANT_ARMS if use_arms else [],
+                                                           extras=(amr.add_plant_amrs,) if amr else ())
             self.sim = simulation.DiffDriveSim(robot, model=model, data=data)
-            self.plant_arms = arms.PlantArms(model, data, kins)
-            model_path = arms.PLANT_SCENE.name + " + arms"
+            if use_arms:
+                self.plant_arms = arms.PlantArms(model, data, kins)
+            if amr:
+                self.plant_amrs = amr.PlantAmrs(model, data, cmd_timeout=self.cmd_timeout)
+            model_path = arms.PLANT_SCENE.name + (" + arms" if use_arms else "") + (" + amrs" if amr else "")
         else:
             self.sim = simulation.DiffDriveSim(robot, model_path)
         m = self.sim.model
@@ -184,6 +203,18 @@ class MujocoBridge(Node):
                 self.grasp_pubs[rid] = self.create_publisher(String, f"/{seg}/arm/grasp_state", 10)
                 self.arm_joint_pubs[rid] = self.create_publisher(JointState, f"/{seg}/joint_states", 10)
 
+        self.amr_odom_pubs, self.amr_result_pubs = {}, {}
+        if self.plant_amrs:
+            from safety_control.interfaces import topic_segment
+            for rid in self.plant_amrs.mocap:
+                seg = topic_segment(rid)  # amr-01 → amr_01
+                self.create_subscription(Twist, f"/{seg}/cmd_vel",
+                                         lambda msg, r=rid: self.plant_amrs.set_velocity(r, msg.linear.x, msg.angular.z), 10)
+                self.create_subscription(String, f"/{seg}/amr/load_command",
+                                         lambda msg, r=rid: self._on_amr_load(r, msg), 10)
+                self.amr_odom_pubs[rid] = self.create_publisher(Odometry, f"/{seg}/odom", 10)
+                self.amr_result_pubs[rid] = self.create_publisher(String, f"/{seg}/amr/load_result", 10)
+
         self.create_subscription(Twist, "/cmd_vel", self._on_cmd_vel, 10)
         self.odom_pub = self.create_publisher(Odometry, "/odom", 10)
         self.joint_pub = self.create_publisher(JointState, "/joint_states", 10)
@@ -202,7 +233,8 @@ class MujocoBridge(Node):
             f"max linear {max_linear:.2f} m/s, joints {len(self.joint_names)}, "
             f"cameras {self.sensors or 'off'} @ {self.camera_hz} Hz {self.image_width}x{self.image_height}, "
             f"worker motion {'on' if self.worker else 'off'}, "
-            f"arms {sorted(self.plant_arms.kins) if self.plant_arms else 'off'}")
+            f"arms {sorted(self.plant_arms.kins) if self.plant_arms else 'off'}, "
+            f"amrs {sorted(self.plant_amrs.mocap) if self.plant_amrs else 'off'}")
 
     # ---- 입력 ----
     def _on_cmd_vel(self, msg: Twist):
@@ -222,6 +254,19 @@ class MujocoBridge(Node):
         self.grasp_pubs[robot_id].publish(String(data=json.dumps(
             {"closed": bool(msg.data), "held": name}, ensure_ascii=False)))
 
+    def _on_amr_load(self, robot_id, msg: String):
+        try:
+            cmd = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self.get_logger().warning("JSON이 아닌 AMR 싣기·내리기 명령 무시")
+            return
+        self.plant_amrs.load(self.sim.data, robot_id, cmd)
+        self._publish_amr_results()
+
+    def _publish_amr_results(self):
+        for rid, result in self.plant_amrs.pop_results():
+            self.amr_result_pubs[rid].publish(String(data=json.dumps(result, ensure_ascii=False)))
+
     # ---- 물리 ----
     def _physics(self):
         now = time.monotonic()
@@ -233,9 +278,13 @@ class MujocoBridge(Node):
         if lag > 0:
             if self.worker:
                 self.worker.apply(self.sim.model, self.sim.data)
+            before = self.sim.time
             self.sim.step(min(lag, MAX_CATCHUP_S))
             if self.plant_arms:
                 self.plant_arms.after_step(self.sim.data)
+            if self.plant_amrs:
+                self.plant_amrs.step(self.sim.data, self.sim.time - before)
+                self._publish_amr_results()
         spent = time.monotonic() - now
         if spent > SLOW_CALLBACK_S:
             # 콜백이 길면 그동안 /odom 등 다른 발행이 멈춘다 (어댑터는 /odom 0.5초 끊김을 HW_ERROR로 본다)
@@ -289,6 +338,18 @@ class MujocoBridge(Node):
             arm_js.position = [float(v) for v in q]
             arm_js.velocity = [float(v) for v in dq]
             pub.publish(arm_js)
+
+        for rid, pub in self.amr_odom_pubs.items():
+            ax, ay, ayaw, av, aw = self.plant_amrs.odom(rid)
+            amr_odom = Odometry()
+            amr_odom.header.stamp = stamp
+            amr_odom.header.frame_id = self.world_frame
+            amr_odom.child_frame_id = f"{rid}/base_link"
+            amr_odom.pose.pose.position.x, amr_odom.pose.pose.position.y = ax, ay
+            ao = amr_odom.pose.pose.orientation
+            ao.z, ao.w = math.sin(ayaw / 2), math.cos(ayaw / 2)
+            amr_odom.twist.twist.linear.x, amr_odom.twist.twist.angular.z = av, aw
+            pub.publish(amr_odom)
 
         if self.worker:
             m = self.sim.model
