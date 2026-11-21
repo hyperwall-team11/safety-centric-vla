@@ -44,9 +44,10 @@ MAX_HORIZON_S = 30.0
 
 GOAL_TOLERANCE_M = 0.05
 # MOVE_TO 경로는 실제 어댑터(robot_adapter/diff_drive_core.py)와 같은 제어기로 굴려 본다 (PR #92 리뷰 P1).
-# 직선을 가정하면 회전하며 전진하는 실제 궤적과 최대 수십 cm 어긋난다. 값은 diff_drive_core와 같아야 하며
+# 어댑터는 방향을 5° 안으로 맞춘 뒤 전진해 직선에서 0.05 m 안에 머물지만, 제자리 회전·감속 시간까지 같게 보려고
+# 같은 제어기를 적분한다. 값은 diff_drive_core와 같아야 하며
 # tests/test_twin_simulate.py가 둘이 같은지 확인한다
-DD_HEADING_TOLERANCE_RAD = math.radians(50)
+DD_HEADING_TOLERANCE_RAD = math.radians(5)
 DD_K_ANGULAR = 2.0
 DD_K_LINEAR = 1.0
 DD_MAX_ANGULAR = 0.8
@@ -195,7 +196,7 @@ def _simulate(req, started):
     if _robot_contacts(model, data, geom_id):
         return _response("COLLISION", snapshot_id, started, min_distance=min_gap, contact_at=0.0)
 
-    # 차동 구동 제어기를 그대로 적분한다: 방향 오차가 50°를 넘으면 제자리 회전, 아니면 회전하며 전진
+    # 차동 구동 제어기를 그대로 적분한다: 방향 오차가 5°를 넘으면 제자리 회전, 아니면 방향을 보정하며 전진
     x, y, heading = start[0], start[1], yaw
     t = 0.0
     steps = math.ceil(MAX_HORIZON_S / dt - 1e-9)

@@ -144,7 +144,7 @@ ROS 2 모드에서는 실행 직전 재검증을 통과한 승인 스냅샷만 `
 스키마 v1.1 승인 규칙 9번(`COLLISION`)을 적용하려면 CTL 사전 시뮬레이션 서비스를 띄우고 Backend를 아래처럼 실행합니다. 기본값은 비활성화입니다.
 
 ```bash
-cd control && pixi run twin-sim          # http://127.0.0.1:8100/twin/simulate (PR #92 병합 후)
+cd control && pixi run twin-sim          # http://127.0.0.1:8100/twin/simulate
 cd backend
 BACKEND_TWIN_SIMULATION_ENABLED=1 python3 -m uvicorn app.main:app
 ```

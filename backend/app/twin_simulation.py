@@ -122,7 +122,7 @@ def _yaw(pose) -> float:
 
 
 def _check_straight_trajectory(proposal: ActionProposal, target_pose: dict[str, Any]) -> None:
-    """트윈과 CTL 어댑터는 현재 위치에서 `target_pose`까지 직선으로 움직인다.
+    """CTL 어댑터는 방향을 맞춘 뒤 현재 위치에서 `target_pose`까지 직선 0.05 m 이내로 움직이고, 트윈은 같은 궤적을 본다.
 
     경유점이 있거나 끝점이 목표와 다른 trajectory는 시뮬레이션한 경로와 규칙 1~8이 검사한 경로가 달라지므로 차단한다.
     """

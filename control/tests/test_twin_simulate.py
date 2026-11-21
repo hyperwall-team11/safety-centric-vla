@@ -167,15 +167,17 @@ def test_controller_constants_match_adapter():
     assert ts.GOAL_TOLERANCE_M == dd.ARRIVAL_TOLERANCE_M
 
 
-def test_curved_diff_drive_path_hits_robot_off_straight_line():
-    """시작 yaw 49°에서 (3, 0)으로 가면 실제 경로가 직선 위로 휘어 (0.55, 0.75)의 로봇과 닿는다.
-    직선 가정이면 PASS가 나오던 리뷰 재현 사례."""
+@pytest.mark.parametrize("other_y, expected", [(0.75, "PASS"), (0.55, "COLLISION")])
+def test_misaligned_start_turns_in_place_then_drives_straight(other_y, expected):
+    """시작 yaw 49°에서 (3, 0)으로 간다. 리뷰 재현 사례(PR #92 P1)에서는 회전하며 전진해 경로가 직선 위로 휘어
+    (0.55, 0.75)의 로봇과 닿았다. 이제 제자리에서 방향을 맞춘 뒤 직선으로 가므로 직선에서 0.15 m 떨어진
+    로봇은 지나가고, 직선과 두 반경 합(0.6 m)보다 가까운 로봇은 여전히 충돌로 잡는다."""
     r = req(target=(3.0, 0.0), workers=(), speed=0.4)
     r["state"]["robots"][0]["yaw_rad"] = math.radians(49)
-    r["state"]["robots"].append({"robot_id": "robot-02", "frame_id": "world", "position": [0.55, 0.75, 0.0],
+    r["state"]["robots"].append({"robot_id": "robot-02", "frame_id": "world", "position": [0.55, other_y, 0.0],
                                  "yaw_rad": 0.0, "robot_type": "MOBILE"})
     r["state"]["zones"] = []
-    assert ts.simulate(r)["result"] == "COLLISION"
+    assert ts.simulate(r)["result"] == expected
 
 
 def test_twin_robot_yaw_is_radians():

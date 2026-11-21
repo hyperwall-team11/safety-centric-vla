@@ -3,7 +3,7 @@ import math
 
 import pytest
 
-from robot_adapter.diff_drive_core import DiffDriveCore
+from robot_adapter.diff_drive_core import ARRIVAL_TOLERANCE_M, DiffDriveCore
 from safety_control.gate import utc_iso
 
 T0 = 1_000_000.0
@@ -204,3 +204,33 @@ def test_result_of_other_command_is_ignored(setup):
     core.handle_action(manipulate(), T0)
     assert core.handle_arm_result({"command_id": "other", "success": True}, T0 + 1) == []
     assert core.status == "MOVING"
+
+
+@pytest.mark.parametrize("speed", [0.4, 1.0])
+def test_move_to_path_stays_on_straight_line(speed):
+    """방향을 먼저 맞추고 전진하므로 실제 궤적이 현재 위치 → 목표 직선에서 ARRIVAL_TOLERANCE_M 안에 머문다.
+    Backend는 이 직선으로 KEEP_OUT 경로를 검사하고 사전 시뮬레이션도 같은 경로를 본다 (PR #92 리뷰 P1)."""
+    worst = 0.0
+    for yaw_deg in range(-180, 180, 15):
+        for goal in ((0.3, 0.0), (3.0, 0.0), (8.0, 0.0), (-2.0, 1.5)):
+            core, robot = DiffDriveCore("robot-01", max_speed=speed), Unicycle()
+            robot.yaw = math.radians(yaw_deg)
+            core.handle_heartbeat(T0)
+            core.update_odom(0, 0, robot.yaw, 0, 0, T0)
+            msg = proposal("MOVE_TO", target_pose={"position": [goal[0], goal[1], 0.0]})
+            msg["speed_limit"] = speed
+            core.handle_action(msg, T0)
+            length = math.hypot(*goal)
+            ux, uy = goal[0] / length, goal[1] / length
+            now, done = T0, False
+            for _ in range(int(60 / DT)):
+                now += DT
+                core.handle_heartbeat(now)
+                core.update_odom(robot.x, robot.y, robot.yaw, core.command[0], core.command[1], now)
+                if any(e["kind"] == "RESULT" and e["success"] for e in core.tick(now, DT)):
+                    done = True
+                    break
+                robot.step(*core.command)
+                worst = max(worst, abs(-uy * robot.x + ux * robot.y))
+            assert done, (yaw_deg, goal)
+    assert worst <= ARRIVAL_TOLERANCE_M
