@@ -1,6 +1,10 @@
 """MuJoCo ① 공장 장면을 Three.js 렌더러용 데이터로 내보낸다.
 
-    python export_scene.py --out ../../outputs/threejs_cctv/data --duration 30 --fps 10 [--scene plant_scene.xml]
+    python export_scene.py --out ../../outputs/threejs_cctv/data --duration 30 --fps 10 [--plant full|arms|bare]
+
+기본(--plant full)은 plant_scene.xml에 로봇 팔 4대·랙·팔레트·포장대(arms.PLANT_ARMS)와 이동형 운반 로봇 2대·
+거치대(amr.PLANT_AMRS)를 더한 장면이다. 팔과 AMR은 plant_demo.PlantMotion이 정해진 순서로 움직인다.
+--plant bare는 예전처럼 --scene 파일만 쓴다.
 
 출력:
     scene.json   정적 정보 (geom 형상·색, 메시, 작업자 skin 면·UV·텍스처·복장, CCTV 카메라, 구역)
@@ -300,28 +304,52 @@ def prepare(m, d, out: Path, worker1_script=None, workers_cfg=WORKERS, robot_cam
     return meta, packer
 
 
+def build_sim(plant="full", scene="plant_scene.xml"):
+    """(DiffDriveSim, PlantMotion 또는 None). plant: full(팔 + AMR) | arms | bare."""
+    if plant == "bare":
+        return DiffDriveSim("scenario", model_path=MUJOCO_DIR / "models" / scene), None
+    import amr
+    from plant_demo import PlantMotion
+    if plant == "full":
+        model, data, kins, plant_amrs = amr.build_plant_with_amrs()
+    else:
+        import arms
+        model, data, kins = arms.build_plant_with_arms()
+        plant_amrs = None
+    sim = DiffDriveSim("scenario", model=model, data=data)
+    return sim, PlantMotion(model, data, kins, plant_amrs)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--duration", type=float, default=30.0)
     p.add_argument("--fps", type=float, default=10.0)
     p.add_argument("--scene", default="plant_scene.xml",
-                   help="mujoco/models 안의 장면 파일 (prop_* geom은 Three.js가 설비 모델로 덮어 그린다)")
+                   help="--plant bare일 때 mujoco/models 안의 장면 파일 (prop_* geom은 Three.js가 설비 모델로 덮어 그린다)")
+    p.add_argument("--plant", choices=("full", "arms", "bare"), default=None,
+                   help="full(기본): 팔 4대 + AMR 2대, arms: 팔 4대만, bare: --scene 파일 그대로 "
+                        "(--scene을 바꾸고 --plant를 생략하면 bare)")
     args = p.parse_args()
+    if args.plant is None:
+        args.plant = "full" if args.scene == "plant_scene.xml" else "bare"
+    elif args.plant != "bare" and args.scene != "plant_scene.xml":
+        p.error("--scene은 --plant bare와 함께 써야 합니다 (full·arms는 공장 장면을 직접 만든다)")
 
-    sim = DiffDriveSim("scenario", model_path=MUJOCO_DIR / "models" / args.scene)
+    # motion: 팔·AMR 동작(PlantMotion, --plant full·arms). robot_motion: 이동 카메라 로봇 경로(물류창고 장면)
+    sim, motion = build_sim(args.plant, args.scene)
     m, d = sim.model, sim.data
     workers_cfg = SCENE_WORKERS.get(args.scene, WORKERS)
     worker1 = WorkerScript(waypoints=workers_cfg[0]["waypoints"], speed=workers_cfg[0]["speed"])
-    motion = SCENE_ROBOT.get(args.scene)
-    if motion:
-        d.ctrl[m.actuator("head_2_joint_position").id] = motion["head_tilt"]
-        d.qpos[m.jnt_qposadr[m.joint("head_2_joint").id]] = motion["head_tilt"]
-    meta, packer = prepare(m, d, args.out, worker1, workers_cfg=workers_cfg, robot_camera=bool(motion))
+    robot_motion = SCENE_ROBOT.get(args.scene)
+    if robot_motion:
+        d.ctrl[m.actuator("head_2_joint_position").id] = robot_motion["head_tilt"]
+        d.qpos[m.jnt_qposadr[m.joint("head_2_joint").id]] = robot_motion["head_tilt"]
+    meta, packer = prepare(m, d, args.out, worker1, workers_cfg=workers_cfg, robot_camera=bool(robot_motion))
     print(f"스키닝 최대 오차 {packer.skin_error * 1000:.2f} mm")
     # 이동 카메라는 프레임마다 위치·회전(cam→world, MuJoCo 카메라 축)과 로봇 자기 위치(오도메트리 x, y, yaw)를 남긴다
     track = []
-    robot_cam = m.camera(CAMERAS[ROBOT_CAMERA][0]).id if motion else None
+    robot_cam = m.camera(CAMERAS[ROBOT_CAMERA][0]).id if robot_motion else None
 
     n = int(round(args.duration * args.fps))
     dt = 1.0 / args.fps
@@ -329,21 +357,24 @@ def main():
         w = csv.writer(fc)
         w.writerow(["frame", "sim_time", "worker_id", "x", "y", "yaw", "in_keep_out",
                     "dist_to_robot", "robot_x", "robot_y"])
-        if not motion:
+        if not robot_motion:
             sim.set_velocity(0.0, 0.4)  # 로봇은 처음 1.2초 제자리 회전 후 정지
         for f in range(n):
             target = f * dt
             while sim.time < target - 1e-9:
                 worker1.apply(m, d)
-                if motion:
-                    drive_robot(sim, motion)
+                if robot_motion:
+                    drive_robot(sim, robot_motion)
+                before = sim.time
                 sim.step(min(0.02, target - sim.time))
-                if not motion and sim.time > 1.2:
+                if motion:
+                    motion.step(d, sim.time, sim.time - before)
+                if not robot_motion and sim.time > 1.2:
                     sim.stop()
             states = [worker1.apply(m, d)]
             frame, extra_states = packer.pack(m, d, sim.time)  # 추가 작업자를 옮기고 mj_forward까지 한다
             states += extra_states
-            if motion:
+            if robot_motion:
                 track.append({"pos": d.cam_xpos[robot_cam].tolist(), "mat": d.cam_xmat[robot_cam].tolist(),
                               "base": list(sim.pose())})
             fb.write(frame)
@@ -354,7 +385,7 @@ def main():
                             f"{rx:.4f}", f"{ry:.4f}"])
 
     meta.update({"frames": n, "fps": args.fps, "scene": args.scene})
-    if motion:
+    if robot_motion:
         meta["camera_tracks"] = {ROBOT_CAMERA: track}
     (args.out / "scene.json").write_text(json.dumps(meta))
     print(f"{n} 프레임, 작업자 {len(meta['workers'])}명 → {args.out}")

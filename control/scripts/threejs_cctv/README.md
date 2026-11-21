@@ -10,7 +10,7 @@ cd control/scripts/threejs_cctv
 npm install
 python fetch_assets.py          # Poly Haven CC0 텍스처·HDRI·glTF 약 50 MB → assets/ (커밋하지 않음)
 # 1) MuJoCo 30초 실행 → 장면·프레임·정답 내보내기 (pixi 환경의 python)
-python export_scene.py --out ../../outputs/threejs_cctv/data --duration 30 --fps 10
+python export_scene.py --out ../../outputs/threejs_cctv/data --duration 30 --fps 10   # 팔 4대 + AMR 2대 (--plant bare: 예전 장면)
 # 2) 헤드리스 Chromium + Three.js 렌더 (Playwright 캐시의 Chromium 사용, 없으면 CHROMIUM_PATH 지정)
 node render.mjs --data ../../outputs/threejs_cctv/data --out ../../outputs/threejs_cctv
 ```

@@ -1,13 +1,25 @@
 """ROS 2 ↔ MuJoCo 브리지.
 
 구독: /cmd_vel (Twist) → 바퀴 로봇
-발행: /odom, /joint_states, TF, 카메라 3대 영상(Image + CameraInfo), 작업자 실제 위치(/sim/worker_pose)
+발행: /odom, /joint_states, TF, 카메라 3대 영상(Image + CameraInfo), 작업자 실제 위치(/sim/worker_pose,
+      추가 작업자는 cctv_renderer:=threejs일 때 /sim/worker_pose_<n>, n = 2, 3, ...)
 
     ros2 run mujoco_bridge bridge                                  # 시나리오 장면 (기본)
     ros2 run mujoco_bridge bridge --ros-args -p robot:=simple      # 단순 시험용 바퀴 로봇
     ros2 run mujoco_bridge bridge --ros-args -p worker_motion:=false -p camera_hz:=10.0
     mjpython <install>/lib/mujoco_bridge/bridge --ros-args -p viewer:=true   # 뷰어 (macOS)
+    ros2 run mujoco_bridge bridge --ros-args -p arms:=true         # 공장 현장 + 로봇 팔 4대 (이슈 #95)
     ros2 run mujoco_bridge bridge --ros-args -p cctv_renderer:=threejs        # CCTV를 Three.js로 렌더 (#55)
+
+arms:=true이면 plant_scene.xml에 팔 4대(arms.PLANT_ARMS)를 더한 장면을 쓰고(model_path 무시), 팔마다
+/<seg>/arm/joint_command(JointState 위치 목표)·/<seg>/arm/gripper(Bool, 닫힘)를 구독해
+/<seg>/joint_states를 발행한다. <seg>는 robot_id의 토픽용 이름(arm-ur5e → arm_ur5e). 팔 명령은 robot_adapter의 arm_adapter가 보낸다.
+
+    ros2 run mujoco_bridge bridge --ros-args -p arms:=true -p amrs:=true   # + 이동형 운반 로봇(AMR) 2대
+
+amrs:=true이면 AMR 2대(amr.PLANT_AMRS)와 팔레트·거치대를 더하고, AMR마다 /<seg>/cmd_vel(Twist)·
+/<seg>/amr/load_command(String JSON, 싣기·내리기)를 구독해 /<seg>/odom·/<seg>/amr/load_result를 발행한다.
+AMR 차체와 실린 팔레트는 운동학으로 움직인다(물리 접촉 없음). 명령은 robot_adapter의 amr_adapter가 보낸다.
 
 cctv_renderer:=threejs이면 고정 CCTV(cctv_1, cctv_2)는 MuJoCo 렌더 대신 Three.js 렌더 영상을 발행한다.
 브리지는 camera_hz로 MuJoCo 상태를 프레임으로 묶어 로컬 HTTP(threejs_port)로 내주고, 렌더러
@@ -21,6 +33,7 @@ cctv_renderer:=threejs이면 고정 CCTV(cctv_1, cctv_2)는 MuJoCo 렌더 대신
 지정하며, pixi 환경에서는 기본값($PIXI_PROJECT_ROOT/mujoco)을 그대로 쓰면 된다.
 """
 import array
+import json
 import math
 import os
 import sys
@@ -34,7 +47,7 @@ from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image, JointState
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
 ANY_NUMBER = ParameterDescriptor(dynamic_typing=True)  # 15와 15.0을 모두 받는다
@@ -50,6 +63,18 @@ def load_modules(mujoco_dir: str):
     import scenario
     import simulation
     return simulation, scenario
+
+
+def load_arms(mujoco_dir: str):
+    sys.path.insert(0, mujoco_dir)
+    import arms
+    return arms
+
+
+def load_amr(mujoco_dir: str):
+    sys.path.insert(0, mujoco_dir)
+    import amr
+    return amr
 
 
 def make_tf(stamp, parent, child, pos, quat):
@@ -84,6 +109,8 @@ class MujocoBridge(Node):
         use_cameras = self.declare_parameter("cameras", True).value
         use_worker = self.declare_parameter("worker_motion", True).value
         use_viewer = self.declare_parameter("viewer", False).value
+        use_arms = self.declare_parameter("arms", False).value
+        use_amrs = self.declare_parameter("amrs", False).value
         cctv_renderer = self.declare_parameter("cctv_renderer", "mujoco").value
         if cctv_renderer not in ("mujoco", "threejs"):
             raise ValueError(f"cctv_renderer must be mujoco or threejs, got {cctv_renderer!r}")
@@ -92,7 +119,21 @@ class MujocoBridge(Node):
         threejs_data = self.declare_parameter("threejs_data", os.path.join(root, "outputs", "threejs_live", "data")).value
         threejs_port = int(self.declare_parameter("threejs_port", 8765, ANY_NUMBER).value)
 
-        self.sim = simulation.DiffDriveSim(robot, model_path)
+        self.plant_arms = None
+        self.plant_amrs = None
+        if use_arms or use_amrs:
+            arms = load_arms(mujoco_dir)
+            amr = load_amr(mujoco_dir) if use_amrs else None
+            model, data, kins = arms.build_plant_with_arms(arms.PLANT_ARMS if use_arms else [],
+                                                           extras=(amr.add_plant_amrs,) if amr else ())
+            self.sim = simulation.DiffDriveSim(robot, model=model, data=data)
+            if use_arms:
+                self.plant_arms = arms.PlantArms(model, data, kins)
+            if amr:
+                self.plant_amrs = amr.PlantAmrs(model, data, cmd_timeout=self.cmd_timeout)
+            model_path = arms.PLANT_SCENE.name + (" + arms" if use_arms else "") + (" + amrs" if amr else "")
+        else:
+            self.sim = simulation.DiffDriveSim(robot, model_path)
         m = self.sim.model
         self.last_cmd_at = None
         self.wall_start = time.monotonic()
@@ -151,6 +192,30 @@ class MujocoBridge(Node):
             # 물리 타이머마다 그리면 카메라 렌더가 밀리므로 화면 갱신은 30Hz로 따로
             self.create_timer(1.0 / 30.0, self._sync_viewer)
 
+        self.arm_joint_pubs, self.grasp_pubs = {}, {}
+        if self.plant_arms:
+            from safety_control.interfaces import topic_segment
+            for rid in self.plant_arms.kins:
+                seg = topic_segment(rid)  # arm-ur5e → arm_ur5e (ROS 토픽 이름 규칙)
+                self.create_subscription(JointState, f"/{seg}/arm/joint_command",
+                                         lambda msg, r=rid: self._on_arm_command(r, msg), 10)
+                self.create_subscription(Bool, f"/{seg}/arm/gripper",
+                                         lambda msg, r=rid: self._on_gripper(r, msg), 10)
+                self.grasp_pubs[rid] = self.create_publisher(String, f"/{seg}/arm/grasp_state", 10)
+                self.arm_joint_pubs[rid] = self.create_publisher(JointState, f"/{seg}/joint_states", 10)
+
+        self.amr_odom_pubs, self.amr_result_pubs = {}, {}
+        if self.plant_amrs:
+            from safety_control.interfaces import topic_segment
+            for rid in self.plant_amrs.mocap:
+                seg = topic_segment(rid)  # amr-01 → amr_01
+                self.create_subscription(Twist, f"/{seg}/cmd_vel",
+                                         lambda msg, r=rid: self.plant_amrs.set_velocity(r, msg.linear.x, msg.angular.z), 10)
+                self.create_subscription(String, f"/{seg}/amr/load_command",
+                                         lambda msg, r=rid: self._on_amr_load(r, msg), 10)
+                self.amr_odom_pubs[rid] = self.create_publisher(Odometry, f"/{seg}/odom", 10)
+                self.amr_result_pubs[rid] = self.create_publisher(String, f"/{seg}/amr/load_result", 10)
+
         self.create_subscription(Twist, "/cmd_vel", self._on_cmd_vel, 10)
         self.odom_pub = self.create_publisher(Odometry, "/odom", 10)
         self.joint_pub = self.create_publisher(JointState, "/joint_states", 10)
@@ -168,12 +233,40 @@ class MujocoBridge(Node):
             f"MuJoCo bridge ready: {robot} ({model_path or self.sim.spec.model_path.name}), "
             f"max linear {max_linear:.2f} m/s, joints {len(self.joint_names)}, "
             f"cameras {self.sensors or 'off'} @ {self.camera_hz} Hz {self.image_width}x{self.image_height}, "
-            f"worker motion {'on' if self.worker else 'off'}")
+            f"worker motion {'on' if self.worker else 'off'}, "
+            f"arms {sorted(self.plant_arms.kins) if self.plant_arms else 'off'}, "
+            f"amrs {sorted(self.plant_amrs.mocap) if self.plant_amrs else 'off'}")
 
     # ---- 입력 ----
     def _on_cmd_vel(self, msg: Twist):
         self.sim.set_velocity(msg.linear.x, msg.angular.z)
         self.last_cmd_at = time.monotonic()
+
+    def _on_arm_command(self, robot_id, msg: JointState):
+        try:
+            self.plant_arms.set_target(self.sim.data, robot_id, list(msg.position))
+        except ValueError as exc:
+            self.get_logger().warning(str(exc))
+
+    def _on_gripper(self, robot_id, msg: Bool):
+        held = self.plant_arms.set_gripper(self.sim.data, robot_id, bool(msg.data))
+        # 실제로 잡았는지 어댑터에 알린다. 어댑터는 이 결과를 받기 전에는 파지 성공으로 보지 않는다
+        name = self.plant_arms.box_name(held) if held is not None else None
+        self.grasp_pubs[robot_id].publish(String(data=json.dumps(
+            {"closed": bool(msg.data), "held": name}, ensure_ascii=False)))
+
+    def _on_amr_load(self, robot_id, msg: String):
+        try:
+            cmd = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self.get_logger().warning("JSON이 아닌 AMR 싣기·내리기 명령 무시")
+            return
+        self.plant_amrs.load(self.sim.data, robot_id, cmd)
+        self._publish_amr_results()
+
+    def _publish_amr_results(self):
+        for rid, result in self.plant_amrs.pop_results():
+            self.amr_result_pubs[rid].publish(String(data=json.dumps(result, ensure_ascii=False)))
 
     # ---- 물리 ----
     def _physics(self):
@@ -186,7 +279,13 @@ class MujocoBridge(Node):
         if lag > 0:
             if self.worker:
                 self.worker.apply(self.sim.model, self.sim.data)
+            before = self.sim.time
             self.sim.step(min(lag, MAX_CATCHUP_S))
+            if self.plant_arms:
+                self.plant_arms.after_step(self.sim.data)
+            if self.plant_amrs:
+                self.plant_amrs.step(self.sim.data, self.sim.time - before)
+                self._publish_amr_results()
         spent = time.monotonic() - now
         if spent > SLOW_CALLBACK_S:
             # 콜백이 길면 그동안 /odom 등 다른 발행이 멈춘다 (어댑터는 /odom 0.5초 끊김을 HW_ERROR로 본다)
@@ -230,6 +329,28 @@ class MujocoBridge(Node):
         js.position = [float(d.qpos[q]) for q, _ in self.joint_adr]
         js.velocity = [float(d.qvel[v_]) for _, v_ in self.joint_adr]
         self.joint_pub.publish(js)
+
+        for rid, pub in self.arm_joint_pubs.items():
+            q, dq = self.plant_arms.joint_state(d, rid)
+            kin = self.plant_arms.kins[rid]
+            arm_js = JointState()
+            arm_js.header.stamp = stamp
+            arm_js.name = kin.joint_names
+            arm_js.position = [float(v) for v in q]
+            arm_js.velocity = [float(v) for v in dq]
+            pub.publish(arm_js)
+
+        for rid, pub in self.amr_odom_pubs.items():
+            ax, ay, ayaw, av, aw = self.plant_amrs.odom(rid)
+            amr_odom = Odometry()
+            amr_odom.header.stamp = stamp
+            amr_odom.header.frame_id = self.world_frame
+            amr_odom.child_frame_id = f"{rid}/base_link"
+            amr_odom.pose.pose.position.x, amr_odom.pose.pose.position.y = ax, ay
+            ao = amr_odom.pose.pose.orientation
+            ao.z, ao.w = math.sin(ayaw / 2), math.cos(ayaw / 2)
+            amr_odom.twist.twist.linear.x, amr_odom.twist.twist.angular.z = av, aw
+            pub.publish(amr_odom)
 
         if self.worker:
             m = self.sim.model
@@ -320,8 +441,21 @@ class MujocoBridge(Node):
         self.get_logger().info(f"Three.js CCTV {self.threejs_sensors}: 장면 {data_dir}, 프레임 http://127.0.0.1:{port}/frame")
 
     def _pack_threejs_frame(self):
-        frame, _ = self.packer.pack(self.sim.model, self.sim.data, self.sim.time)
+        frame, states = self.packer.pack(self.sim.model, self.sim.data, self.sim.time)
         self.live.set_frame(frame, self.sim.time)
+        # 추가 작업자(worker_2, worker_3 mocap) 실제 위치. 작업자 1의 /sim/worker_pose와 같은 형식
+        if not hasattr(self, "extra_worker_pubs"):
+            self.extra_worker_pubs = {i: self.create_publisher(PoseStamped, f"/sim/worker_pose_{i + 1}", 10)
+                                      for i, _ in self.packer.extra}
+        stamp = self.get_clock().now().to_msg()
+        for (i, _), (x, y, yaw) in zip(self.packer.extra, states):
+            pose = PoseStamped()
+            pose.header.stamp = stamp
+            pose.header.frame_id = self.world_frame
+            pose.pose.position.x, pose.pose.position.y = float(x), float(y)
+            q = pose.pose.orientation
+            q.z, q.w = math.sin(yaw / 2), math.cos(yaw / 2)
+            self.extra_worker_pubs[i].publish(pose)
 
     def _camera_info(self, sensor):
         fx, fy, cx, cy = self.scn.camera_intrinsics(self.sim.model, self.scn.CAMERAS[sensor][0],

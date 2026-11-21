@@ -15,7 +15,10 @@ ROS 2 제어 어댑터, 안전 경로(HOLD·E-Stop), MuJoCo 시뮬레이션 환�
 | CT-02 | 시나리오 장면: 금지구역, A·B 작업대와 상자, CCTV 2대 + 머리 카메라, 작업자 접근 동작 | 완료 | `pixi run snapshot` |
 | CT-03 | Backend 승인 명령·RESULT 연동, `proposal_id` 중복 실행 방지 | 완료 | `pixi run test` |
 | #54 | MuJoCo ② 디지털 트윈 재구성: 온톨로지 상태(Robot·Worker 스냅샷·Zone)로 장면 생성, 정답 대비 위치 오차 | 완료 | `pixi run test` |
+| #53 | MuJoCo ② 사전 시뮬레이션 서비스 `POST /twin/simulate`: `MOVE_TO` 경로 접촉·안전거리·목표 도달 판정 (판정 수치는 #50 확정 전 잠정값) | 완료 | `pixi run test`, `pixi run twin-sim` |
+| #95 | 로봇 팔 공통 어댑터(UR5e·UR10e·iiwa14·Panda), 창고형 적재·포장 구역, `MANIPULATE` 사전 시뮬레이션 (요청 형식 잠정) | 완료 | `pixi run arms-demo`, `pixi run test` |
 | #55 | Three.js CCTV 실시간 발행: 브리지 MuJoCo 상태 → Three.js 렌더 → `/cctv_{n}/image_raw`(stamp = 시뮬레이션 시각) | 완료 (카메라당 15Hz) | `pixi run bridge-threejs` + `pixi run cctv-threejs` |
+| AMR | 이동형 운반 로봇(AMR) 2대: 창고 ↔ TIAGo 작업 셀 팔레트 운반, `MOVE_TO`·`MANIPULATE`(싣기·내리기) 어댑터, 사전 시뮬레이션 차체 크기에 실린 팔레트 반영 | 완료 | `pixi run amr-demo`, `pixi run test` |
 
 다음 단계는 Backend와 TIAGo 어댑터를 함께 띄운 통합 시나리오 자동화입니다.
 
@@ -144,6 +147,23 @@ pixi run cctv-threejs       # 터미널 2: 헤드리스 Chromium 렌더러, 5초
 
 `bridge-threejs`는 15Hz, `bridge-threejs-plant`는 10Hz로 띄웁니다. 그보다 높이면 렌더(GPU 제출)와 브리지 쪽 프레임 준비가 한계입니다. 렌더러는 5초마다 단계별 시간을 출력합니다.
 
+### 로봇 팔·AMR이 있는 현장
+
+브리지의 `arms:=true`·`amrs:=true`와 함께 쓰면 팔 4대·랙·팔레트·포장대·AMR 2대·거치대도 Three.js 영상에 나옵니다. 프레임은 모든 geom의 자세를 담으므로, 어댑터가 움직이는 팔 관절·AMR 차체·실린 팔레트가 그대로 따라 움직입니다.
+
+```bash
+pixi run bridge-threejs-amrs    # 터미널 1: 브리지 (plant_scene + AMR 2대, Three.js CCTV 5Hz)
+pixi run cctv-threejs           # 터미널 2: 렌더러
+pixi run amr-adapters           # 터미널 3: AMR 어댑터
+pixi run amr-cycle-demo         # 터미널 4: 순환 데모 (검증 서버 대역, 시험 전용)
+# 팔까지: 브리지에 -p arms:=true를 더하고 pixi run arm-adapters, pixi run arm-cycle-demo
+```
+
+- 오프라인 내보내기(`scripts/threejs_cctv/export_scene.py`)도 기본(`--plant full`)으로 팔 4대 + AMR 2대가 든 장면을 내보냅니다. ROS 없이 `mujoco/plant_demo.py`가 같은 궤적 계획·AMR 운동학으로 팔은 집기·놓기, AMR은 싣기 → 이동 → 내리기를 반복합니다. 예전 장면은 `--plant bare`입니다.
+- 팔·랙·AMR은 Three.js 설비 모델(`prop_*`)로 바꾸지 않고 MuJoCo 형상(팔은 Menagerie 메시)과 색 그대로 그립니다.
+- 바닥 라이트맵(`floor_bake.png`)은 이 구역이 없던 장면으로 구웠습니다. 구운 바닥을 쓰면 랙·받침대처럼 움직이지 않는 물체는 그림자가 없으므로, 새 장면에서는 다시 굽거나 `?nobake`로 봅니다.
+- 팔 4대를 켜면 브리지 물리가 실시간 대비 약 0.3배로 느려집니다(Apple M3, 2026-11-14). 이때 AMR `/odom` 간격이 0.5초를 넘어 AMR 어댑터가 `ERROR`가 될 수 있어, AMR 확인은 `amrs:=true`만 켜고 했습니다(실시간 대비 1.00배, Three.js 카메라당 5Hz).
+
 ## 토픽
 
 | 토픽 | 방향 | QoS | 내용 |
@@ -155,6 +175,7 @@ pixi run cctv-threejs       # 터미널 2: 헤드리스 Chromium 렌더러, 5초
 | `/robot/head_camera/image_raw` | 브리지 → 외부 | sensor data, 15Hz | 로봇 머리 카메라, frame_id `camera_head_camera` |
 | `.../camera_info` | 브리지 → 외부 | sensor data, 15Hz | 각 카메라의 `CameraInfo` (fovy로 계산한 K·P, 왜곡 없음) |
 | `/sim/worker_pose` | 브리지 → 외부 | 기본, 50Hz | `geometry_msgs/PoseStamped` 작업자 실제 위치 (`world`) |
+| `/sim/worker_pose_<n>` | 브리지 → 외부 | `cctv_renderer:=threejs`, `camera_hz` | `geometry_msgs/PoseStamped` 추가 작업자(`worker_2`, `worker_3` mocap) 실제 위치 (`world`), n = 2, 3 |
 | `/sim/worker_in_keep_out` | 브리지 → 외부 | 기본, 50Hz | `std_msgs/Bool` 작업자가 금지구역 안에 있는지 (실제값) |
 | `/safety/approved_action` | 검증 서버 → 어댑터 | Reliable | 승인된 ActionProposal (JSON) |
 | `/safety/estop` | 검증 서버·운영자 → 어댑터 | Reliable, latched | `{"active", "triggered_by", "issued_at"}` |
@@ -223,15 +244,155 @@ python mujoco/twin.py --backend http://127.0.0.1:8000 --workers snapshot.json   
 - **작업자 여유 반경 0.20 m**: CV 바닥 투영 오차의 **중앙값**(2026-11-05 측정 0.15~0.20 m)을 바탕으로 정한 MVP 초기값입니다. 오차가 이 값을 넘는 경우가 있으므로 안전이 보장되는 오차 상한으로 해석하지 않습니다.
 - **로봇 충돌 형상**: 종류별 원기둥은 사전 시뮬레이션용으로 단순화한 모델입니다. TIAGo의 팔·관절 자세를 반영하지 않으므로 팔이 뻗은 상태의 정밀 충돌 검사로 쓰지 않습니다.
 - **접촉 감지와 `SAFETY_DISTANCE`**: 트윈 장면의 접촉은 사전 시뮬레이션의 단순 접촉 감지일 뿐이며, Safety Gate의 `SAFETY_DISTANCE` 판정을 대신하지 않습니다. COLLISION 판정 기준과 시간 제한은 #50에서 정하고, 안전 판정 연결은 #53에서 합니다.
-- **Worker 스냅샷 최신성**: 이 모듈은 스냅샷이 없을 때만 거부하고 `observed_at`이 오래되었는지는 검사하지 않습니다. 최신성 검사와 Fail-Closed 처리는 #53 사전 시뮬레이션 판정에서 합니다.
-- 미구현: Backend에 Worker 조회 API(`GET /workers/snapshot`)가 없어 `--backend` 모드에서는 Worker 스냅샷을 파일로 넘깁니다. 작업자 이동 예측, 작업대·상자 등 PhysicalObject 반영도 아직 없습니다.
+- **Worker 스냅샷 최신성**: 이 모듈은 스냅샷이 없을 때만 거부하고 `observed_at`이 오래되었는지는 검사하지 않습니다. 최신성 검사와 Fail-Closed 처리는 사전 시뮬레이션 서비스(`twin_simulate.py`)가 합니다.
+
+## MuJoCo ② 사전 시뮬레이션 서비스 (#53)
+
+`mujoco/twin_simulate.py`는 제어 계약 13장 `POST /twin/simulate`를 구현합니다. Backend가 보낸 후보 행동과 상태로 트윈을 만들고, 로봇을 목표까지 움직여 본 결과만 돌려줍니다. 승인 판정과 감사 기록은 Backend가 합니다.
+
+```bash
+pixi run twin-sim                                          # http://127.0.0.1:8100/twin/simulate
+python mujoco/twin_simulate.py --request req.json          # 서버 없이 요청 한 건 판정
+```
+
+- 지원 범위: `MOVE_TO`와 `MANIPULATE`(#95, 아래 "로봇 팔")를 받습니다. 다른 `action_type`은 `ERROR`입니다.
+- 동작: 로봇을 현재 위치에서 `target_pose`까지 `speed_limit` 이하로, 실제 어댑터(`diff_drive_core`)와 같은 차동 구동 제어기(방향 오차 50° 초과 시 제자리 회전, 이내면 회전하며 전진, 도착 직전 감속)로 굴리며 0.01 s마다 MuJoCo 접촉을 검사합니다. 작업자는 스냅샷 위치에 멈춰 있다고 가정합니다(이동 예측 없음).
+- 실행 경로 계약: 사전 시뮬레이션은 CTL 어댑터가 실제로 낼 경로를 **같은 제어기로 적분해** 검증합니다(`twin_simulate.py`의 `DD_*` 상수는 `diff_drive_core`와 같아야 하며 테스트가 확인합니다). 경유점·회피 경로를 실행하는 어댑터는 실행 예정 궤적을 요청에 넣어 검증하도록 계약을 먼저 확장해야 합니다.
+- `target_pose.position`의 z는 바닥 평면 이동만 지원하므로 `|z| <= PLANAR_Z_TOLERANCE_M`(0.05 m)여야 하며, 벗어나면 `ERROR`입니다.
+- `result` 우선순위: `COLLISION`(이동하는 로봇이 여유 반경 포함 작업자 캡슐이나 다른 로봇과 접촉) → `UNSAFE_DISTANCE`(몸 표면 사이 거리가 `UNSAFE_DISTANCE_M` 미만) → `GOAL_NOT_REACHED`(최대 구간 안에 목표 0.05 m 이내 미도달) → `PASS`.
+- `min_worker_distance_m`은 로봇과 작업자 **몸 표면 사이** 최소 거리입니다(CV 여유 반경 제외). 작업자가 없으면 `null`, 접촉이 없으면 `first_contact_at_s`가 `null`입니다. `snapshot_id`는 요청 값을 그대로 돌려줍니다.
+- `ERROR`(Fail-Closed): `contract_version` 불일치, `snapshot_id`·`snapshot_at` 누락, Worker 스냅샷 없음, 스냅샷이 오래됨(`snapshot_at - observed_at > 2 s`) 또는 `observed_at`이 0.5 s 넘게 미래, 대상 로봇 없음, `speed_limit <= 0`, `world`가 아닌 좌표계, 바닥 평면을 벗어난 `target_pose` z. `ERROR` 응답에는 원인 `detail`이 붙습니다. JSON이 아닌 본문은 HTTP 400입니다.
+- `robot_type`이 없는 로봇(계약 13.1 예시)은 가장 큰 반경의 형상으로 보수적으로 둡니다.
+
+| 상수 | 잠정값 | 근거 |
+|---|---|---|
+| `SNAPSHOT_MAX_AGE_S` | 2.0 s | 스키마 v1.1 Sensor `last_frame_at` 2초 무수신 → `DEGRADED` |
+| `UNSAFE_DISTANCE_M` | 0.6 m | 스키마 v1.1 Zone `estop_distance` 기본값 |
+| `MAX_HORIZON_S` | 30 s | 시연 장면 크기 기준 |
+
+위 값은 #50(ONT 판정 기준·시간 제한)이 확정되기 전의 **잠정값**입니다. 확정되면 상수를 바꿉니다. 요청 시간 제한과 시간 초과 처리는 Backend가 합니다(계약 13.2).
+
+한계: 로봇 원기둥과 정지한 작업자로 만든 단순화 모델의 검사입니다. 결과를 안전 보장으로 해석하지 않고, Safety Gate의 `SAFETY_DISTANCE` 판정을 대신하지 않습니다. Backend 호출·`snapshot_id` 계산·`ExecutionLog` 기록은 Backend 작업입니다.
+- 미구현: Backend에 Worker 조회 API(`GET /workers/snapshot`)가 없어 `--backend` 모드에서는 Worker 스냅샷을 파일로 넘깁니다. 작업자 이동 예측은 아직 없습니다. 상자·작업대 같은 물체는 `state.objects`(#95)로 넣습니다.
+
+## 로봇 팔 (#95)
+
+로봇 종류가 달라도 같은 코드로 다룹니다. 로봇마다 다른 것은 `mujoco/arms.py`의 `ARM_MODELS` 한 줄(모델 파일, 관절 이름, 공구)뿐입니다.
+
+| `robot_model` | 로봇 | 축 | 공구 | 현장 역할 |
+|---|---|---|---|---|
+| `ur10e` | Universal Robots UR10e | 6 | 박스 클램프 (0.30 m 상자) | 적재 스테이션 A: 랙 ↔ 팔레트 |
+| `iiwa14` | KUKA LBR iiwa 14 | 7 | 박스 클램프 | 적재 스테이션 B: 랙 ↔ 팔레트 |
+| `ur5e` | Universal Robots UR5e | 6 | 평행 그리퍼 (0.10 m 부품 상자) | 포장대 |
+| `panda` | Franka Emika Panda | 7 | 평행 그리퍼 | 포장대 |
+
+모델은 MuJoCo Menagerie에서 받습니다(`pixi run fetch-models`, 약 105MB, 저장소 제외). 새 로봇은 끝단에 `attachment_site`가 있고 관절이 모두 회전 관절인 모델이면 `ARM_MODELS`에 한 줄을 더해 씁니다.
+
+```bash
+pixi run arms-demo        # 공장 현장에 4대를 두고 각자 집기·놓기 → outputs/arms/ (CCTV 2대·근접 시점)
+pixi run bridge-arms      # 브리지: plant_scene + 팔 4대, CCTV 영상에 팔이 나옴
+pixi run arm-adapters     # 팔 어댑터 4개 (ros2 launch robot_adapter arms.launch.py)
+pixi run arm-cycle-demo   # 데모: 4대가 상자를 계속 옮김 (검증 서버 대역, 시험 전용)
+```
+
+**현장 배치** (`arms.PLANT_ARMS`): `plant_scene.xml`의 TIAGo 작업 셀 동쪽 열린 바닥에 창고형 구역을 둡니다. CCTV 2대가 모두 보는 범위입니다.
+- 적재 스테이션 A·B: 오렌지 랙 아래 칸의 0.30 m 상자를 바닥 팔레트로 내리고 다시 올립니다. 팔레트 A는 작업자 1 경로점(3.4, 1.8) 옆이고, 랙 B 남쪽 끝은 작업자 3 통로 옆입니다.
+- 포장대: UR5e·Panda가 포장대 위 두 자리 사이로 부품 상자를 옮깁니다.
+- 이 장면은 `plant_scene.xml` 파일을 바꾸지 않고 MjSpec으로 더합니다. 브리지에서 `arms:=true`일 때만 쓰며, 기본 장면과 Three.js 렌더(#55)는 그대로입니다.
+
+**공통 어댑터** (`robot_adapter/arm_core.py`, `arm_adapter_node.py`): 같은 노드를 `robot_model`만 바꿔 띄웁니다. 검증 서버 쪽 토픽·규약(ACK·RESULT, 중복 실행 방지, E-Stop·HOLD)은 Mock·TIAGo 어댑터와 같습니다.
+- 지원 Action: `MANIPULATE`(`PICK`·`PLACE`)·`STOP`·`RESUME`. 고정형 팔이라 `MOVE_TO`는 `UNSUPPORTED`입니다.
+- 로봇마다 다른 부분은 궤적 계획기(`planner`) 하나입니다. 지금은 MuJoCo 운동학 모델(`arms.ArmPlanner`)이고, 실제 로봇은 같은 형태로 MoveIt 등을 감싼 계획기를 넣습니다.
+- 궤적: 현재 자세 → 대상 위(관절 보간) → 대상까지 TCP 직선 하강 → 파지·놓기 → 직선 상승. 그리퍼는 아래를 향합니다. TCP 속도 상한은 `min(0.25 m/s, speed_limit)`입니다.
+- 도달할 수 없는 목표는 움직이기 전에 `INVALID`로 거부합니다. `PICK`은 빈손일 때만, `PLACE`는 같은 `object_id`를 들고 있을 때만 받습니다.
+- E-Stop·HOLD·STOP: 마지막 관절 목표를 그대로 유지하고 그리퍼는 열지 않습니다(들고 있던 물체를 떨어뜨리지 않음).
+
+| 토픽 (`<seg>`: `arm-ur5e` → `arm_ur5e`) | 방향 | 형식 |
+|---|---|---|
+| `/<seg>/arm/joint_command` | 어댑터 → 브리지 | `sensor_msgs/JointState` 위치 목표 |
+| `/<seg>/arm/gripper` | 어댑터 → 브리지 | `std_msgs/Bool` (닫힘) |
+| `/<seg>/arm/grasp_state` | 브리지 → 어댑터 | `std_msgs/String` JSON `{closed, held}`. 그리퍼 명령마다 실제로 잡은 물체 이름(`held`, 못 잡으면 `null`)을 알린다. 어댑터는 이 결과로 파지 성공을 확정하고, 실패하거나 1초 안에 오지 않으면 `HW_ERROR`로 끝낸다 |
+| `/<seg>/joint_states` | 브리지 → 어댑터 | `sensor_msgs/JointState` 실제 관절각 |
+| `/adapter/<seg>/state` | 어댑터 → 검증 서버 | 기존 상태에 `robot_model`, `joints`, `tcp_position`, `gripper_closed`, `holding_object_id` 추가 |
+
+**`MANIPULATE` 사전 시뮬레이션 (잠정)**: 제어 계약 13.1절은 대상 물체와 관절 초기 상태 형식을 정하지 않았습니다. 아래 형식은 CTL이 제안하는 **잠정 형식**이며 Backend·ONT 승인 후 계약에 넣습니다.
+
+```json
+{
+  "action": {"action_type": "MANIPULATE", "robot_id": "arm-ur10e", "speed_limit": 0.25,
+             "parameters": {"manipulation": "PICK", "object_id": "box-01",
+                            "target_pose": {"frame_id": "world", "position": [5.25, 2.6, 0.6]}}},
+  "state": {
+    "robots": [{"robot_id": "arm-ur10e", "robot_model": "ur10e", "frame_id": "world",
+                "position": [4.35, 2.6, 0.30], "yaw_rad": 0.0,
+                "joint_positions": null, "holding_object_id": null}],
+    "workers": {"observed_at": "...", "items": []},
+    "zones": [],
+    "objects": [{"object_id": "box-01", "frame_id": "world", "position": [5.25, 2.6, 0.6], "size": [0.3, 0.3, 0.3]}]
+  }
+}
+```
+
+- `parameters`는 계약 4.3절 `MANIPULATE`와 같습니다(`manipulation`, `object_id`, `target_pose`).
+- `robots[].robot_model`: `ARM_MODELS` 키. 이 값이 있는 로봇은 원기둥 대신 실제 팔 모델로 붙입니다. `position`은 베이스(받침대 윗면) 위치입니다.
+- `joint_positions`: 생략하거나 `null`이면 모델의 `home` 자세. `holding_object_id`: 들고 있는 물체(`PLACE`에 필요).
+- `objects`: 상자 장애물(중심, 크기 m). `MOVE_TO`에서도 장애물로 쓰입니다.
+- `MOVE_TO`에서도 `robot_model`이 있는 팔은 실제 팔 모델(현재 `joint_positions`)로 넣어 이동 로봇과의 접촉을 봅니다. 팔 모델 파일이 없으면 `ERROR`(Fail-Closed)입니다.
+- 판정: 팔·공구 또는 들고 있는 물체가 다른 물체·로봇·작업자와 닿으면 `COLLISION`(팔과 대상 물체 사이 접촉은 제외), 팔·공구(들고 있는 동안은 물체 포함) 표면과 작업자 몸 표면 사이가 `UNSAFE_DISTANCE_M` 미만이면 `UNSAFE_DISTANCE`, 경유점 TCP 오차가 0.02 m를 넘으면 `GOAL_NOT_REACHED`.
+- `ERROR`: `robot_model`이 없는 로봇, `PICK`/`PLACE`가 아님, 물체 없음, `PICK`의 `target_pose`가 물체에서 0.05 m 넘게 떨어짐, `PLACE`인데 그 물체를 들고 있지 않음, `joint_positions` 개수 불일치.
+
+한계:
+- 파지는 물리 접촉 대신 운동학적으로 붙입니다(집으면 상자가 TCP를 따라감). 그리퍼 마찰·미끄러짐·하중은 다루지 않습니다.
+- 들고 있는 상자의 접촉은 형상 사이 거리(`mj_geomDistance` < 0)로 판정합니다. 상자와 작업자가 모두 고정(mocap) 바디라 MuJoCo 접촉이 생기지 않기 때문입니다.
+- 브리지에서 팔은 위치 액추에이터로 움직이므로 빠른 동작에서 관절이 목표보다 늦습니다(측정 최대 약 0.2 rad, 0.25 m/s). 놓기 전 0.5 s 멈춰 이 차이를 줄입니다.
+- 이동형 운반 로봇은 다음 절(AMR)에서 다룹니다.
+
+## 이동형 운반 로봇 (AMR)
+
+낮은 사각 차체(롤러 상판, 높이 0.30 m) 위에 팔레트(1.1 × 0.84 m, 상자 더미 포함 높이 약 0.74 m)를 싣고, 창고 랙 구역 서쪽 끝 거치대와 TIAGo 작업 셀(테이블 A·B 바깥쪽) 거치대 사이를 오갑니다. 코드는 `mujoco/amr.py`입니다.
+
+```bash
+pixi run amr-demo         # 팔레트를 실은 AMR 2대가 통로를 지나는 장면 → outputs/amr/ (CCTV 2대·근접 시점)
+pixi run bridge-plant     # 브리지: plant_scene + 팔 4대 + AMR 2대 (arms:=true amrs:=true)
+pixi run amr-adapters     # AMR 어댑터 2개 (ros2 launch robot_adapter amrs.launch.py)
+pixi run amr-cycle-demo   # 데모: 2대가 팔레트를 계속 나름 (검증 서버 대역, 시험 전용)
+```
+
+**현장 배치** (`amr.PLANT_AMRS`): 통로 2개(y = ±1.75)는 작업자 1의 경로점 (3.4, ±1.8)을 지나므로 AMR이 작업자 통로를 가로지릅니다. 북쪽 통로는 UR10e 팔레트와 iiwa14 팔레트 사이입니다.
+
+| `robot_id` | 창고 정차 위치 (x, y) → 거치대 | 작업 셀 정차 위치 → 거치대 | 팔레트 `object_id` |
+|---|---|---|---|
+| `amr-01` | (3.70, 1.75) → (4.72, 1.75) | (2.05, 1.75) → (1.03, 1.75) | `pallet:amr-01` |
+| `amr-02` | (3.70, -1.75) → (4.72, -1.75) | (2.05, -1.75) → (1.03, -1.75) | `pallet:amr-02` |
+
+- 거치대는 상판과 같은 높이(0.30 m)입니다. AMR이 거치대를 바라보고 서면 팔레트를 앞쪽으로 밀어 싣거나 내립니다(롤러 이송 2초). `target_pose.position`은 거치대 위 팔레트 바닥 중심 `[x, y, 0.30]`입니다.
+- 장면은 `plant_scene.xml`을 바꾸지 않고 MjSpec으로 더합니다(`arms.build_plant_with_arms(extras=(amr.add_plant_amrs,))`). 브리지에서 `amrs:=true`일 때만 쓰며 `arms:=true`와 따로 켤 수 있습니다.
+
+**어댑터** (`robot_adapter/amr_core.py`, `amr_adapter_node.py`): TIAGo 어댑터(`DiffDriveCore`)의 규약과 `MOVE_TO` 제어기(제자리 회전 → 직진)를 그대로 씁니다. `robot_type`은 `MOBILE`, 상태에 `robot_model: "amr"`과 `holding_object_id`(실린 팔레트)를 더합니다.
+- `MOVE_TO`: 직선 이동. 속도 상한 `min(0.4 m/s, speed_limit)`(SR-01 기본값).
+- `MANIPULATE` `PICK`(싣기): 빈 차체일 때만. 팔레트가 차체 앞 거치대 자리(0.15 m 안)에 없으면 브리지가 `INVALID`로 돌려줍니다.
+- `MANIPULATE` `PLACE`(내리기): 같은 `object_id`를 싣고 있을 때만. 내릴 위치가 차체 앞 거치대 자리가 아니면 `INVALID`.
+- E-Stop·HOLD·STOP: 차체에 0 속도를 계속 보내고, 이송 중이면 `CANCEL`을 보냅니다. 브리지는 팔레트를 이송 전 상태(싣기 취소 → 거치대, 내리기 취소 → 상판)로 되돌려 어댑터의 `holding_object_id`와 맞춥니다.
+
+| 토픽 (`<seg>`: `amr-01` → `amr_01`) | 방향 | 형식 |
+|---|---|---|
+| `/<seg>/cmd_vel` | 어댑터 → 브리지 | `geometry_msgs/Twist` |
+| `/<seg>/odom` | 브리지 → 어댑터 | `nav_msgs/Odometry` (world 좌표) |
+| `/<seg>/amr/load_command` | 어댑터 → 브리지 | `std_msgs/String` JSON `{command_id, manipulation: PICK·PLACE·CANCEL, object_id, target_pose}` |
+| `/<seg>/amr/load_result` | 브리지 → 어댑터 | `std_msgs/String` JSON `{command_id, success, reason_code, message, held_object_id}`. `held_object_id`는 결과 시점 실제 적재 상태로, 어댑터는 이 값으로 `holding`을 맞춘다. CANCEL은 진행 중 이송이 없어도 답한다 |
+
+**사전 시뮬레이션**: `MOVE_TO`는 기존 원기둥 판정을 그대로 씁니다. `state.robots[]`에 `"robot_model": "amr"`이 있으면 원기둥 크기를 차체 기준(반경 0.558 m, 높이 0.30 m)으로, `holding_object_id`가 있으면 실린 팔레트까지 덮는 크기(반경 0.692 m, 높이 1.04 m)로 둡니다. AMR의 `MANIPULATE` 사전 시뮬레이션은 아직 없습니다(`ERROR`).
+
+한계:
+- 차체 이동과 팔레트 싣기·내리기는 운동학입니다(바퀴 마찰·미끄러짐·하중 없음). 브리지 장면에서 AMR·팔레트는 충돌하지 않는 mocap 바디라 TIAGo·작업자와 겹쳐도 밀지 않습니다. 접촉 판정은 사전 시뮬레이션이 합니다.
+- 경로는 직선 `MOVE_TO`만 따라가며 장애물 회피는 하지 않습니다.
 
 ## 어댑터 동작 규칙
 
 - `status=APPROVED`가 아닌 제안은 ACK 없이 `NOT_APPROVED`로 거부합니다.
 - 수신 즉시 ACK를 보내고, 완료·실패 시 RESULT를 보냅니다.
 - 같은 `proposal_id`와 같은 명령을 다시 받으면 동작을 반복하지 않고 기존 ACK 또는 최종 RESULT를 재전송합니다.
-- 지원하지 않는 Action(Mock은 `MANIPULATE`)은 `UNSUPPORTED`로 응답합니다.
+- 지원하지 않는 Action(Mock은 `MANIPULATE`, 고정형 팔은 `MOVE_TO`)은 `UNSUPPORTED`로 응답합니다.
 - 속도는 `min(로봇 max_speed, proposal.speed_limit, parameters.speed_limit)`로 제한합니다. 기본값은 SR-01의 0.4 m/s입니다.
 - `/safety/estop`의 `active=true`를 받으면 즉시 `ESTOP`으로 바꾸고 실행 중인 제안을 중단합니다. 해석할 수 없는 E-Stop 메시지도 정지로 처리합니다.
 - 하트비트가 1초(5주기) 동안 없으면 스스로 `HOLD`에 들어갑니다(`triggered_by=HEARTBEAT_LOSS`).
@@ -254,14 +415,21 @@ control/
 │   │   ├── pal_tiago/              # MuJoCo Menagerie TIAGo 모델 (Apache-2.0, 5.5MB)
 │   │   ├── diff_drive.xml          # 단순 시험용 바퀴 로봇
 │   │   ├── panda_scene.xml         # Panda 로봇 팔 + 작업자 + CCTV 장면
-│   │   └── franka_emika_panda/     # Panda 모델 (33MB, 저장소 제외 → fetch_models.sh로 받음)
+│   │   ├── franka_emika_panda/     # Panda 모델 (33MB, 저장소 제외 → fetch_models.sh로 받음)
+│   │   ├── universal_robots_ur5e/  # UR5e·UR10e·iiwa14 모델 (저장소 제외 → fetch_models.sh)
+│   │   ├── universal_robots_ur10e/
+│   │   └── kuka_iiwa_14/
 │   ├── simulation.py               # 차동 구동 시뮬레이션 (DiffDriveSim, 로봇 목록 ROBOTS)
 │   ├── scenario.py                 # 작업자 접근 동작, 카메라 렌더·내부 파라미터, 관절 목록, 스냅샷
 │   ├── twin.py                     # MuJoCo ② 디지털 트윈: 온톨로지 상태 → 장면, 정답 대비 위치 오차
-│   └── manipulator.py              # Panda move_to·그리퍼·pick_and_place
+│   ├── twin_simulate.py            # MuJoCo ② 사전 시뮬레이션 서비스 POST /twin/simulate
+│   ├── manipulator.py              # Panda move_to·그리퍼·pick_and_place
+│   ├── arms.py                     # 로봇 팔 공통 계층: 모델 목록, 공구, 역기구학, PICK·PLACE 궤적, 현장 배치
+│   ├── amr.py                      # 이동형 운반 로봇: 차체·팔레트·거치대, 운동학 이동·싣기·내리기, 현장 배치
+│   └── plant_demo.py               # 팔 4대·AMR 2대 정해진 순서 재생 (Three.js 오프라인 내보내기용)
 ├── ros2_ws/src/
 │   ├── mujoco_bridge/              # ROS 2 ↔ MuJoCo 브리지, odom_echo, rate_monitor, cctv_stream(웹 MJPEG)
-│   ├── robot_adapter/              # 공통 Action → 로봇 명령 (Mock 어댑터)
+│   ├── robot_adapter/              # 공통 Action → 로봇 명령 (Mock·TIAGo·팔·AMR 어댑터, 팔 4대·AMR 2대 launch)
 │   └── safety_control/             # HOLD·E-Stop 판단(gate), 토픽·QoS, 시험 하네스
 ├── tests/                          # pytest 단위 테스트
 ├── scripts/                        # cmd_vel_demo.sh, roundtrip.sh, measure_rates.sh, fetch_models.sh
