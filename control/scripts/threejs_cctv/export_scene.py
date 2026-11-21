@@ -1,6 +1,10 @@
 """MuJoCo ① 공장 장면을 Three.js 렌더러용 데이터로 내보낸다.
 
-    python export_scene.py --out ../../outputs/threejs_cctv/data --duration 30 --fps 10 [--scene plant_scene.xml]
+    python export_scene.py --out ../../outputs/threejs_cctv/data --duration 30 --fps 10 [--plant full|arms|bare]
+
+기본(--plant full)은 plant_scene.xml에 로봇 팔 4대·랙·팔레트·포장대(arms.PLANT_ARMS)와 이동형 운반 로봇 2대·
+거치대(amr.PLANT_AMRS)를 더한 장면이다. 팔과 AMR은 plant_demo.PlantMotion이 정해진 순서로 움직인다.
+--plant bare는 예전처럼 --scene 파일만 쓴다.
 
 출력:
     scene.json   정적 정보 (geom 형상·색, 메시, 작업자 skin 면·UV·텍스처·복장, CCTV 카메라, 구역)
@@ -261,16 +265,34 @@ def prepare(m, d, out: Path, worker1_script=None):
     return meta, packer
 
 
+def build_sim(plant="full", scene="plant_scene.xml"):
+    """(DiffDriveSim, PlantMotion 또는 None). plant: full(팔 + AMR) | arms | bare."""
+    if plant == "bare":
+        return DiffDriveSim("scenario", model_path=MUJOCO_DIR / "models" / scene), None
+    import amr
+    from plant_demo import PlantMotion
+    if plant == "full":
+        model, data, kins, plant_amrs = amr.build_plant_with_amrs()
+    else:
+        import arms
+        model, data, kins = arms.build_plant_with_arms()
+        plant_amrs = None
+    sim = DiffDriveSim("scenario", model=model, data=data)
+    return sim, PlantMotion(model, data, kins, plant_amrs)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--duration", type=float, default=30.0)
     p.add_argument("--fps", type=float, default=10.0)
     p.add_argument("--scene", default="plant_scene.xml",
-                   help="mujoco/models 안의 장면 파일 (prop_* geom은 Three.js가 설비 모델로 덮어 그린다)")
+                   help="--plant bare일 때 mujoco/models 안의 장면 파일 (prop_* geom은 Three.js가 설비 모델로 덮어 그린다)")
+    p.add_argument("--plant", choices=("full", "arms", "bare"), default="full",
+                   help="full: 팔 4대 + AMR 2대, arms: 팔 4대만, bare: --scene 파일 그대로")
     args = p.parse_args()
 
-    sim = DiffDriveSim("scenario", model_path=MUJOCO_DIR / "models" / args.scene)
+    sim, motion = build_sim(args.plant, args.scene)
     m, d = sim.model, sim.data
     worker1 = WorkerScript(waypoints=WORKERS[0]["waypoints"], speed=WORKERS[0]["speed"])
     meta, packer = prepare(m, d, args.out, worker1)
@@ -287,7 +309,10 @@ def main():
             target = f * dt
             while sim.time < target - 1e-9:
                 worker1.apply(m, d)
+                before = sim.time
                 sim.step(min(0.02, target - sim.time))
+                if motion:
+                    motion.step(d, sim.time, sim.time - before)
                 if sim.time > 1.2:
                     sim.stop()
             states = [worker1.apply(m, d)]
