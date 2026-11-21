@@ -188,6 +188,79 @@ def export_static(m, d, out: Path):
             "nskinvert": int(m.nskinvert), "cameras": cams, "zone_rects": rects, "workers": workers}
 
 
+class FramePacker:
+    """MuJoCo 상태 → render.html 한 프레임(float32 바이트). 오프라인 내보내기와 브리지 실시간 렌더가 같이 쓴다.
+
+    프레임 구성: [geom 위치(3)·회전행렬(9) × ngeom] + 작업자마다 [skin 정점(3) × nskinvert, 머리 위치(3)·쿼터니언(4)].
+    작업자 1은 MuJoCo skin을 그대로 쓰고, 추가 작업자(`worker_2`, `worker_3` mocap)는 같은 skin 데이터로 스키닝한다.
+    """
+
+    def __init__(self, m, d, meta, extra_scripts):
+        """meta: export_static 결과(workers는 작업자 1 + 추가 작업자 순서로 맞춘 것). extra_scripts: [(i, WorkerScript)]."""
+        self.extra = extra_scripts
+        self.gids = [g["id"] for g in meta["geoms"]]
+        self.opt, self.cam = mujoco.MjvOption(), mujoco.MjvCamera()
+        self.scn = mujoco.MjvScene(m, maxgeom=2000)
+        self.skinner = Skinner(m)
+        self.poser = WorkerPoser()
+        self.head = m.body("worker_head").id
+        part_ids = [m.body(f"worker_{b}").id for b in WORKER_PARTS]
+        self.head_part = WORKER_PARTS.index("head")
+
+        # 안전모 위치: 정수리 정점을 머리 바디 좌표로 옮긴 값
+        mujoco.mjv_updateScene(m, d, self.opt, None, self.cam, mujoco.mjtCatBit.mjCAT_ALL, self.scn)
+        body_skin = next(s for s in meta["skins"] if s["name"] == "worker_body")
+        verts = np.asarray(self.scn.skinvert).reshape(-1, 3)
+        vb = verts[body_skin["vertadr"]:body_skin["vertadr"] + body_skin["vertnum"]]
+        top = vb[np.argmax(vb[:, 2])]
+        rot = d.xmat[self.head].reshape(3, 3)
+        meta["helmet_offset"] = (rot.T @ (top - d.xpos[self.head])).tolist()
+        # 스키닝 검증: 작업자 1의 MuJoCo 결과와 비교
+        self.skin_error = float(np.abs(self.skinner(d.xpos[part_ids], d.xquat[part_ids]) - verts).max())
+        assert self.skin_error < 0.005, "스키닝 결과가 MuJoCo와 다릅니다"
+
+    def frame_length(self, m) -> int:
+        return len(self.gids) * 12 + (1 + len(self.extra)) * (m.nskinvert * 3 + 7)
+
+    def pack(self, m, d, sim_time):
+        """추가 작업자 mocap을 sim_time 위치로 옮기고 한 프레임을 만든다. (bytes, 추가 작업자 [(x, y, yaw)])"""
+        states = []
+        for i, script in self.extra:
+            x, y, yaw = script.position(sim_time)
+            d.mocap_pos[m.body_mocapid[m.body(f"worker_{i + 1}").id]] = [x, y, 0.0]
+            states.append((x, y, yaw))
+        mujoco.mj_forward(m, d)
+        mujoco.mjv_updateScene(m, d, self.opt, None, self.cam, mujoco.mjtCatBit.mjCAT_ALL, self.scn)
+        parts = [np.concatenate([d.geom_xpos[self.gids], d.geom_xmat[self.gids]], axis=1).astype("<f4").tobytes(),
+                 np.asarray(self.scn.skinvert, dtype="<f4").tobytes(),
+                 np.concatenate([d.xpos[self.head], d.xquat[self.head]]).astype("<f4").tobytes()]
+        for (i, script), (x, y, yaw) in zip(self.extra, states):
+            pos, quat = self.poser.pose(x, y, yaw, *script.gait_state(sim_time))
+            pos, quat = pos.copy(), quat.copy()
+            parts.append(self.skinner(pos, quat).astype("<f4").tobytes())
+            parts.append(np.concatenate([pos[self.head_part], quat[self.head_part]]).astype("<f4").tobytes())
+        return b"".join(parts), states
+
+
+def prepare(m, d, out: Path, worker1_script=None):
+    """정적 장면(scene.json 내용)과 FramePacker를 만든다. 작업자 1은 worker1_script(없으면 WORKERS[0])로 둔다.
+    worker1_script=False이면 작업자 1을 지금 자리에 둔다(브리지에서 작업자 이동을 끈 경우).
+
+    반환한 meta에 frames·fps·ngeom_export를 채워 scene.json으로 쓴다.
+    """
+    names = {m.body(i).name for i in range(m.nbody)}
+    extra = [i for i in range(1, len(WORKERS)) if f"worker_{i + 1}" in names]
+    scripts = [WorkerScript(waypoints=WORKERS[i]["waypoints"], speed=WORKERS[i]["speed"]) for i in extra]
+    if worker1_script is not False:
+        (worker1_script or WorkerScript(waypoints=WORKERS[0]["waypoints"], speed=WORKERS[0]["speed"])).apply(m, d)
+    mujoco.mj_forward(m, d)
+    meta = export_static(m, d, out)
+    meta["workers"] = [meta["workers"][0]] + [meta["workers"][i] for i in extra]
+    packer = FramePacker(m, d, meta, list(zip(extra, scripts)))
+    meta["ngeom_export"] = len(packer.gids)
+    return meta, packer
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--out", type=Path, required=True)
@@ -199,35 +272,9 @@ def main():
 
     sim = DiffDriveSim("scenario", model_path=MUJOCO_DIR / "models" / args.scene)
     m, d = sim.model, sim.data
-    names = {m.body(i).name for i in range(m.nbody)}
-    scripts = [WorkerScript(waypoints=w["waypoints"], speed=w["speed"]) for w in WORKERS]
-    extra = [i for i in range(1, len(WORKERS)) if f"worker_{i + 1}" in names]
-    scripts[0].apply(m, d)
-    mujoco.mj_forward(m, d)
-
-    meta = export_static(m, d, args.out)
-    meta["workers"] = [meta["workers"][0]] + [meta["workers"][i] for i in extra]
-    gids = [g["id"] for g in meta["geoms"]]
-    opt, cam = mujoco.MjvOption(), mujoco.MjvCamera()
-    scn = mujoco.MjvScene(m, maxgeom=2000)
-    skinner = Skinner(m)
-    poser = WorkerPoser()
-    head = m.body("worker_head").id
-    part_ids = [m.body(f"worker_{b}").id for b in WORKER_PARTS]
-    head_part = WORKER_PARTS.index("head")
-
-    # 안전모 위치: 정수리 정점을 머리 바디 좌표로 옮긴 값
-    mujoco.mjv_updateScene(m, d, opt, None, cam, mujoco.mjtCatBit.mjCAT_ALL, scn)
-    body_skin = next(s for s in meta["skins"] if s["name"] == "worker_body")
-    verts = np.asarray(scn.skinvert).reshape(-1, 3)
-    vb = verts[body_skin["vertadr"]:body_skin["vertadr"] + body_skin["vertnum"]]
-    top = vb[np.argmax(vb[:, 2])]
-    rot = d.xmat[head].reshape(3, 3)
-    meta["helmet_offset"] = (rot.T @ (top - d.xpos[head])).tolist()
-    # 스키닝 검증: 작업자 1의 MuJoCo 결과와 비교
-    err = np.abs(skinner(d.xpos[part_ids], d.xquat[part_ids]) - verts).max()
-    print(f"스키닝 최대 오차 {err * 1000:.2f} mm")
-    assert err < 0.005, "스키닝 결과가 MuJoCo와 다릅니다"
+    worker1 = WorkerScript(waypoints=WORKERS[0]["waypoints"], speed=WORKERS[0]["speed"])
+    meta, packer = prepare(m, d, args.out, worker1)
+    print(f"스키닝 최대 오차 {packer.skin_error * 1000:.2f} mm")
 
     n = int(round(args.duration * args.fps))
     dt = 1.0 / args.fps
@@ -239,34 +286,21 @@ def main():
         for f in range(n):
             target = f * dt
             while sim.time < target - 1e-9:
-                scripts[0].apply(m, d)
+                worker1.apply(m, d)
                 sim.step(min(0.02, target - sim.time))
                 if sim.time > 1.2:
                     sim.stop()
-            states = [scripts[0].apply(m, d)]
-            for i in extra:
-                x, y, yaw = scripts[i].position(sim.time)
-                d.mocap_pos[m.body_mocapid[m.body(f"worker_{i + 1}").id]] = [x, y, 0.0]
-                states.append((x, y, yaw))
-            mujoco.mj_forward(m, d)
-            mujoco.mjv_updateScene(m, d, opt, None, cam, mujoco.mjtCatBit.mjCAT_ALL, scn)
-            pose = np.concatenate([d.geom_xpos[gids], d.geom_xmat[gids]], axis=1)
-            fb.write(pose.astype("<f4").tobytes())
-            fb.write(np.asarray(scn.skinvert, dtype="<f4").tobytes())
-            fb.write(np.concatenate([d.xpos[head], d.xquat[head]]).astype("<f4").tobytes())
-            for k, i in enumerate(extra):
-                x, y, yaw = states[k + 1]
-                pos, quat = poser.pose(x, y, yaw, *scripts[i].gait_state(sim.time))
-                pos, quat = pos.copy(), quat.copy()
-                fb.write(skinner(pos, quat).astype("<f4").tobytes())
-                fb.write(np.concatenate([pos[head_part], quat[head_part]]).astype("<f4").tobytes())
+            states = [worker1.apply(m, d)]
+            frame, extra_states = packer.pack(m, d, sim.time)
+            states += extra_states
+            fb.write(frame)
             rx, ry, _ = sim.pose()
             for k, (x, y, yaw) in enumerate(states):
                 w.writerow([f, f"{sim.time:.3f}", meta["workers"][k]["id"], f"{x:.4f}", f"{y:.4f}", f"{yaw:.4f}",
                             int(in_zone(m, "keep_out_zone", x, y)), f"{math.hypot(x - rx, y - ry):.3f}",
                             f"{rx:.4f}", f"{ry:.4f}"])
 
-    meta.update({"frames": n, "fps": args.fps, "ngeom_export": len(gids)})
+    meta.update({"frames": n, "fps": args.fps})
     (args.out / "scene.json").write_text(json.dumps(meta))
     print(f"{n} 프레임, 작업자 {len(meta['workers'])}명 → {args.out}")
 
