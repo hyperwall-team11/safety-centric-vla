@@ -30,6 +30,27 @@ Swagger UI: <http://127.0.0.1:8000/docs>
 
 운영 콘솔: <http://127.0.0.1:8000/console>
 
+### 선택형 API 토큰 인증
+
+기본 개발 모드는 기존과 같이 인증이 비활성화되어 있습니다. 역할별 사전 발급 토큰을 사용할 때는 32바이트 이상의 난수 토큰을 만들고, 평문 토큰의 SHA-256과 요청자 식별자·역할을 `BACKEND_API_TOKEN_CONFIG` JSON 배열로 설정합니다. 설정이 있으면 `/health`, API 문서, 운영 콘솔 정적 파일을 제외한 HTTP API와 `WS /ws/state`가 인증을 요구합니다.
+
+평문 토큰을 셸 기록에 남기지 않고 digest를 만들려면 다음 명령을 사용합니다.
+
+```bash
+python3 -c 'import getpass,hashlib; print(hashlib.sha256(getpass.getpass("Token: ").encode()).hexdigest())'
+```
+
+```bash
+export BACKEND_API_TOKEN_CONFIG='[{"token_sha256":"<64자리 SHA-256>","subject":"operator-demo","role":"OPERATOR"}]'
+python3 -m uvicorn app.main:app
+```
+
+HTTP 요청은 `Authorization: Bearer <평문 토큰>` 헤더를 사용합니다. `GET /auth/me`로 현재 인증의 활성화 여부와 인증된 `subject`, `role`을 확인할 수 있습니다. 서버는 설정과 메모리에 평문 토큰을 저장하지 않으며, 설정 JSON이 잘못되면 시작을 중단합니다.
+
+브라우저 WebSocket은 임의의 `Authorization` 헤더를 지정할 수 없으므로 `state.v1`과 `bearer.<base64url(평문 토큰)>` 두 subprotocol을 보냅니다. 서버는 토큰을 검증한 뒤 `state.v1`만 선택합니다. 토큰이 URL·접속 로그에 남을 수 있는 query parameter 인증은 지원하지 않습니다.
+
+인증이 활성화되어도 운영 콘솔 정적 화면은 열리지만, 현재 콘솔에는 토큰 입력 UI가 없으므로 보호 API 호출은 Swagger UI의 **Authorize** 또는 별도 API 클라이언트로 시험합니다. 콘솔 로그인 UI와 역할별 버튼 제어는 #71의 인가 규칙 확정 뒤 연결합니다.
+
 운영 콘솔에서는 별도 프론트엔드 빌드 없이 다음 흐름을 확인할 수 있습니다.
 
 1. 자연어 명령 미리보기와 `TaskOrder` 생성

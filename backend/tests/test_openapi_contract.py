@@ -13,6 +13,7 @@ class OpenApiContractTest(unittest.TestCase):
         }
         expected_operations = {
             ("GET", "/health"),
+            ("GET", "/auth/me"),
             ("GET", "/api/v1/objects/{type}"),
             ("POST", "/robots"),
             ("GET", "/robots"),
@@ -41,9 +42,18 @@ class OpenApiContractTest(unittest.TestCase):
         }
 
         self.assertEqual(schema["info"]["version"], "0.2.0")
-        self.assertEqual(len(schema["paths"]), 21)
+        self.assertEqual(len(schema["paths"]), 22)
         self.assertEqual(actual_operations, expected_operations)
-        self.assertEqual(len(actual_operations), 26)
+        self.assertEqual(len(actual_operations), 27)
+        self.assertEqual(
+            schema["components"]["securitySchemes"]["BearerAuth"]["scheme"],
+            "bearer",
+        )
+        self.assertEqual(schema["paths"]["/health"]["get"]["security"], [])
+        self.assertEqual(
+            schema["paths"]["/robots"]["get"]["security"],
+            [{"BearerAuth": []}],
+        )
         list_operation = schema["paths"]["/task-orders"]["get"]
         self.assertEqual(
             {parameter["name"] for parameter in list_operation["parameters"]},
