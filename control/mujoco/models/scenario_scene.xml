@@ -19,6 +19,21 @@
              rgb1="0.65 0.65 0.65" rgb2="0.45 0.45 0.45" width="256" height="256"/>
     <material name="floor_material" texture="floor_texture" texrepeat="6 6"/>
     <material name="table_material" rgba="0.55 0.4 0.25 1"/>
+    <!-- 작업자 실사 텍스처 (MakeHuman CC0 에셋) -->
+    <texture name="worker_body" type="2d" file="worker/body.png"/>
+    <material name="worker_body" texture="worker_body" specular="0.2" shininess="0.2"/>
+    <texture name="worker_male_casualsuit04" type="2d" file="worker/male_casualsuit04.png"/>
+    <material name="worker_male_casualsuit04" texture="worker_male_casualsuit04" specular="0.2" shininess="0.2"/>
+    <texture name="worker_shoes06" type="2d" file="worker/shoes06.png"/>
+    <material name="worker_shoes06" texture="worker_shoes06" specular="0.2" shininess="0.2"/>
+    <texture name="worker_short02" type="2d" file="worker/short02.png"/>
+    <material name="worker_short02" texture="worker_short02" specular="0.2" shininess="0.2"/>
+    <texture name="worker_eyes" type="2d" file="worker/eyes.png"/>
+    <material name="worker_eyes" texture="worker_eyes" specular="0.2" shininess="0.2"/>
+    <texture name="worker_eyebrow001" type="2d" file="worker/eyebrow001.png"/>
+    <material name="worker_eyebrow001" texture="worker_eyebrow001" specular="0.2" shininess="0.2"/>
+    <texture name="worker_eyelashes01" type="2d" file="worker/eyelashes01.png"/>
+    <material name="worker_eyelashes01" texture="worker_eyelashes01" specular="0.2" shininess="0.2"/>
   </asset>
 
   <!-- 팔·머리·몸통은 위치 제어, 바퀴는 속도 제어 (원본 tiago_position.xml과 같은 값) -->
@@ -91,16 +106,35 @@
     <geom name="cctv_2_housing" type="box" pos="4.7 2.7 3.05" size="0.12 0.08 0.06" rgba="0.2 0.2 0.2 1"
           contype="0" conaffinity="0" group="0" mass="0"/>
 
-    <!-- 작업자 모형 (mocap): simulation.WorkerScript가 경로점을 따라 위치를 갱신한다 -->
-    <body name="worker" mocap="true" pos="3.4 1.8 0">
-      <geom type="capsule" fromto="0 0 0.85 0 0 1.35" size="0.18" rgba="1 0.65 0.05 1" contype="0" conaffinity="0" group="0" mass="0"/>
-      <geom type="sphere" pos="0 0 1.65" size="0.15" rgba="0.85 0.65 0.5 1" contype="0" conaffinity="0" group="0" mass="0"/>
-      <geom type="capsule" fromto="0 -0.12 0.15 0 -0.12 0.8" size="0.07" rgba="0.1 0.2 0.6 1" contype="0" conaffinity="0" group="0" mass="0"/>
-      <geom type="capsule" fromto="0 0.12 0.15 0 0.12 0.8" size="0.07" rgba="0.1 0.2 0.6 1" contype="0" conaffinity="0" group="0" mass="0"/>
-      <geom type="capsule" fromto="0 -0.23 1.35 0 -0.35 0.9" size="0.06" rgba="1 0.65 0.05 1" contype="0" conaffinity="0" group="0" mass="0"/>
-      <geom type="capsule" fromto="0 0.23 1.35 0 0.35 0.9" size="0.06" rgba="1 0.65 0.05 1" contype="0" conaffinity="0" group="0" mass="0"/>
-    </body>
+    <!-- 작업자 (mocap): simulation.WorkerScript가 경로점을 따라 위치를 갱신한다.
+         worker 는 발 아래 기준점이고, worker_* 부위 바디에 실사 피부·옷 skin(models/worker)이 붙는다.
+         WorkerScript.apply 가 걷기 자세(models/worker/walk.npy)를 순운동학으로 계산해 각 부위 mocap 을 갱신한다. -->
+    <body name="worker" mocap="true" pos="3.4 1.8 0"/>
+    <body name="worker_pelvis" mocap="true" pos="3.4 1.8 0.945"/>
+    <body name="worker_lower_torso" mocap="true" pos="3.4 1.8 1.025"/>
+    <body name="worker_chest" mocap="true" pos="3.4 1.8 1.245"/>
+    <body name="worker_head" mocap="true" pos="3.4 1.8 1.525"/>
+    <body name="worker_right_upper_arm" mocap="true" pos="3.4 1.59 1.445"/>
+    <body name="worker_right_forearm" mocap="true" pos="3.4 1.59 1.155"/>
+    <body name="worker_left_upper_arm" mocap="true" pos="3.4 2.01 1.445"/>
+    <body name="worker_left_forearm" mocap="true" pos="3.4 2.01 1.155"/>
+    <body name="worker_right_thigh" mocap="true" pos="3.4 1.71 0.895"/>
+    <body name="worker_right_shin" mocap="true" pos="3.4 1.71 0.475"/>
+    <body name="worker_right_foot" mocap="true" pos="3.4 1.71 0.045"/>
+    <body name="worker_left_thigh" mocap="true" pos="3.4 1.89 0.895"/>
+    <body name="worker_left_shin" mocap="true" pos="3.4 1.89 0.475"/>
+    <body name="worker_left_foot" mocap="true" pos="3.4 1.89 0.045"/>
   </worldbody>
+
+  <deformable>
+    <skin name="worker_body" file="../../worker/body.skn" material="worker_body"/>
+    <skin name="worker_male_casualsuit04" file="../../worker/male_casualsuit04.skn" material="worker_male_casualsuit04" inflate="0.001"/>
+    <skin name="worker_shoes06" file="../../worker/shoes06.skn" material="worker_shoes06" inflate="0.001"/>
+    <skin name="worker_short02" file="../../worker/short02.skn" material="worker_short02" inflate="0.001"/>
+    <skin name="worker_eyes" file="../../worker/eyes.skn" material="worker_eyes"/>
+    <skin name="worker_eyebrow001" file="../../worker/eyebrow001.skn" material="worker_eyebrow001" inflate="0.001"/>
+    <skin name="worker_eyelashes01" file="../../worker/eyelashes01.skn" material="worker_eyelashes01" inflate="0.001"/>
+  </deformable>
 
   <keyframe>
     <!-- TIAGo 29 (원본 home, 바닥 z=0 기준으로 베이스 높이만 0.005) + 상자 freejoint 7 -->

@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Hyperwall 안전 작업 콘솔</title>
+    <link rel="stylesheet" href="/console/assets/styles.css" />
+    <script src="/console/assets/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">본문으로 이동</a>
+
+    <header class="topbar">
+      <div class="shell topbar-inner">
+        <a class="brand" href="/console" aria-label="안전 작업 콘솔 홈">
+          <span class="brand-mark" aria-hidden="true">H</span>
+          <span>
+            <strong>Hyperwall</strong>
+            <small>안전 작업 콘솔</small>
+          </span>
+        </a>
+        <div class="topbar-actions">
+          <p class="connection" id="connection-status" role="status">
+            <span class="status-indicator" aria-hidden="true"></span>
+            서버 확인 중
+          </p>
+          <button class="button button-secondary" id="refresh-button" type="button">새로고침</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="shell page" id="main-content">
+      <section class="intro" aria-labelledby="page-title">
+        <div>
+          <h1 id="page-title">무엇을 시킬까요?</h1>
+          <p class="intro-copy">명령을 먼저 확인하고 실행까지 한 단계씩 진행합니다.</p>
+        </div>
+      </section>
+
+      <section class="command-layout" aria-label="작업 명령 입력과 시스템 현황">
+        <article class="panel command-panel">
+          <div class="panel-heading">
+            <div>
+              <h2>새 작업 명령</h2>
+              <p>자연어로 입력하면 TaskOrder 형식으로 정리합니다.</p>
+            </div>
+            <span class="step-note">미리보기는 저장되지 않음</span>
+          </div>
+
+          <form id="command-form" novalidate>
+            <div class="field">
+              <label for="instruction">작업 내용</label>
+              <textarea id="instruction" name="instruction" rows="4" required maxlength="1000">robot-01 로봇을 좌표 (1.2, -0.8, 0)로 이동해</textarea>
+              <p class="helper">로봇 ID, 목적지, 이동 또는 운반 동작을 한 문장에 입력합니다.</p>
+            </div>
+
+            <div class="field-grid">
+              <div class="field">
+                <label for="target-robot">대상 로봇</label>
+                <select id="target-robot" name="target_robot_id">
+                  <option value="">명령에서 자동 인식</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="frame-id">좌표 프레임</label>
+                <input id="frame-id" name="frame_id" value="map" required />
+              </div>
+            </div>
+
+            <p class="form-error" id="command-error" aria-live="polite"></p>
+
+            <div class="button-row">
+              <button class="button button-secondary" id="preview-button" type="submit" data-action="preview">해석 결과 보기</button>
+              <button class="button button-primary" id="create-task-button" type="submit" data-action="create">TaskOrder 만들기</button>
+            </div>
+          </form>
+
+          <div class="preview empty-preview" id="preview-result" aria-live="polite">
+            <p>명령을 입력하고 해석 결과를 확인하세요.</p>
+          </div>
+        </article>
+
+        <aside class="system-column" aria-label="시스템 현황">
+          <div class="metric-strip">
+            <div>
+              <span>등록 로봇</span>
+              <strong id="robot-count">0</strong>
+            </div>
+            <div>
+              <span>진행 작업</span>
+              <strong id="active-task-count">0</strong>
+            </div>
+            <div>
+              <span>감사 기록</span>
+              <strong id="log-count">0</strong>
+            </div>
+          </div>
+
+          <article class="panel compact-panel">
+            <div class="panel-heading compact-heading">
+              <div>
+                <h2>로봇 상태</h2>
+                <p>Backend에 등록된 현재 상태입니다.</p>
+              </div>
+            </div>
+            <div id="robot-list" class="robot-list loading-block" aria-live="polite"></div>
+            <details class="setup-details">
+              <summary>로봇 빠른 등록</summary>
+              <form id="robot-form" class="setup-form">
+                <div class="field-grid">
+                  <div class="field">
+                    <label for="robot-id">로봇 ID</label>
+                    <input id="robot-id" value="robot-01" required />
+                  </div>
+                  <div class="field">
+                    <label for="adapter-id">제어 어댑터</label>
+                    <input id="adapter-id" value="tiago-adapter" required />
+                  </div>
+                </div>
+                <div class="field-grid">
+                  <div class="field">
+                    <label for="robot-frame">프레임</label>
+                    <input id="robot-frame" value="map" required />
+                  </div>
+                  <div class="field">
+                    <label for="robot-speed">최대 속도 m/s</label>
+                    <input id="robot-speed" type="number" value="0.4" min="0.01" step="0.01" required />
+                  </div>
+                </div>
+                <button class="button button-primary button-full" type="submit">로봇 등록</button>
+                <p class="form-error" id="robot-error" aria-live="polite"></p>
+              </form>
+            </details>
+          </article>
+        </aside>
+      </section>
+
+      <section class="workspace" aria-label="작업 목록과 상세 정보">
+        <article class="panel task-panel">
+          <div class="panel-heading task-heading">
+            <div>
+              <h2>TaskOrder</h2>
+              <p>최근 작업을 선택해 다음 단계를 진행합니다.</p>
+            </div>
+            <div class="filters" aria-label="작업 필터">
+              <label class="visually-hidden" for="task-search">작업 검색</label>
+              <input id="task-search" type="search" placeholder="로봇 또는 명령 검색" />
+              <label class="visually-hidden" for="status-filter">상태 필터</label>
+              <select id="status-filter">
+                <option value="">전체 상태</option>
+                <option value="CREATED">생성</option>
+                <option value="PLANNING">계획 중</option>
+                <option value="RUNNING">실행 중</option>
+                <option value="HELD">보류</option>
+                <option value="COMPLETED">완료</option>
+                <option value="FAILED">실패</option>
+              </select>
+            </div>
+          </div>
+          <div class="task-list loading-block" id="task-list" aria-live="polite"></div>
+        </article>
+
+        <article class="panel detail-panel" id="task-detail">
+          <div class="detail-empty">
+            <p class="section-label">작업 상세</p>
+            <h2>확인할 작업을 선택하세요.</h2>
+            <p>TaskOrder와 ActionProposal 상태, 안전 평가 및 실행 버튼이 여기에 표시됩니다.</p>
+          </div>
+        </article>
+      </section>
+
+      <section class="audit-section" aria-labelledby="audit-title">
+        <div class="audit-heading">
+          <div>
+            <h2 id="audit-title">최근 실행 기록</h2>
+            <p>안전 평가와 실행 결과를 최신 순서로 확인합니다.</p>
+          </div>
+          <a href="/docs#/default/list_execution_logs_execution_logs_get" target="_blank" rel="noreferrer">API 문서 열기</a>
+        </div>
+        <div class="audit-list loading-block" id="audit-list"></div>
+      </section>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>

@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import json
 import math
 
 from safety_control.gate import SafetyGate, utc_iso
@@ -32,6 +33,7 @@ ESTOPPED = "ESTOP"
 class MockRobotCore:
     """위치만 갖는 가상 로봇. MOVE_TO·STOP·RESUME만 지원하고 MANIPULATE는 UNSUPPORTED."""
 
+    adapter_name = "mock"
     supported = {"MOVE_TO", "STOP", "RESUME"}
 
     def __init__(self, robot_id, robot_type="QUADRUPED", frame_id="world",
@@ -48,6 +50,8 @@ class MockRobotCore:
         self.speed = 0.0
         self.gate = SafetyGate()
         self.updated_at = None
+        self.terminal_results = {}  # proposal_id별 최종 RESULT, 중복 실행 방지용
+        self.proposal_signatures = {}
 
     # ---- 입력 ----
     def handle_action(self, msg: dict, now: float) -> list[dict]:
@@ -55,16 +59,38 @@ class MockRobotCore:
             return []
         pid = msg.get("proposal_id")
         if msg.get("status") != "APPROVED":
-            return [self._result(pid, False, NOT_APPROVED, "APPROVED 상태가 아닌 제안", now)]
+            return self._remember([
+                self._result(pid, False, NOT_APPROVED, "APPROVED 상태가 아닌 제안", now)
+            ])
+        if not isinstance(pid, str) or not pid.strip():
+            return [self._result(pid, False, INVALID, "proposal_id 필요", now)]
+
+        signature = json.dumps(msg, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        previous_signature = self.proposal_signatures.get(pid)
+        if previous_signature is not None:
+            if previous_signature != signature:
+                return [
+                    self._event("ACK", pid, now),
+                    self._result(pid, False, INVALID, "같은 proposal_id의 명령 본문이 다름", now),
+                ]
+            if pid in self.terminal_results:
+                return [self._event("ACK", pid, now), dict(self.terminal_results[pid])]
+            if self.current and self.current.get("proposal_id") == pid:
+                return [self._event("ACK", pid, now)]
+        self.proposal_signatures[pid] = signature
 
         action_type = msg.get("action_type")
         events = [self._event("ACK", pid, now)]
         if action_type not in ACTION_TYPES:
-            return events + [self._result(pid, False, INVALID, f"알 수 없는 action_type: {action_type}", now)]
+            return self._remember(events + [
+                self._result(pid, False, INVALID, f"알 수 없는 action_type: {action_type}", now)
+            ])
         if action_type not in self.supported:
-            return events + [self._result(pid, False, UNSUPPORTED, f"{action_type} 미지원 로봇", now)]
+            return self._remember(events + [
+                self._result(pid, False, UNSUPPORTED, f"{action_type} 미지원 로봇", now)
+            ])
         handler = getattr(self, f"_on_{action_type.lower()}")
-        return events + handler(msg, now)
+        return self._remember(events + handler(msg, now))
 
     def handle_heartbeat(self, now: float) -> None:
         self.gate.on_heartbeat(now)
@@ -73,7 +99,9 @@ class MockRobotCore:
         trigger = self.gate.on_estop(msg, now)
         if trigger is None or self.status == "ESTOP":
             return []
-        return self._halt("ESTOP", trigger["triggered_by"], now, trigger["latency_ms"])
+        return self._remember(
+            self._halt("ESTOP", trigger["triggered_by"], now, trigger["latency_ms"])
+        )
 
     # ---- 주기 갱신 ----
     def tick(self, now: float, dt: float) -> list[dict]:
@@ -83,16 +111,16 @@ class MockRobotCore:
         if self.status == "MOVING":
             events += self._step(now, dt)
         self.updated_at = now
-        return events
+        return self._remember(events)
 
     def state(self, now: float) -> dict:
         return {
             "robot_id": self.robot_id,
             "robot_type": self.robot_type,
-            "control_adapter": "mock",
+            "control_adapter": self.adapter_name,
             "status": self.status,
             "pose": {"frame_id": self.frame_id, "position": [round(v, 4) for v in self.position],
-                     "orientation": [0.0, 0.0, 0.0, 1.0]},
+                     "orientation": [round(v, 6) for v in self.orientation()]},
             "velocity": round(self.velocity, 4),
             "motion_limits": {"max_speed": self.max_speed},
             "estop_active": self.gate.estop_active,
@@ -100,6 +128,9 @@ class MockRobotCore:
             "updated_at": utc_iso(now),
             "last_heartbeat_at": utc_iso(self.gate.last_heartbeat) if self.gate.last_heartbeat else None,
         }
+
+    def orientation(self):
+        return [0.0, 0.0, 0.0, 1.0]
 
     # ---- Action 처리 ----
     def _on_move_to(self, msg, now):
@@ -179,3 +210,9 @@ class MockRobotCore:
     def _result(self, proposal_id, success, reason_code, message, now):
         return self._event("RESULT", proposal_id, now, success=success,
                            reason_code=reason_code, message=message)
+
+    def _remember(self, events):
+        for event in events:
+            if event.get("kind") == "RESULT" and event.get("proposal_id"):
+                self.terminal_results[event["proposal_id"]] = dict(event)
+        return events

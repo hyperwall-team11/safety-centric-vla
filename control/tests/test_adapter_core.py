@@ -65,12 +65,16 @@ def test_estop_stops_motion_and_requires_release_and_resume(robot):
     assert events[0]["reason_code"] == "ESTOP"
     assert events[-1]["kind"] == "ESTOP" and events[-1]["latency_ms"] == pytest.approx(10, abs=0.1)
 
-    blocked = robot.handle_action(proposal("RESUME", task_id="t"), T0 + 0.1)
+    blocked_command = proposal("RESUME", task_id="t")
+    blocked_command["proposal_id"] = "p2"
+    blocked = robot.handle_action(blocked_command, T0 + 0.1)
     assert blocked[-1]["success"] is False
 
     robot.handle_estop({"active": False}, T0 + 0.2)
     assert robot.status == "ESTOP"  # 해제만으로는 복귀하지 않음
-    resumed = robot.handle_action(proposal("RESUME", task_id="t"), T0 + 0.3)
+    resume_command = proposal("RESUME", task_id="t")
+    resume_command["proposal_id"] = "p3"
+    resumed = robot.handle_action(resume_command, T0 + 0.3)
     assert resumed[-1]["success"] is True and robot.status == "IDLE"
 
 
@@ -106,3 +110,40 @@ def test_stop_cancels_current(robot):
 def test_frame_mismatch_is_invalid(robot):
     events = robot.handle_action(proposal("MOVE_TO", target_pose={"position": [1, 0, 0], "frame_id": "map"}), T0)
     assert events[-1]["reason_code"] == "INVALID"
+
+
+def test_duplicate_running_proposal_is_acked_without_restarting(robot):
+    message = proposal("MOVE_TO", target_pose={"position": [1, 0, 0]})
+    first = robot.handle_action(message, T0)
+    target_before = list(robot.target)
+    duplicate = robot.handle_action(message, T0 + 0.1)
+
+    assert [event["kind"] for event in first] == ["ACK", "STATUS"]
+    assert [event["kind"] for event in duplicate] == ["ACK"]
+    assert robot.target == target_before
+    assert robot.current["proposal_id"] == "p1"
+
+
+def test_duplicate_completed_proposal_replays_terminal_result(robot):
+    message = proposal("MOVE_TO", target_pose={"position": [0.01, 0, 0]})
+    robot.handle_action(message, T0)
+    completed = run_until_idle(robot, T0)
+    duplicate = robot.handle_action(message, T0 + 1)
+
+    assert completed[-1]["kind"] == "RESULT"
+    assert completed[-1]["success"] is True
+    assert [event["kind"] for event in duplicate] == ["ACK", "RESULT"]
+    assert duplicate[-1] == completed[-1]
+    assert robot.status == "IDLE"
+
+
+def test_same_proposal_id_with_different_body_is_rejected(robot):
+    first = proposal("MOVE_TO", target_pose={"position": [1, 0, 0]})
+    robot.handle_action(first, T0)
+    conflict = proposal("MOVE_TO", target_pose={"position": [2, 0, 0]})
+
+    events = robot.handle_action(conflict, T0 + 0.1)
+
+    assert [event["kind"] for event in events] == ["ACK", "RESULT"]
+    assert events[-1]["reason_code"] == "INVALID"
+    assert robot.target == [1.0, 0.0, 0.0]

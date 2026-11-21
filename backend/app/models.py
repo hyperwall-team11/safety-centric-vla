@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 
 NonBlankString = Annotated[
@@ -234,6 +234,71 @@ class ActionType(str, Enum):
     RESUME = "RESUME"
 
 
+class TaskOrderPreview(OntologyModel):
+    instruction: NonBlankString
+    target_robot_id: NonBlankString
+    target_object_id: NonBlankString | None
+    destination: TaskDestination
+    action_type: ActionType
+
+
+class TaskParseErrorDetail(OntologyModel):
+    code: NonBlankString
+    message: NonBlankString
+
+
+class TaskParseErrorResponse(OntologyModel):
+    detail: TaskParseErrorDetail
+
+
+class RequestValidationErrorDetail(OntologyModel):
+    type: NonBlankString
+    loc: list[str | int]
+    msg: NonBlankString
+    input: Any | None = None
+    ctx: dict[str, Any] | None = None
+
+
+class RequestValidationErrorResponse(OntologyModel):
+    detail: list[RequestValidationErrorDetail]
+
+
+class TaskOrderPreviewBatchRequest(OntologyModel):
+    items: list[NaturalLanguageTaskRequest] = Field(min_length=1, max_length=50)
+
+
+class TaskOrderPreviewBatchItem(OntologyModel):
+    index: int = Field(ge=0)
+    valid: bool
+    preview: TaskOrderPreview | None = None
+    error: TaskParseErrorDetail | None = None
+
+    @model_validator(mode="after")
+    def validate_result_shape(self) -> TaskOrderPreviewBatchItem:
+        if self.valid and (self.preview is None or self.error is not None):
+            raise ValueError("valid 결과에는 preview만 있어야 합니다.")
+        if not self.valid and (self.error is None or self.preview is not None):
+            raise ValueError("invalid 결과에는 error만 있어야 합니다.")
+        return self
+
+
+class TaskOrderPreviewBatchResponse(OntologyModel):
+    total: int = Field(ge=1, le=50)
+    valid_count: int = Field(ge=0)
+    invalid_count: int = Field(ge=0)
+    results: list[TaskOrderPreviewBatchItem]
+
+    @model_validator(mode="after")
+    def validate_counts(self) -> TaskOrderPreviewBatchResponse:
+        if self.total != len(self.results):
+            raise ValueError("total은 results 길이와 같아야 합니다.")
+        if self.valid_count + self.invalid_count != self.total:
+            raise ValueError("valid_count와 invalid_count 합은 total과 같아야 합니다.")
+        if self.valid_count != sum(result.valid for result in self.results):
+            raise ValueError("valid_count가 results와 일치하지 않습니다.")
+        return self
+
+
 class ProposalStatus(str, Enum):
     PROPOSED = "PROPOSED"
     APPROVED = "APPROVED"
@@ -407,6 +472,59 @@ class HazardEvent(OntologyModel):
 
 class HazardResolveRequest(OntologyModel):
     resolved_by: HazardResolvedBy
+
+
+class AdapterResultStatus(str, Enum):
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+
+
+class AdapterFailureCode(str, Enum):
+    UNSUPPORTED = "UNSUPPORTED"
+    TIMEOUT = "TIMEOUT"
+    HW_ERROR = "HW_ERROR"
+
+
+class AdapterResultReport(OntologyModel):
+    status: AdapterResultStatus
+    reason_code: AdapterFailureCode | None = None
+    detail: NonBlankString | None = None
+
+    @model_validator(mode="after")
+    def validate_result_contract(self) -> AdapterResultReport:
+        if self.status == AdapterResultStatus.SUCCEEDED and self.reason_code is not None:
+            raise ValueError("SUCCEEDED 결과에는 reason_code를 지정할 수 없습니다.")
+        if self.status == AdapterResultStatus.FAILED and self.reason_code is None:
+            raise ValueError("FAILED 결과에는 reason_code가 필요합니다.")
+        return self
+
+
+class AdapterAckStatus(str, Enum):
+    PENDING = "PENDING"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    TIMED_OUT = "TIMED_OUT"
+
+
+class AdapterAckEvent(OntologyModel):
+    kind: Literal["ACK"] = "ACK"
+    proposal_id: NonBlankString
+    robot_id: NonBlankString
+    timestamp: AwareDatetime
+
+
+class AdapterAckRecord(OntologyModel):
+    proposal_id: NonBlankString
+    task_id: NonBlankString
+    robot_id: NonBlankString
+    status: AdapterAckStatus = AdapterAckStatus.PENDING
+    command_received_at: AwareDatetime
+    dispatched_at: AwareDatetime
+    timeout_at: AwareDatetime
+    adapter_ack_at: AwareDatetime | None = None
+    ack_received_at: AwareDatetime | None = None
+    command_to_ack_ms: float | None = Field(default=None, ge=0)
+    dispatch_to_ack_ms: float | None = Field(default=None, ge=0)
+    duplicate_count: int = Field(default=0, ge=0)
 
 
 class Decision(str, Enum):

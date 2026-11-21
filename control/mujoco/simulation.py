@@ -50,12 +50,14 @@ DEFAULT_ROBOT = "scenario"
 class DiffDriveSim:
     """선속도(m/s)·각속도(rad/s) 명령을 좌우 바퀴 각속도로 바꿔 로봇을 움직인다."""
 
-    def __init__(self, robot: str = DEFAULT_ROBOT, model_path=None):
+    def __init__(self, robot: str = DEFAULT_ROBOT, model_path=None, model=None, data=None):
+        """model·data를 주면 그 장면을 쓴다(예: arms.build_plant_with_arms). 이때 keyframe은 호출자가 이미 적용했다."""
         self.spec = spec = ROBOTS[robot]
-        self.model = mujoco.MjModel.from_xml_path(str(model_path or spec.model_path))
-        self.data = mujoco.MjData(self.model)
+        prebuilt = model is not None
+        self.model = model if prebuilt else mujoco.MjModel.from_xml_path(str(model_path or spec.model_path))
+        self.data = data if data is not None else mujoco.MjData(self.model)
         m = self.model
-        if spec.keyframe:
+        if spec.keyframe and not prebuilt:
             mujoco.mj_resetDataKeyframe(m, self.data, m.key(spec.keyframe).id)
         self.wheel_radius = spec.wheel_radius
         self.wheel_separation = float(np.linalg.norm(
@@ -83,8 +85,9 @@ class DiffDriveSim:
         self.set_velocity(0.0, 0.0)
 
     def step(self, duration: float) -> None:
-        for _ in range(max(1, round(duration / self.model.opt.timestep))):
-            mujoco.mj_step(self.model, self.data)
+        # 한 번의 호출로 여러 스텝을 돈다. 스텝마다 따로 부르면 Python↔C 호출이 스텝 수만큼 늘어
+        # 물리 콜백이 길어진다(그동안 /odom 등 다른 발행이 멈춤).
+        mujoco.mj_step(self.model, self.data, nstep=max(1, round(duration / self.model.opt.timestep)))
 
     def pose(self):
         """(x, y, yaw) — world 좌표, yaw는 rad."""

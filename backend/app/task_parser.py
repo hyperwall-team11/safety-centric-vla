@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
+from enum import Enum
 
 from .instruction_intent import (
     IntentDetectionError,
@@ -10,11 +11,28 @@ from .instruction_intent import (
     detect_requested_action,
     validate_executable_instruction,
 )
-from .models import ActionType, NaturalLanguageTaskRequest, TaskOrder
+from .models import ActionType, NaturalLanguageTaskRequest, TaskOrder, TaskOrderPreview
+
+
+class TaskParseErrorCode(str, Enum):
+    INVALID_INSTRUCTION = "INVALID_INSTRUCTION"
+    UNSUPPORTED_CONTROL_ACTION = "UNSUPPORTED_CONTROL_ACTION"
+    ROBOT_NOT_FOUND = "ROBOT_NOT_FOUND"
+    ROBOT_AMBIGUOUS = "ROBOT_AMBIGUOUS"
+    ROBOT_CONFLICT = "ROBOT_CONFLICT"
+    ROBOT_REQUIRED = "ROBOT_REQUIRED"
+    DESTINATION_INVALID = "DESTINATION_INVALID"
+    DESTINATION_REQUIRED = "DESTINATION_REQUIRED"
+    DESTINATION_AMBIGUOUS = "DESTINATION_AMBIGUOUS"
+    OBJECT_AMBIGUOUS = "OBJECT_AMBIGUOUS"
+    ACTION_INVALID = "ACTION_INVALID"
+    ACTION_UNSUPPORTED = "ACTION_UNSUPPORTED"
 
 
 class TaskParseError(ValueError):
-    pass
+    def __init__(self, message: str, code: TaskParseErrorCode) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 NUMBER = r"[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?"
@@ -160,18 +178,28 @@ def _select_robot_id(
     }
     if unknown_mentions:
         unknown = ", ".join(sorted(unknown_mentions))
-        raise TaskParseError(f"등록되지 않은 로봇이 명령에 포함되어 있습니다: {unknown}")
+        raise TaskParseError(
+            f"등록되지 않은 로봇이 명령에 포함되어 있습니다: {unknown}",
+            TaskParseErrorCode.ROBOT_NOT_FOUND,
+        )
     if len(mentioned_known) > 1:
-        raise TaskParseError("여러 로봇이 언급되어 대상 로봇을 하나로 결정할 수 없습니다.")
+        raise TaskParseError(
+            "여러 로봇이 언급되어 대상 로봇을 하나로 결정할 수 없습니다.",
+            TaskParseErrorCode.ROBOT_AMBIGUOUS,
+        )
 
     explicit_robot_id = request.target_robot_id
     if explicit_robot_id is not None:
         if explicit_robot_id not in known_ids:
-            raise TaskParseError(f"등록되지 않은 로봇입니다: {explicit_robot_id}")
+            raise TaskParseError(
+                f"등록되지 않은 로봇입니다: {explicit_robot_id}",
+                TaskParseErrorCode.ROBOT_NOT_FOUND,
+            )
         if mentioned_known and explicit_robot_id not in mentioned_known:
             mentioned = next(iter(mentioned_known))
             raise TaskParseError(
-                f"target_robot_id({explicit_robot_id})와 문장 속 로봇({mentioned})이 다릅니다."
+                f"target_robot_id({explicit_robot_id})와 문장 속 로봇({mentioned})이 다릅니다.",
+                TaskParseErrorCode.ROBOT_CONFLICT,
             )
         return explicit_robot_id
 
@@ -179,7 +207,10 @@ def _select_robot_id(
         return next(iter(mentioned_known))
     if len(known_ids) == 1:
         return next(iter(known_ids))
-    raise TaskParseError("대상 로봇을 식별할 수 없습니다. target_robot_id를 지정해 주세요.")
+    raise TaskParseError(
+        "대상 로봇을 식별할 수 없습니다. target_robot_id를 지정해 주세요.",
+        TaskParseErrorCode.ROBOT_REQUIRED,
+    )
 
 
 def _brackets_are_balanced(text: str) -> bool:
@@ -198,9 +229,15 @@ def _to_finite_float(value: str) -> float:
     try:
         parsed = float(value)
     except ValueError as exc:
-        raise TaskParseError("좌표 숫자를 해석할 수 없습니다.") from exc
+        raise TaskParseError(
+            "좌표 숫자를 해석할 수 없습니다.",
+            TaskParseErrorCode.DESTINATION_INVALID,
+        ) from exc
     if not math.isfinite(parsed):
-        raise TaskParseError("좌표에는 유한한 숫자만 사용할 수 있습니다.")
+        raise TaskParseError(
+            "좌표에는 유한한 숫자만 사용할 수 있습니다.",
+            TaskParseErrorCode.DESTINATION_INVALID,
+        )
     return parsed
 
 
@@ -226,7 +263,10 @@ def _extract_coordinate_candidates(
         re.IGNORECASE,
     )
     if bracket_cue and not _brackets_are_balanced(instruction):
-        raise TaskParseError("좌표 괄호가 닫히지 않았거나 서로 맞지 않습니다.")
+        raise TaskParseError(
+            "좌표 괄호가 닫히지 않았거나 서로 맞지 않습니다.",
+            TaskParseErrorCode.DESTINATION_INVALID,
+        )
 
     candidates: list[DestinationCandidate] = []
     for match in BRACKETED_COORDINATE_PATTERN.finditer(instruction):
@@ -258,7 +298,10 @@ def _extract_coordinate_candidates(
         candidates.append(DestinationCandidate(_coordinate_value(match, frame_id), match.span()))
 
     if bracket_cue and not candidates:
-        raise TaskParseError("좌표 형식이 올바르지 않습니다. x, y와 선택적인 z 값을 확인해 주세요.")
+        raise TaskParseError(
+            "좌표 형식이 올바르지 않습니다. x, y와 선택적인 z 값을 확인해 주세요.",
+            TaskParseErrorCode.DESTINATION_INVALID,
+        )
     return candidates
 
 
@@ -286,7 +329,8 @@ def _extract_zone_candidates(instruction: str) -> list[DestinationCandidate]:
         )
         if (has_latin and has_hangul) or has_glued_entity or has_glued_adverb:
             raise TaskParseError(
-                "구역명 형식이 모호합니다. 조사·부사와 구역명 사이에 공백을 넣어 주세요."
+                "구역명 형식이 모호합니다. 조사·부사와 구역명 사이에 공백을 넣어 주세요.",
+                TaskParseErrorCode.DESTINATION_INVALID,
             )
 
         prefix = instruction[: match.start()].rstrip()
@@ -296,7 +340,8 @@ def _extract_zone_candidates(instruction: str) -> list[DestinationCandidate]:
             is_syntax_token = prefix_token.endswith(ZONE_PREFIX_SYNTAX_SUFFIXES)
             if not is_syntax_token and prefix_token not in ZONE_PREFIX_ADVERBS:
                 raise TaskParseError(
-                    "공백이 포함된 구역명은 따옴표로 묶어 주세요. 예: \"조립 라인 구역\"으로"
+                    "공백이 포함된 구역명은 따옴표로 묶어 주세요. 예: \"조립 라인 구역\"으로",
+                    TaskParseErrorCode.DESTINATION_INVALID,
                 )
         zone_id = f"{name}{match.group('kind')}"
         candidates.append(
@@ -309,9 +354,15 @@ def _extract_destination(instruction: str, frame_id: str) -> DestinationCandidat
     candidates = _extract_coordinate_candidates(instruction, frame_id)
     candidates.extend(_extract_zone_candidates(instruction))
     if not candidates:
-        raise TaskParseError("목적지를 식별할 수 없습니다. 구역/지점 또는 좌표를 포함해 주세요.")
+        raise TaskParseError(
+            "목적지를 식별할 수 없습니다. 구역/지점 또는 좌표를 포함해 주세요.",
+            TaskParseErrorCode.DESTINATION_REQUIRED,
+        )
     if len(candidates) > 1:
-        raise TaskParseError("목적지가 여러 개이므로 단일 작업으로 안전하게 해석할 수 없습니다.")
+        raise TaskParseError(
+            "목적지가 여러 개이므로 단일 작업으로 안전하게 해석할 수 없습니다.",
+            TaskParseErrorCode.DESTINATION_AMBIGUOUS,
+        )
     return candidates[0]
 
 
@@ -329,23 +380,30 @@ def _extract_object_id(
         for match in pattern.finditer(masked):
             object_ids.add(f"{match.group('label')}{match.group('id')}")
     if len(object_ids) > 1:
-        raise TaskParseError("대상 물체가 여러 개이므로 단일 작업으로 해석할 수 없습니다.")
+        raise TaskParseError(
+            "대상 물체가 여러 개이므로 단일 작업으로 해석할 수 없습니다.",
+            TaskParseErrorCode.OBJECT_AMBIGUOUS,
+        )
     return next(iter(object_ids), None)
 
 
-def parse_task_order(
+def parse_task_order_preview(
     request: NaturalLanguageTaskRequest,
     known_robot_ids: list[str],
-) -> TaskOrder:
+) -> TaskOrderPreview:
     instruction = request.instruction.strip()
     try:
         validate_executable_instruction(instruction)
         control_action = detect_control_action(instruction)
     except IntentDetectionError as exc:
-        raise TaskParseError(str(exc)) from exc
+        raise TaskParseError(
+            str(exc),
+            TaskParseErrorCode.INVALID_INSTRUCTION,
+        ) from exc
     if control_action is not None:
         raise TaskParseError(
-            f"{control_action.value} 명령은 현재 TaskOrder v1 자동 변환에서 지원하지 않습니다."
+            f"{control_action.value} 명령은 현재 TaskOrder v1 자동 변환에서 지원하지 않습니다.",
+            TaskParseErrorCode.UNSUPPORTED_CONTROL_ACTION,
         )
 
     robot_id = _select_robot_id(request, instruction, known_robot_ids)
@@ -358,13 +416,33 @@ def parse_task_order(
             has_target_object=target_object_id is not None,
         )
     except IntentDetectionError as exc:
-        raise TaskParseError(str(exc)) from exc
+        raise TaskParseError(
+            str(exc),
+            TaskParseErrorCode.ACTION_INVALID,
+        ) from exc
     if action_type not in {ActionType.MOVE_TO, ActionType.MANIPULATE}:
-        raise TaskParseError(f"현재 지원하지 않는 작업 유형입니다: {action_type.value}")
+        raise TaskParseError(
+            f"현재 지원하지 않는 작업 유형입니다: {action_type.value}",
+            TaskParseErrorCode.ACTION_UNSUPPORTED,
+        )
 
-    return TaskOrder(
+    return TaskOrderPreview(
         instruction=instruction,
         target_robot_id=robot_id,
         target_object_id=target_object_id,
         destination=destination.value,
+        action_type=action_type,
+    )
+
+
+def parse_task_order(
+    request: NaturalLanguageTaskRequest,
+    known_robot_ids: list[str],
+) -> TaskOrder:
+    preview = parse_task_order_preview(request, known_robot_ids)
+    return TaskOrder(
+        instruction=preview.instruction,
+        target_robot_id=preview.target_robot_id,
+        target_object_id=preview.target_object_id,
+        destination=preview.destination,
     )

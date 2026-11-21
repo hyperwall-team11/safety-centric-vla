@@ -1,0 +1,441 @@
+"""MuJoCo ② 사전 시뮬레이션 서비스 POST /twin/simulate (이슈 #53, 제어 계약 13장).
+
+Backend가 보낸 후보 행동과 온톨로지 상태로 트윈(``twin.py``)을 만들고, 로봇을 목표까지 움직여 본 결과만 돌려준다.
+승인 판정과 감사 기록은 Backend(온톨로지)가 한다. MuJoCo ① 정답 좌표는 읽지 않는다.
+
+    python mujoco/twin_simulate.py                       # http://127.0.0.1:8100/twin/simulate
+    python mujoco/twin_simulate.py --request req.json    # 서버 없이 요청 한 건 판정
+
+MANIPULATE(이슈 #95)는 ``state.robots``에 ``robot_model``이 있는 로봇 팔만 받는다. 실제 팔 모델(arms.py)을
+그 위치에 붙여 PICK·PLACE 관절 궤적을 돌리고, 팔·공구가 장애물·물체·다른 로봇·작업자와 닿는지 본다.
+요청 형식은 control/README.md "MANIPULATE 사전 시뮬레이션 (잠정)"에 있다.
+
+결과는 시뮬레이션용 단순화 모델(로봇 원기둥, 정지한 작업자)의 접촉 검사다. 안전 보장으로 해석하지 않고,
+Safety Gate의 ``SAFETY_DISTANCE`` 판정을 대신하지 않는다.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import time
+from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+import mujoco
+
+import numpy as np
+
+import arms
+from twin import ROBOT_SHAPES, WORKER_BODY_RADIUS_M, WORKER_MARGIN_M, TwinError, build_twin, build_twin_xml
+
+CONTRACT_VERSION = "backend-ctl/0.2"
+SUPPORTED_ACTIONS = {"MOVE_TO", "MANIPULATE"}  # MANIPULATE는 #95에서 추가 (형식은 잠정)
+DEFAULT_PORT = 8100  # 제어 계약 13장 기본 주소 http://127.0.0.1:8100
+
+# 아래 세 값은 #50(ONT 판정 기준·시간 제한)이 확정되기 전의 잠정값이다. 확정되면 그 값으로 바꾼다.
+# Worker 스냅샷 허용 나이: 스키마 v1.1 Sensor `last_frame_at` 2초 무수신 시 DEGRADED와 같은 기준
+SNAPSHOT_MAX_AGE_S = 2.0
+# 작업자와의 여유 거리(몸 표면 사이, CV 여유 반경 제외) 하한: 스키마 v1.1 Zone `estop_distance` 기본값 0.6 m
+UNSAFE_DISTANCE_M = 0.6
+# 한 요청에서 시뮬레이션할 최대 구간. 이 안에 목표에 닿지 못하면 GOAL_NOT_REACHED
+MAX_HORIZON_S = 30.0
+
+GOAL_TOLERANCE_M = 0.05
+# MOVE_TO 경로는 실제 어댑터(robot_adapter/diff_drive_core.py)와 같은 제어기로 굴려 본다 (PR #92 리뷰 P1).
+# 어댑터는 방향을 5° 안으로 맞춘 뒤 전진해 직선에서 0.05 m 안에 머물지만, 제자리 회전·감속 시간까지 같게 보려고
+# 같은 제어기를 적분한다. 값은 diff_drive_core와 같아야 하며
+# tests/test_twin_simulate.py가 둘이 같은지 확인한다
+DD_HEADING_TOLERANCE_RAD = math.radians(5)
+DD_K_ANGULAR = 2.0
+DD_K_LINEAR = 1.0
+DD_MAX_ANGULAR = 0.8
+# MOVE_TO는 바닥 평면(z=0) 이동만 판정한다. target_pose z가 이 범위를 벗어나면 판정 불가(ERROR)
+PLANAR_Z_TOLERANCE_M = 0.05
+SNAPSHOT_CLOCK_SKEW_S = 0.5  # observed_at이 snapshot_at보다 이만큼 넘게 미래면 시계 오류로 거부
+MAX_BODY_BYTES = 1_000_000
+# robot_type이 없는 로봇은 가장 큰 반경의 형상으로 보수적으로 둔다
+CONSERVATIVE_ROBOT_TYPE = max(ROBOT_SHAPES, key=lambda k: ROBOT_SHAPES[k][0])
+
+
+class SimulationError(ValueError):
+    """요청을 판정할 수 없는 경우. 응답 result는 ERROR다(Backend는 실행 차단)."""
+
+
+def _parse_time(value, name):
+    if not isinstance(value, str):
+        raise SimulationError(f"{name} must be an ISO 8601 string")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise SimulationError(f"{name}: {exc}") from exc
+    if parsed.tzinfo is None:
+        raise SimulationError(f"{name} must include a UTC offset")
+    return parsed
+
+
+def check_snapshot_fresh(snapshot_at, workers):
+    """Worker 스냅샷이 snapshot_at 기준으로 오래되었으면 거부한다(Fail-Closed)."""
+    if not isinstance(workers, dict):
+        raise SimulationError("worker snapshot is missing; the twin cannot assume an empty site")
+    age = (_parse_time(snapshot_at, "snapshot_at")
+           - _parse_time(workers.get("observed_at"), "workers.observed_at")).total_seconds()
+    if age > SNAPSHOT_MAX_AGE_S:
+        raise SimulationError(f"worker snapshot is stale: {age:.2f}s old (max {SNAPSHOT_MAX_AGE_S}s)")
+    if age < -SNAPSHOT_CLOCK_SKEW_S:
+        raise SimulationError(f"worker snapshot observed_at is {-age:.2f}s after snapshot_at")
+
+
+def _response(result, snapshot_id, started, *, min_distance=None, contact_at=None, horizon=0.0,
+              detail=None):
+    body = {
+        "result": result,
+        "snapshot_id": snapshot_id,
+        "min_worker_distance_m": None if min_distance is None else round(min_distance, 3),
+        "first_contact_at_s": None if contact_at is None else round(contact_at, 3),
+        "simulated_horizon_s": round(horizon, 3),
+        "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+    }
+    if detail:
+        body["detail"] = detail
+    return body
+
+
+def _robot_contacts(model, data, geom_id):
+    for contact in data.contact[:data.ncon]:
+        if geom_id in (contact.geom1, contact.geom2):
+            return True
+    return False
+
+
+def simulate(req):
+    """요청 한 건을 시뮬레이션해 제어 계약 13.2절 응답을 돌려준다. 판정할 수 없으면 result=ERROR."""
+    started = time.perf_counter()
+    snapshot_id = req.get("snapshot_id") if isinstance(req, dict) else None
+    try:
+        return _simulate(req, started)
+    except (SimulationError, TwinError, arms.ArmModelMissing, KeyError, TypeError, ValueError) as exc:
+        return _response("ERROR", snapshot_id, started, detail=str(exc))
+
+
+def _simulate(req, started):
+    if not isinstance(req, dict):
+        raise SimulationError("request body must be a JSON object")
+    if req.get("contract_version") != CONTRACT_VERSION:
+        raise SimulationError(f"contract_version must be {CONTRACT_VERSION!r}")
+    snapshot_id = req.get("snapshot_id")
+    if not isinstance(snapshot_id, str) or not snapshot_id:
+        raise SimulationError("snapshot_id is required")
+    action = req.get("action") or {}
+    if action.get("action_type") not in SUPPORTED_ACTIONS:
+        raise SimulationError(f"unsupported action_type {action.get('action_type')!r}")
+    state = req.get("state")
+    if not isinstance(state, dict):
+        raise SimulationError("state is required")
+    check_snapshot_fresh(req.get("snapshot_at"), state.get("workers"))
+    if action.get("action_type") == "MANIPULATE":
+        return _simulate_manipulate(action, state, snapshot_id, started)
+
+    target = action.get("target_pose") or {}
+    if target.get("frame_id") != "world":
+        raise SimulationError("target_pose.frame_id must be 'world'")
+    position = target.get("position")
+    if not isinstance(position, (list, tuple)) or len(position) != 3:
+        raise SimulationError("target_pose.position needs [x, y, z]")
+    goal = (float(position[0]), float(position[1]))
+    goal_z = float(position[2])
+    if not (math.isfinite(goal_z) and abs(goal_z) <= PLANAR_Z_TOLERANCE_M):
+        raise SimulationError(f"MOVE_TO is planar: target_pose z must be within "
+                              f"{PLANAR_Z_TOLERANCE_M} m of 0, got {position[2]!r}")
+    speed = float(action.get("speed_limit"))
+    if not (math.isfinite(speed) and speed > 0) or not all(math.isfinite(v) for v in goal):
+        raise SimulationError("speed_limit and target_pose must be finite, speed_limit > 0")
+
+    robot_id = action.get("robot_id")
+    robots = [dict(r) for r in state.get("robots") or []]
+    for robot in robots:
+        robot.setdefault("robot_type", CONSERVATIVE_ROBOT_TYPE)
+    if robot_id not in {r.get("robot_id") for r in robots}:
+        raise SimulationError(f"robot {robot_id!r} is not in state.robots")
+    if any(r.get("robot_model") in arms.ARM_MODELS for r in robots):
+        # 로봇 팔도 장애물이다. 원기둥 대신 실제 팔 모델(현재 관절각)을 붙여 접촉을 본다
+        model, data, _ = build_manipulation_twin({**state, "robots": robots})
+    else:
+        model, data = build_twin({**state, "robots": robots})
+
+    name = f"robot:{robot_id}"
+    geom_id = model.geom(name).id
+    qx = model.joint(f"{name}:x").qposadr[0]
+    qy = model.joint(f"{name}:y").qposadr[0]
+    robot_radius = float(model.geom_size[geom_id][0])
+    # 슬라이드 관절 값은 로봇 바디(시작 위치·yaw로 놓임) 기준 상대 이동이므로 월드 좌표와 변환한다
+    body = model.body(name)
+    origin = (float(body.pos[0]), float(body.pos[1]))
+    yaw = 2 * math.atan2(float(body.quat[3]), float(body.quat[0]))
+    cos_y, sin_y = math.cos(yaw), math.sin(yaw)
+
+    def set_world(x, y):
+        dx, dy = x - origin[0], y - origin[1]
+        data.qpos[qx], data.qpos[qy] = cos_y * dx + sin_y * dy, -sin_y * dx + cos_y * dy
+
+    def world():
+        return (float(data.xpos[body.id][0]), float(data.xpos[body.id][1]))
+
+    start = world()
+    workers = [(float(model.body(i).pos[0]), float(model.body(i).pos[1]))
+               for i in range(model.nbody) if model.body(i).name.startswith("worker:")]
+
+    def gap(x, y):
+        # 로봇과 작업자 몸 표면 사이 거리. CV 여유 반경은 빼지 않고 접촉 판정(COLLISION)에만 쓴다
+        return min((math.dist((x, y), w) - robot_radius - WORKER_BODY_RADIUS_M for w in workers),
+                   default=None)
+
+    dt = float(model.opt.timestep)
+    min_gap = gap(*start)
+    if _robot_contacts(model, data, geom_id):
+        return _response("COLLISION", snapshot_id, started, min_distance=min_gap, contact_at=0.0)
+
+    # 차동 구동 제어기를 그대로 적분한다: 방향 오차가 5°를 넘으면 제자리 회전, 아니면 방향을 보정하며 전진
+    x, y, heading = start[0], start[1], yaw
+    t = 0.0
+    steps = math.ceil(MAX_HORIZON_S / dt - 1e-9)
+    for step in range(1, steps + 1):
+        dx, dy = goal[0] - x, goal[1] - y
+        dist = math.hypot(dx, dy)
+        if dist <= GOAL_TOLERANCE_M:
+            break
+        err = math.atan2(math.sin(math.atan2(dy, dx) - heading), math.cos(math.atan2(dy, dx) - heading))
+        w = max(-DD_MAX_ANGULAR, min(DD_MAX_ANGULAR, DD_K_ANGULAR * err))
+        v = 0.0 if abs(err) > DD_HEADING_TOLERANCE_RAD else min(speed, DD_K_LINEAR * dist)
+        x += v * math.cos(heading) * dt
+        y += v * math.sin(heading) * dt
+        heading += w * dt
+        t = step * dt
+        set_world(x, y)
+        mujoco.mj_forward(model, data)
+        g = gap(x, y)
+        if g is not None:
+            min_gap = g if min_gap is None else min(min_gap, g)
+        if _robot_contacts(model, data, geom_id):
+            return _response("COLLISION", snapshot_id, started, min_distance=min_gap, contact_at=t,
+                             horizon=t)
+
+    reached = math.dist(world(), goal) <= GOAL_TOLERANCE_M
+    if min_gap is not None and min_gap < UNSAFE_DISTANCE_M:
+        result = "UNSAFE_DISTANCE"
+    elif not reached:
+        result = "GOAL_NOT_REACHED"
+    else:
+        result = "PASS"
+    return _response(result, snapshot_id, started, min_distance=min_gap, horizon=t)
+
+
+OBJECT_MATCH_TOLERANCE_M = 0.05  # PICK target_pose와 state.objects 위치가 이만큼 넘게 다르면 판정 불가
+
+
+def _vec3(value, name):
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        raise SimulationError(f"{name} needs [x, y, z]")
+    out = [float(v) for v in value]
+    if not all(math.isfinite(v) for v in out):
+        raise SimulationError(f"{name} must be finite")
+    return out
+
+
+def build_manipulation_twin(state):
+    """트윈 장면에 robot_model이 있는 로봇 팔을 실제 모델로 붙인다. (model, data, {robot_id: ArmKinematics})."""
+    spec = mujoco.MjSpec.from_string(build_twin_xml(state))
+    root = arms.scene_root(spec)
+    homes = {}
+    for robot in state.get("robots") or []:
+        key = robot.get("robot_model")
+        if key in arms.ARM_MODELS:
+            pos = _vec3(robot.get("position"), f"robot {robot['robot_id']}.position")
+            homes[robot["robot_id"]] = (key, arms.attach_arm(root, key, f"robot:{robot['robot_id']}/", pos,
+                                                            float(robot.get("yaw_rad") or 0.0)))
+    model = root.compile()
+    data = mujoco.MjData(model)
+    kins = {}
+    for robot in state.get("robots") or []:
+        rid = robot["robot_id"]
+        if rid not in homes:
+            continue
+        key, home = homes[rid]
+        kin = arms.ArmKinematics(model, key, f"robot:{rid}/", home)
+        joints = robot.get("joint_positions")
+        if joints is None:
+            q = kin.home
+        elif isinstance(joints, (list, tuple)) and len(joints) == kin.dof:
+            q = np.array([float(v) for v in joints])
+        else:
+            raise SimulationError(f"robot {rid}: joint_positions needs {kin.dof} values")
+        kin.set(data, q)
+        kins[rid] = kin
+    mujoco.mj_forward(model, data)
+    return model, data, kins
+
+
+def _simulate_manipulate(action, state, snapshot_id, started):
+    robot_id = action.get("robot_id")
+    robots = {r.get("robot_id"): r for r in state.get("robots") or []}
+    if robot_id not in robots:
+        raise SimulationError(f"robot {robot_id!r} is not in state.robots")
+    robot = robots[robot_id]
+    if robot.get("robot_model") not in arms.ARM_MODELS:
+        raise SimulationError(f"robot {robot_id!r}: MANIPULATE needs robot_model in "
+                              f"{sorted(arms.ARM_MODELS)}")
+    params = action.get("parameters") or {}
+    manipulation = str(params.get("manipulation", "")).upper()
+    if manipulation not in ("PICK", "PLACE"):
+        raise SimulationError("parameters.manipulation must be PICK or PLACE")
+    object_id = params.get("object_id")
+    objects = {o.get("object_id"): o for o in state.get("objects") or []}
+    if object_id not in objects:
+        raise SimulationError(f"object {object_id!r} is not in state.objects")
+    target = params.get("target_pose") or action.get("target_pose") or {}
+    if target.get("frame_id") != "world":
+        raise SimulationError("target_pose.frame_id must be 'world'")
+    goal = _vec3(target.get("position"), "target_pose.position")
+    speed = float(action.get("speed_limit"))
+    if not (math.isfinite(speed) and speed > 0):
+        raise SimulationError("speed_limit must be finite and > 0")
+    holding = robot.get("holding_object_id")
+    if manipulation == "PICK":
+        if holding is not None:
+            raise SimulationError(f"robot {robot_id!r} already holds {holding!r}")
+        gap_to_object = math.dist(_vec3(objects[object_id].get("position"), "object.position"), goal)
+        if gap_to_object > OBJECT_MATCH_TOLERANCE_M:
+            raise SimulationError(f"target_pose is {gap_to_object:.3f} m from object {object_id!r}")
+    elif holding != object_id:
+        raise SimulationError(f"robot {robot_id!r} does not hold {object_id!r}")
+
+    robots_with_type = []
+    for r in state.get("robots") or []:
+        r = dict(r)
+        r.setdefault("robot_type", arms.ROBOT_TYPE if r.get("robot_model") in arms.ARM_MODELS
+                     else CONSERVATIVE_ROBOT_TYPE)
+        robots_with_type.append(r)
+    model, data, kins = build_manipulation_twin({**state, "robots": robots_with_type})
+    kin = kins[robot_id]
+    obj_mocap = model.body_mocapid[model.body(f"object:{object_id}").id]
+    obj_geom = model.geom(f"object:{object_id}").id
+    if manipulation == "PLACE":
+        data.mocap_pos[obj_mocap] = kin.tcp(data)  # 들고 있는 물체는 TCP에 있다
+        mujoco.mj_forward(model, data)
+    workers = [g for g in range(model.ngeom) if model.geom(g).name.startswith("worker:")]
+    fromto = np.zeros(6)
+
+    def gap(held):
+        # 팔·공구(들고 있으면 물체 포함) 표면과 작업자 몸 표면 사이 거리.
+        # 트윈의 작업자 캡슐에는 CV 여유 반경이 더해져 있어 다시 더한다
+        mine = list(kin.geom_ids) + ([obj_geom] if held else [])
+        best = None
+        for g in mine:
+            for w in workers:
+                d = mujoco.mj_geomDistance(model, data, g, w, 10.0, fromto) + WORKER_MARGIN_M
+                best = d if best is None else min(best, d)
+        return best
+
+    own = kin.body_ids
+    # 들고 있는 물체와 부딪힐 수 있는 형상: 팔 자신과 물체를 뺀 충돌 형상 전부(작업자·다른 물체·다른 로봇)
+    held_targets = [g for g in range(model.ngeom)
+                    if g != obj_geom and model.geom_bodyid[g] not in own
+                    and (model.geom_contype[g] or model.geom_conaffinity[g])]
+
+    def contact(held):
+        for c in data.contact[:data.ncon]:
+            b1, b2 = model.geom_bodyid[c.geom1], model.geom_bodyid[c.geom2]
+            mine1, mine2 = b1 in own, b2 in own
+            if mine1 == mine2:
+                continue  # 다른 물체끼리이거나 팔 자신의 링크끼리
+            other = c.geom2 if mine1 else c.geom1
+            if other == obj_geom:
+                continue  # 잡는(들고 있는) 대상 물체와 팔의 접촉은 정상
+            return True
+        if held:
+            # 물체와 작업자는 둘 다 mocap(고정) 바디라 MuJoCo가 접촉을 만들지 않으므로 거리로 직접 본다
+            for g in held_targets:
+                if mujoco.mj_geomDistance(model, data, obj_geom, g, 0.0, fromto) < 0:
+                    return True
+        return False
+
+    plan = arms.plan_manipulation(kin, data, kin.get(data), manipulation, goal, speed,
+                                  dt=float(model.opt.timestep), holding=manipulation == "PLACE")
+    held = manipulation == "PLACE"
+    min_gap = gap(held)
+    if contact(held):
+        return _response("COLLISION", snapshot_id, started, min_distance=min_gap, contact_at=0.0)
+    t = 0.0
+    for p in plan.points:
+        if p.t > MAX_HORIZON_S:
+            return _response("GOAL_NOT_REACHED", snapshot_id, started, min_distance=min_gap, horizon=t,
+                             detail=f"plan needs {plan.duration:.1f}s > {MAX_HORIZON_S}s")
+        t = p.t
+        kin.set(data, p.q)
+        mujoco.mj_kinematics(model, data)
+        if p.holding:
+            data.mocap_pos[obj_mocap] = kin.tcp(data)
+        mujoco.mj_forward(model, data)
+        g = gap(p.holding)
+        if g is not None:
+            min_gap = g if min_gap is None else min(min_gap, g)
+        if contact(p.holding):
+            return _response("COLLISION", snapshot_id, started, min_distance=min_gap, contact_at=t, horizon=t)
+    if min_gap is not None and min_gap < UNSAFE_DISTANCE_M:
+        return _response("UNSAFE_DISTANCE", snapshot_id, started, min_distance=min_gap, horizon=t)
+    if not plan.reached:
+        return _response("GOAL_NOT_REACHED", snapshot_id, started, min_distance=min_gap, horizon=t,
+                         detail=plan.reason)
+    return _response("PASS", snapshot_id, started, min_distance=min_gap, horizon=t)
+
+
+class Handler(BaseHTTPRequestHandler):
+    def _send(self, status, body):
+        raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def do_POST(self):
+        if self.path != "/twin/simulate":
+            self._send(404, {"detail": "not found"})
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0 or length > MAX_BODY_BYTES:
+            self._send(400, {"result": "ERROR", "detail": "body is empty or too large"})
+            return
+        try:
+            req = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            self._send(400, {"result": "ERROR", "detail": f"invalid JSON: {exc}"})
+            return
+        self._send(200, simulate(req))
+
+    def log_message(self, fmt, *args):
+        pass
+
+
+def make_server(host="127.0.0.1", port=DEFAULT_PORT):
+    return ThreadingHTTPServer((host, port), Handler)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--request", type=Path, help="서버 없이 요청 JSON 한 건을 판정해 출력")
+    args = parser.parse_args()
+    if args.request:
+        req = json.loads(args.request.read_text(encoding="utf-8"))
+        print(json.dumps(simulate(req), ensure_ascii=False, indent=2))
+        return
+    server = make_server(args.host, args.port)
+    print(f"MuJoCo ② 사전 시뮬레이션: http://{args.host}:{args.port}/twin/simulate")
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

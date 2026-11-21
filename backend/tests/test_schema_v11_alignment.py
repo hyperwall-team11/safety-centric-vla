@@ -15,6 +15,7 @@ from app.models import (
     Zone,
 )
 from app.store import store
+from tests.zone_fixtures import register_work_zones
 
 
 NOW = datetime(2026, 10, 30, tzinfo=timezone.utc)
@@ -171,6 +172,7 @@ class SchemaV11ApiTest(unittest.TestCase):
         zone_id: str = "A구역",
         related_robot_ids: list[str] | None = None,
     ) -> dict:
+        register_work_zones(self.client, zone_id)
         response = self.client.post(
             "/hazards",
             json={
@@ -238,6 +240,8 @@ class SchemaV11ApiTest(unittest.TestCase):
         self.assertEqual(evaluated.json()["status"], "REJECTED")
 
     def test_hazard_scope_uses_related_robot_or_destination_zone(self) -> None:
+        other_robot = {**ROBOT, "robot_id": "robot-99"}
+        self.assertEqual(self.client.post("/robots", json=other_robot).status_code, 201)
         self.create_hazard(zone_id="B구역", related_robot_ids=["robot-99"])
         task = self.create_task("A구역")
         proposal = self.create_proposal(task["task_id"], 0.4)
