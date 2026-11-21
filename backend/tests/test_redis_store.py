@@ -4,6 +4,7 @@ import os
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -18,6 +19,7 @@ class FakeRedisLock:
         self.client = client
         self.name = name
         self.acquired = False
+        self.local = SimpleNamespace(token=uuid4().hex)
 
     def acquire(
         self,
@@ -28,6 +30,7 @@ class FakeRedisLock:
         if self.client.fail_lock or self.name in self.client.locked_names:
             return False
         self.client.locked_names.add(self.name)
+        self.client.data[self.name] = self.local.token
         self.client.lock_acquisitions += 1
         self.acquired = True
         return True
@@ -35,6 +38,8 @@ class FakeRedisLock:
     def release(self) -> None:
         if not self.acquired:
             raise RuntimeError("획득하지 않은 잠금입니다.")
+        if self.client.data.get(self.name) == self.local.token:
+            self.client.data.pop(self.name, None)
         self.client.locked_names.discard(self.name)
         self.acquired = False
 
@@ -42,6 +47,7 @@ class FakeRedisLock:
         return (
             self.acquired
             and self.name in self.client.locked_names
+            and self.client.data.get(self.name) == self.local.token
             and not self.client.expire_lock
         )
 
@@ -62,7 +68,9 @@ class FakeRedis:
         self.locked_names: set[str] = set()
         self.lock_acquisitions = 0
         self.lock_extensions = 0
+        self.eval_calls = 0
         self.expire_lock = False
+        self.replace_lock_before_eval = False
         self.published: list[tuple[str, str]] = []
 
     def ping(self) -> bool:
@@ -78,6 +86,20 @@ class FakeRedis:
             raise ConnectionError("redis write failed")
         self.data[key] = value
         return True
+
+    def eval(self, script: str, numkeys: int, *keys_and_args) -> int:
+        del script
+        self.eval_calls += 1
+        self.assert_numkeys = numkeys
+        lock_key, state_key, expected_token, payload = keys_and_args
+        if self.fail_set:
+            raise ConnectionError("redis write failed")
+        if self.expire_lock or self.replace_lock_before_eval:
+            self.data[lock_key] = "another-owner-token"
+        if self.data.get(lock_key) != expected_token:
+            return 0
+        self.data[state_key] = payload
+        return 1
 
     def publish(self, channel: str, message: str) -> int:
         self.published.append((channel, message))
@@ -187,14 +209,27 @@ class RedisStoreTest(unittest.TestCase):
         self.assertEqual(store.robots, {})
         self.assertNotIn("safety-centric-vla:state:v1", client.data)
 
-    def test_owned_lock_is_extended_before_state_save(self) -> None:
+    def test_state_save_atomically_checks_lock_token(self) -> None:
         client = FakeRedis()
         store = RedisStore("redis://unused", client=client)
 
         with store.lock:
             store.robots["robot-01"] = robot()
 
-        self.assertEqual(client.lock_extensions, 1)
+        self.assertEqual(client.eval_calls, 1)
+        self.assertEqual(client.lock_extensions, 0)
+
+    def test_replaced_lock_token_cannot_overwrite_newer_state(self) -> None:
+        client = FakeRedis()
+        store = RedisStore("redis://unused", client=client)
+        client.replace_lock_before_eval = True
+
+        with self.assertRaisesRegex(StoreUnavailableError, "잠금"):
+            with store.lock:
+                store.robots["robot-01"] = robot()
+
+        self.assertEqual(store.robots, {})
+        self.assertNotIn("safety-centric-vla:state:v1", client.data)
 
     def test_estop_publish_uses_latest_shared_state(self) -> None:
         client = FakeRedis()
@@ -231,6 +266,46 @@ class RedisStoreTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 503, response.text)
         self.assertIn("Redis", response.json()["detail"])
+        self.assertEqual(
+            len(main_module.action_dispatcher.estop_commands),
+            previous_estop_count,
+        )
+
+    def test_execute_commit_failure_triggers_estop(self) -> None:
+        client = FakeRedis()
+        redis_store = RedisStore("redis://unused", client=client)
+        original_store = main_module.store
+        previous_estop_count = len(main_module.action_dispatcher.estop_commands)
+        main_module.store = redis_store
+        try:
+            main_module.seed_rules()
+            api = TestClient(main_module.app)
+            self.assertEqual(
+                api.post("/robots", json=robot().model_dump(mode="json")).status_code,
+                201,
+            )
+            task = api.post(
+                "/task-orders/from-natural-language",
+                json={"instruction": "robot-01 로봇을 A구역으로 이동해"},
+            ).json()
+            proposal = api.post(
+                f"/task-orders/{task['task_id']}/action-proposals",
+                json={},
+            ).json()
+            evaluated = api.post(
+                f"/action-proposals/{proposal['proposal_id']}/evaluate",
+            )
+            self.assertEqual(evaluated.json()["status"], "APPROVED")
+            client.fail_set = True
+
+            response = api.post(
+                f"/action-proposals/{proposal['proposal_id']}/execute",
+            )
+        finally:
+            client.fail_set = False
+            main_module.store = original_store
+
+        self.assertEqual(response.status_code, 503, response.text)
         self.assertEqual(
             len(main_module.action_dispatcher.estop_commands),
             previous_estop_count + 1,

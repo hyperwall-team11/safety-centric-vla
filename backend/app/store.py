@@ -25,6 +25,13 @@ from .models import (
 SNAPSHOT_VERSION = 1
 DEFAULT_REDIS_KEY = "safety-centric-vla:state:v1"
 LOGGER = logging.getLogger(__name__)
+ATOMIC_SNAPSHOT_SAVE_SCRIPT = """
+if redis.call('get', KEYS[1]) ~= ARGV[1] then
+    return 0
+end
+redis.call('set', KEYS[2], ARGV[2])
+return 1
+"""
 
 
 class StoreUnavailableError(RuntimeError):
@@ -51,6 +58,8 @@ class RedisClient(Protocol):
     def get(self, key: str) -> str | bytes | None: ...
 
     def set(self, key: str, value: str) -> Any: ...
+
+    def eval(self, script: str, numkeys: int, *keys_and_args: Any) -> Any: ...
 
     def publish(self, channel: str, message: str) -> Any: ...
 
@@ -257,8 +266,7 @@ class _RedisStoreLock:
             try:
                 current = _serialize_state(store)
                 if current != before:
-                    store._ensure_lock_owned(distributed_lock)
-                    store._save(current)
+                    store._save(current, distributed_lock)
             except Exception as save_error:
                 failure = save_error
                 try:
@@ -286,7 +294,7 @@ class RedisStore:
     The API currently mutates Pydantic objects in place. A single versioned JSON
     snapshot preserves that contract while Redis provides restart recovery and
     cross-process serialization. Every outer lock reloads the latest snapshot;
-    every exit writes the complete new state with one atomic SET.
+    every exit atomically verifies the lock token and writes the complete state.
     """
 
     backend_name = "redis"
@@ -431,15 +439,36 @@ class RedisStore:
         except Exception as exc:
             raise StoreUnavailableError("Redis 상태 스냅샷을 읽을 수 없습니다.") from exc
 
-    def _save(self, snapshot: dict[str, Any]) -> None:
+    @staticmethod
+    def _lock_token(distributed_lock: RedisLock) -> str | bytes:
+        token = getattr(getattr(distributed_lock, "local", None), "token", None)
+        if token is None:
+            raise StoreUnavailableError("Redis 상태 잠금 토큰을 확인할 수 없습니다.")
+        return token
+
+    def _save(
+        self,
+        snapshot: dict[str, Any],
+        distributed_lock: RedisLock,
+    ) -> None:
         payload = json.dumps(
             snapshot,
             ensure_ascii=False,
             separators=(",", ":"),
         )
         try:
-            if not self._client.set(self._key, payload):
-                raise StoreUnavailableError("Redis SET 응답이 정상이 아닙니다.")
+            saved = self._client.eval(
+                ATOMIC_SNAPSHOT_SAVE_SCRIPT,
+                2,
+                self._lock_key,
+                self._key,
+                self._lock_token(distributed_lock),
+                payload,
+            )
+            if saved != 1:
+                raise StoreUnavailableError(
+                    "Redis 상태 잠금이 만료되어 스냅샷을 저장하지 않았습니다."
+                )
         except StoreUnavailableError:
             raise
         except Exception as exc:

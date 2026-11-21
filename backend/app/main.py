@@ -372,12 +372,14 @@ def stop_action_dispatcher() -> None:
 
 @app.exception_handler(StoreUnavailableError)
 def store_unavailable_handler(
-    _request: Request,
+    request: Request,
     exc: StoreUnavailableError,
 ) -> JSONResponse:
-    # 명령 발행 후 저장이 끊긴 경우까지 로봇이 계속 움직이지 않도록 즉시 정지한다.
-    with ESTOP_PUBLISH_LOCK:
-        _publish_estop(True, f"Redis 저장소 장애: {exc}")
+    # 읽기 실패나 잠금 경합은 503만 반환한다. 명령을 이미 발행한 요청의
+    # 커밋이 실패했을 때만 물리 실행과 Backend 상태 불일치를 막기 위해 정지한다.
+    if getattr(request.state, "estop_on_store_failure", False):
+        with ESTOP_PUBLISH_LOCK:
+            _publish_estop(True, f"Redis 실행 상태 커밋 실패: {exc}")
     return JSONResponse(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         content={"detail": str(exc)},
@@ -847,7 +849,7 @@ def evaluate_action(proposal_id: str) -> ActionProposal:
 
 
 @app.post("/action-proposals/{proposal_id}/execute", response_model=ActionProposal)
-def execute_action(proposal_id: str) -> ActionProposal:
+def execute_action(proposal_id: str, http_request: Request) -> ActionProposal:
     started_at = perf_counter()
     with store.lock:
         proposal = store.proposals.get(proposal_id)
@@ -922,6 +924,7 @@ def execute_action(proposal_id: str) -> ActionProposal:
                 robot,
                 list(store.zones.values()),
             )
+            http_request.state.estop_on_store_failure = True
         except CommandSerializationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except DispatchError as exc:
