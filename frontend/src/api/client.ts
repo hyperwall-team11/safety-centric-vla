@@ -11,6 +11,12 @@ export class ApiError extends Error {
   }
 }
 
+export class NetworkError extends Error {
+  constructor(public cause: unknown) {
+    super("Backend에 연결할 수 없습니다.");
+  }
+}
+
 /** Backend에 아직 없는 API. 화면은 이 오류를 받으면 "API 대기" 상태를 보여 준다. */
 export class MissingApiError extends Error {
   constructor(public endpoint: string) {
@@ -19,10 +25,15 @@ export class MissingApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${BASE}${path}`, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${BASE}${path}`, {
+      ...init,
+      headers: { "Content-Type": "application/json", ...init?.headers },
+    });
+  } catch (error) {
+    throw new NetworkError(error);
+  }
   const body = response.status === 204 ? null : await response.json().catch(() => null);
   if (!response.ok) {
     // 405: 조회 API가 없는 Backend(#75 이전). /workers/snapshot의 404는 "아직 관측 없음"이다.

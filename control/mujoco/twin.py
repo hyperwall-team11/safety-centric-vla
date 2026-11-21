@@ -10,7 +10,7 @@ MuJoCo ①(scenario_scene.xml)의 정답 좌표는 읽지 않는다. 정답은 `
      "zones": [{"zone_id", "zone_type", "frame_id", "geometry": {...}}],
      "objects": [{"object_id", "frame_id", "position": [x, y, z], "size": [sx, sy, sz]}]}  # 선택 (#95)
 
-로봇 팔(``robot_model``이 ``arms.ARM_MODELS``에 있는 로봇)은 원기둥을 만들지 않는다.
+로봇 팔(``robot_model``이 ``arms.ARM_MODELS``에 있는 로봇)은 원기둥을 만들지 않는다(MOVE_TO·MANIPULATE 모두).
 ``twin_simulate``가 실제 팔 모델을 그 자리에 붙인다.
 이동형 운반 로봇(``robot_model`` ``"amr"``)은 차체 크기의 원기둥이고, ``holding_object_id``가 있으면
 실린 팔레트·상자까지 덮는 크기로 키운다(``amr.footprint_radius``·``footprint_height``). ``objects``는 상자 장애물이며 MANIPULATE의 대상 물체도 여기 있다.
@@ -206,6 +206,8 @@ def build_twin_xml(state, worker_margin=WORKER_MARGIN_M):
 
     return (
         '<mujoco model="twin">'
+        # yaw_rad를 euler에 그대로 넣으므로 각도 단위를 라디안으로 둔다 (MuJoCo 기본값은 도)
+        '<compiler angle="radian"/>'
         '<option timestep="0.01" gravity="0 0 0"/>'
         f'<asset>{"".join(assets)}</asset>'
         '<worldbody>'

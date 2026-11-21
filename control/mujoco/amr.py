@@ -211,46 +211,50 @@ class PlantAmrs:
                     data.mocap_pos[pallet] = tr["start"]
                 else:
                     self._carry(data, robot_id)
-                self.results.append((robot_id, self._result(cid, False, "CANCELLED", "이송 취소")))
+                self._push(robot_id, self._result(cid, False, "CANCELLED", "이송 취소"))
+            else:
+                # 진행 중 이송이 없어도 답한다: 직전에 끝난 싣기·내리기 결과가 어댑터에 늦게 닿아도
+                # held_object_id로 적재 상태를 다시 맞출 수 있게 한다 (PR #104 리뷰 P1)
+                self._push(robot_id, self._result(cid, False, "CANCELLED", "진행 중 이송 없음"))
             return
         if robot_id in self.transfer:
-            self.results.append((robot_id, self._result(cid, False, "ROBOT_BUSY", "이송 중")))
+            self._push(robot_id, self._result(cid, False, "ROBOT_BUSY", "이송 중"))
             return
         position = (cmd.get("target_pose") or {}).get("position")
         object_id = cmd.get("object_id")
         center = self.pose[robot_id][:2]
         if kind == "PICK":
             if robot_id in self.held:
-                self.results.append((robot_id, self._result(cid, False, "INVALID", "이미 팔레트를 싣고 있음")))
+                self._push(robot_id, self._result(cid, False, "INVALID", "이미 팔레트를 싣고 있음"))
                 return
             if object_id not in self.pallets or object_id in self.held.values():
-                self.results.append((robot_id, self._result(cid, False, "INVALID", f"{object_id} 없음")))
+                self._push(robot_id, self._result(cid, False, "INVALID", f"{object_id} 없음"))
                 return
             start = data.mocap_pos[self.pallets[object_id]].copy()
             off = abs(math.dist(start[:2], center) - LOAD_OFFSET_M)
             if off > LOAD_REACH_M:
-                self.results.append((robot_id, self._result(
-                    cid, False, "INVALID", f"{object_id}이(가) 차체 앞 거치대 자리에 없음 ({off:.2f} m)")))
+                self._push(robot_id, self._result(
+                    cid, False, "INVALID", f"{object_id}이(가) 차체 앞 거치대 자리에 없음 ({off:.2f} m)"))
                 return
             end = None
             goal_xy = start[:2]  # 차체 위 (매 스텝 차체 위치로)
         elif kind == "PLACE":
             if self.held.get(robot_id) != object_id:
-                self.results.append((robot_id, self._result(cid, False, "INVALID", f"{object_id}을(를) 싣고 있지 않음")))
+                self._push(robot_id, self._result(cid, False, "INVALID", f"{object_id}을(를) 싣고 있지 않음"))
                 return
             if not (isinstance(position, (list, tuple)) and len(position) == 3):
-                self.results.append((robot_id, self._result(cid, False, "INVALID", "target_pose.position 필요")))
+                self._push(robot_id, self._result(cid, False, "INVALID", "target_pose.position 필요"))
                 return
             end = np.array([float(v) for v in position])
             off = abs(math.dist(end[:2], center) - LOAD_OFFSET_M)
             if off > LOAD_REACH_M:
-                self.results.append((robot_id, self._result(
-                    cid, False, "INVALID", f"내릴 위치가 차체 앞 거치대 자리가 아님 ({off:.2f} m)")))
+                self._push(robot_id, self._result(
+                    cid, False, "INVALID", f"내릴 위치가 차체 앞 거치대 자리가 아님 ({off:.2f} m)"))
                 return
             start = None
             goal_xy = end[:2]
         else:
-            self.results.append((robot_id, self._result(cid, False, "UNSUPPORTED", f"{kind!r}")))
+            self._push(robot_id, self._result(cid, False, "UNSUPPORTED", f"{kind!r}"))
             return
         self.twist[robot_id] = (0.0, 0.0)
         yaw = math.atan2(goal_xy[1] - center[1], goal_xy[0] - center[0])
@@ -307,7 +311,7 @@ class PlantAmrs:
         else:
             self.held.pop(rid, None)
         done = "싣기" if tr["kind"] == "PICK" else "내리기"
-        self.results.append((rid, self._result(tr["cid"], True, None, f"{tr['kind']} ({done}) 완료")))
+        self._push(rid, self._result(tr["cid"], True, None, f"{tr['kind']} ({done}) 완료"))
 
     def _carry(self, data, rid):
         x, y, yaw = self.pose[rid]
@@ -324,6 +328,11 @@ class PlantAmrs:
         x, y, yaw = self.pose[robot_id]
         v, w = self.twist[robot_id]
         return x, y, yaw, v, w
+
+    def _push(self, robot_id, result):
+        # 모든 결과에 그 시점의 실제 적재 상태를 싣는다. 어댑터는 이 값을 권위 있는 상태로 쓴다
+        result["held_object_id"] = self.held.get(robot_id)
+        self.results.append((robot_id, result))
 
     def pop_results(self):
         out, self.results = self.results, []

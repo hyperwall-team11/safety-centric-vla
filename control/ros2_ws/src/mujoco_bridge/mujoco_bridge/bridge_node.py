@@ -8,6 +8,7 @@
     ros2 run mujoco_bridge bridge --ros-args -p worker_motion:=false -p camera_hz:=10.0
     mjpython <install>/lib/mujoco_bridge/bridge --ros-args -p viewer:=true   # 뷰어 (macOS)
     ros2 run mujoco_bridge bridge --ros-args -p arms:=true         # 공장 현장 + 로봇 팔 4대 (이슈 #95)
+    ros2 run mujoco_bridge bridge --ros-args -p cctv_renderer:=threejs        # CCTV를 Three.js로 렌더 (#55)
 
 arms:=true이면 plant_scene.xml에 팔 4대(arms.PLANT_ARMS)를 더한 장면을 쓰고(model_path 무시), 팔마다
 /<seg>/arm/joint_command(JointState 위치 목표)·/<seg>/arm/gripper(Bool, 닫힘)를 구독해
@@ -18,8 +19,6 @@ arms:=true이면 plant_scene.xml에 팔 4대(arms.PLANT_ARMS)를 더한 장면�
 amrs:=true이면 AMR 2대(amr.PLANT_AMRS)와 팔레트·거치대를 더하고, AMR마다 /<seg>/cmd_vel(Twist)·
 /<seg>/amr/load_command(String JSON, 싣기·내리기)를 구독해 /<seg>/odom·/<seg>/amr/load_result를 발행한다.
 AMR 차체와 실린 팔레트는 운동학으로 움직인다(물리 접촉 없음). 명령은 robot_adapter의 amr_adapter가 보낸다.
-
-    ros2 run mujoco_bridge bridge --ros-args -p cctv_renderer:=threejs        # CCTV를 Three.js로 렌더 (#55)
 
 cctv_renderer:=threejs이면 고정 CCTV(cctv_1, cctv_2)는 MuJoCo 렌더 대신 Three.js 렌더 영상을 발행한다.
 브리지는 camera_hz로 MuJoCo 상태를 프레임으로 묶어 로컬 HTTP(threejs_port)로 내주고, 렌더러
@@ -51,6 +50,7 @@ from std_msgs.msg import Bool, String
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
 ANY_NUMBER = ParameterDescriptor(dynamic_typing=True)  # 15와 15.0을 모두 받는다
+SLOW_CALLBACK_S = 0.2  # 이보다 오래 걸린 물리 콜백은 경고
 DUPLICATE_CHECK_S = 5.0  # 카메라 토픽에 다른 발행자가 있는지 확인하는 주기
 MAX_CATCHUP_S = 0.1  # 한 번의 물리 타이머에서 따라잡을 최대 시뮬 시간 (밀리면 실시간보다 느려짐)
 
@@ -191,7 +191,7 @@ class MujocoBridge(Node):
             # 물리 타이머마다 그리면 카메라 렌더가 밀리므로 화면 갱신은 30Hz로 따로
             self.create_timer(1.0 / 30.0, self._sync_viewer)
 
-        self.arm_joint_pubs = {}
+        self.arm_joint_pubs, self.grasp_pubs = {}, {}
         if self.plant_arms:
             from safety_control.interfaces import topic_segment
             for rid in self.plant_arms.kins:
@@ -200,6 +200,7 @@ class MujocoBridge(Node):
                                          lambda msg, r=rid: self._on_arm_command(r, msg), 10)
                 self.create_subscription(Bool, f"/{seg}/arm/gripper",
                                          lambda msg, r=rid: self._on_gripper(r, msg), 10)
+                self.grasp_pubs[rid] = self.create_publisher(String, f"/{seg}/arm/grasp_state", 10)
                 self.arm_joint_pubs[rid] = self.create_publisher(JointState, f"/{seg}/joint_states", 10)
 
         self.amr_odom_pubs, self.amr_result_pubs = {}, {}
@@ -247,7 +248,11 @@ class MujocoBridge(Node):
             self.get_logger().warning(str(exc))
 
     def _on_gripper(self, robot_id, msg: Bool):
-        self.plant_arms.set_gripper(self.sim.data, robot_id, bool(msg.data))
+        held = self.plant_arms.set_gripper(self.sim.data, robot_id, bool(msg.data))
+        # 실제로 잡았는지 어댑터에 알린다. 어댑터는 이 결과를 받기 전에는 파지 성공으로 보지 않는다
+        name = self.plant_arms.box_name(held) if held is not None else None
+        self.grasp_pubs[robot_id].publish(String(data=json.dumps(
+            {"closed": bool(msg.data), "held": name}, ensure_ascii=False)))
 
     def _on_amr_load(self, robot_id, msg: String):
         try:
@@ -280,6 +285,12 @@ class MujocoBridge(Node):
             if self.plant_amrs:
                 self.plant_amrs.step(self.sim.data, self.sim.time - before)
                 self._publish_amr_results()
+        spent = time.monotonic() - now
+        if spent > SLOW_CALLBACK_S:
+            # 콜백이 길면 그동안 /odom 등 다른 발행이 멈춘다 (어댑터는 /odom 0.5초 끊김을 HW_ERROR로 본다)
+            self.get_logger().warning(
+                f"물리 콜백 {spent * 1000:.0f} ms (lag {lag * 1000:.0f} ms)", throttle_duration_sec=5.0
+            )
         if now - self.last_rtf_log >= 10.0:
             rtf = (self.sim.time - self.sim_start) / (now - self.wall_start)
             self.get_logger().info(f"sim {self.sim.time:.1f} s / wall {now - self.wall_start:.1f} s "

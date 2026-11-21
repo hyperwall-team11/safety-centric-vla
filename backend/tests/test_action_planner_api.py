@@ -1,7 +1,10 @@
 import unittest
+from threading import Event, Thread
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from app.action_planner import VlaActionPlanner
 from app.main import app, seed_rules
 from app.store import store
 
@@ -24,6 +27,46 @@ def robot_payload(
         "velocity": {"x": 0, "y": 0, "z": 0},
         "motion_limits": {"max_speed": max_speed, "max_acceleration": 0.5},
     }
+
+
+class StubVlaOutputProvider:
+    model_name = "stub-vla"
+    model_version = "test-1"
+
+    def generate(self, task, robot, request, *, destination_zone=None):
+        speed_limit = request.speed_limit or 0.3
+        return {
+            "action_type": "MOVE_TO",
+            "parameters": {
+                "target_pose": task.destination.model_dump(mode="json"),
+                "speed_limit": speed_limit,
+            },
+            "trajectory": None,
+            "frame_id": robot.pose.frame_id,
+            "speed_limit": speed_limit,
+        }
+
+
+class BlockingVlaOutputProvider(StubVlaOutputProvider):
+    def __init__(self) -> None:
+        self.started = Event()
+        self.release = Event()
+
+    def generate(self, task, robot, request, *, destination_zone=None):
+        self.started.set()
+        if not self.release.wait(2):
+            raise TimeoutError("테스트 추론 대기 시간 초과")
+        return super().generate(
+            task,
+            robot,
+            request,
+            destination_zone=destination_zone,
+        )
+
+
+class FailingVlaOutputProvider(StubVlaOutputProvider):
+    def generate(self, task, robot, request, *, destination_zone=None):
+        raise TimeoutError("모델 서버 응답 시간 초과")
 
 
 class ActionPlannerApiTest(unittest.TestCase):
@@ -63,6 +106,28 @@ class ActionPlannerApiTest(unittest.TestCase):
             headers=headers,
         )
 
+    def external_move_proposal(
+        self,
+        task: dict,
+        *,
+        robot_id: str = "robot-01",
+        trajectory=None,
+    ) -> dict:
+        return {
+            "task_id": task["task_id"],
+            "robot_id": robot_id,
+            "action_type": "MOVE_TO",
+            "parameters": {
+                "target_pose": task["destination"],
+                "speed_limit": 0.3,
+            },
+            "trajectory": trajectory,
+            "frame_id": task["destination"].get("frame_id", "map"),
+            "speed_limit": 0.3,
+            "model_name": "external-vla",
+            "model_version": "test-1",
+        }
+
     def test_generates_move_to_and_transitions_task_to_planning(self) -> None:
         task = self.create_task()
         response = self.generate(task["task_id"])
@@ -90,6 +155,113 @@ class ActionPlannerApiTest(unittest.TestCase):
         self.assertEqual(stored_task["status"], "PLANNING")
         self.assertEqual(store.logs, [])
 
+    def test_vla_planner_reuses_existing_generation_api(self) -> None:
+        task = self.create_task()
+
+        with patch("app.main.planner", VlaActionPlanner(StubVlaOutputProvider())):
+            response = self.generate(task["task_id"], {"speed_limit": 0.2})
+
+        self.assertEqual(response.status_code, 201, response.text)
+        proposal = response.json()
+        self.assertEqual(proposal["status"], "PROPOSED")
+        self.assertEqual(proposal["speed_limit"], 0.2)
+        self.assertEqual(proposal["model_name"], "stub-vla")
+        self.assertEqual(proposal["model_version"], "test-1")
+
+    def test_vla_inference_releases_store_lock_and_rejects_stale_context(self) -> None:
+        task = self.create_task()
+        provider = BlockingVlaOutputProvider()
+        result = {}
+
+        def request_proposal() -> None:
+            result["response"] = self.generate(task["task_id"])
+
+        with patch("app.main.planner", VlaActionPlanner(provider)):
+            thread = Thread(target=request_proposal)
+            thread.start()
+            self.assertTrue(provider.started.wait(1))
+            acquired = store.lock.acquire(timeout=0.5)
+            try:
+                if acquired:
+                    store.robots["robot-01"].pose.position.x = 0.5
+            finally:
+                if acquired:
+                    store.lock.release()
+                provider.release.set()
+            thread.join(2)
+
+        self.assertTrue(acquired, "VLA 추론 중 store.lock이 점유됨")
+        self.assertFalse(thread.is_alive())
+        response = result["response"]
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("추론 중", response.json()["detail"])
+        self.assertEqual(store.proposals, {})
+        self.assertEqual(store.tasks[task["task_id"]].status, "CREATED")
+
+    def test_vla_provider_failure_returns_service_unavailable_without_storage(self) -> None:
+        task = self.create_task()
+
+        with patch("app.main.planner", VlaActionPlanner(FailingVlaOutputProvider())):
+            response = self.generate(task["task_id"])
+
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertIn("VLA 추론 서비스", response.json()["detail"])
+        self.assertEqual(store.proposals, {})
+        self.assertEqual(store.tasks[task["task_id"]].status, "CREATED")
+
+    def test_external_robot_context_mismatch_returns_422_without_storage(self) -> None:
+        task = self.create_task()
+        response = self.client.post(
+            "/action-proposals",
+            json=self.external_move_proposal(task, robot_id="robot-02"),
+        )
+
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertIn("robot_id", response.json()["detail"])
+        self.assertEqual(store.proposals, {})
+
+    def test_external_trajectory_context_mismatch_returns_422_without_storage(self) -> None:
+        task = self.create_task("robot-01 로봇을 좌표 (1, 2, 0)로 이동해")
+        response = self.client.post(
+            "/action-proposals",
+            json=self.external_move_proposal(task, trajectory=[
+                {"position": {"x": 0, "y": 0, "z": 0}},
+                {"position": {"x": 3, "y": 2, "z": 0}},
+            ]),
+        )
+
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertIn("끝점", response.json()["detail"])
+        self.assertEqual(store.proposals, {})
+
+    def test_external_trajectory_is_rechecked_against_robot_before_dispatch(self) -> None:
+        task = self.create_task("robot-01 로봇을 좌표 (1, 2, 0)로 이동해")
+        created = self.client.post(
+            "/action-proposals",
+            json=self.external_move_proposal(task, trajectory=[
+                {"position": {"x": 0, "y": 0, "z": 0}},
+                {"position": {"x": 1, "y": 2, "z": 0}},
+            ]),
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        proposal_id = created.json()["proposal_id"]
+        evaluated = self.client.post(f"/action-proposals/{proposal_id}/evaluate")
+        self.assertEqual(evaluated.json()["status"], "APPROVED")
+
+        with store.lock:
+            store.robots["robot-01"].pose.position.x = 1.5
+        with patch("app.main.action_dispatcher.dispatch") as dispatch:
+            executed = self.client.post(f"/action-proposals/{proposal_id}/execute")
+
+        self.assertEqual(executed.status_code, 409, executed.text)
+        dispatch.assert_not_called()
+        self.assertEqual(store.proposals[proposal_id].status, "REJECTED")
+        self.assertEqual(store.tasks[task["task_id"]].status, "PLANNING")
+        self.assertTrue(any(
+            result.rule_id == "precondition-trajectory-start" and not result.passed
+            for result in store.logs[-1].rule_results
+        ))
+
     def test_coordinate_frame_and_explicit_speed_are_preserved(self) -> None:
         task = self.create_task(
             "robot-01 로봇을 좌표 (1, 2, 0)로 이동해",
@@ -105,6 +277,120 @@ class ActionPlannerApiTest(unittest.TestCase):
             proposal["parameters"]["target_pose"]["position"],
             {"x": 1.0, "y": 2.0, "z": 0.0},
         )
+
+    def test_auto_move_checks_safe_and_crossing_routes_with_keep_out(self) -> None:
+        keep_out = self.client.post("/zones", json={
+            "zone_id": "B구역",
+            "zone_type": "KEEP_OUT",
+            "frame_id": "map",
+            "geometry": {"type": "polygon", "points": [[1, -1], [2, -1], [2, 1], [1, 1]]},
+            "minimum_safety_distance": 1.2,
+        })
+        self.assertEqual(keep_out.status_code, 201, keep_out.text)
+
+        for zone_id, x, y, frame, expected in (
+            ("A구역", 0, 3, "map", "APPROVED"),
+            ("C구역", 3, 0, "map", "REJECTED"),
+            ("D구역", 0, 3, "odom", "REJECTED"),
+        ):
+            with self.subTest(zone_id=zone_id):
+                target = {"x": x, "y": y, "z": 0}
+                zone = self.client.post("/zones", json={
+                    "zone_id": zone_id,
+                    "zone_type": "WORK",
+                    "frame_id": frame,
+                    "geometry": {"navigation_target": target},
+                    "minimum_safety_distance": 1.2,
+                })
+                self.assertEqual(zone.status_code, 201, zone.text)
+                task = self.create_task(f"robot-01 로봇을 {zone_id}으로 이동해")
+                response = self.generate(task["task_id"])
+                self.assertEqual(response.status_code, 201, response.text)
+                proposal = response.json()
+                if frame == "map":
+                    self.assertEqual(proposal["trajectory"], [
+                        {"position": {"x": 0, "y": 0, "z": 0}},
+                        {"position": target},
+                    ])
+                else:
+                    self.assertIsNone(proposal["trajectory"])
+                result = self.client.post(f"/action-proposals/{proposal['proposal_id']}/evaluate")
+                self.assertEqual(result.status_code, 200, result.text)
+                self.assertEqual(result.json()["status"], expected)
+                rule = next(rule for rule in store.logs[-1].rule_results if rule.rule_id == "rule-keep-out")
+                self.assertEqual(rule.passed, expected == "APPROVED")
+                if expected == "APPROVED":
+                    hazard = self.client.post("/hazards", json={
+                        "hazard_type": "WORKER_INTRUSION",
+                        "severity": "CRITICAL",
+                        "source_observation_ids": ["obs-1"],
+                        "related_robot_ids": [],
+                        "related_worker_ids": [],
+                        "zone_id": zone_id,
+                        "confidence": 0.99,
+                    })
+                    self.assertEqual(hazard.status_code, 201, hazard.text)
+                    execution = self.client.post(f"/action-proposals/{proposal['proposal_id']}/execute")
+                    self.assertEqual(execution.status_code, 409, execution.text)
+                    self.assertIn(hazard.json()["hazard_id"], store.logs[-1].hazard_ids)
+
+    def test_same_frame_coordinate_move_generates_trajectory(self) -> None:
+        task = self.create_task("robot-01 로봇을 좌표 (1, 2, 0)로 이동해")
+        response = self.generate(task["task_id"])
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["trajectory"], [
+            {"position": {"x": 0, "y": 0, "z": 0}},
+            {"position": {"x": 1, "y": 2, "z": 0}},
+        ])
+
+    def test_robot_position_change_blocks_dispatch_and_allows_replanning(self) -> None:
+        task = self.create_task("robot-01 로봇을 좌표 (1, 2, 0)로 이동해")
+        created = self.generate(task["task_id"])
+        self.assertEqual(created.status_code, 201, created.text)
+        proposal_id = created.json()["proposal_id"]
+        evaluated = self.client.post(f"/action-proposals/{proposal_id}/evaluate")
+        self.assertEqual(evaluated.json()["status"], "APPROVED")
+
+        with store.lock:
+            store.robots["robot-01"].pose.position.x = 1.5
+        with patch("app.main.action_dispatcher.dispatch") as dispatch:
+            executed = self.client.post(f"/action-proposals/{proposal_id}/execute")
+            self.assertEqual(executed.status_code, 409, executed.text)
+            dispatch.assert_not_called()
+
+        self.assertEqual(store.proposals[proposal_id].status, "REJECTED")
+        self.assertEqual(store.tasks[task["task_id"]].status, "PLANNING")
+        self.assertEqual(store.logs[-1].decision, "REJECT")
+        self.assertTrue(any(
+            result.rule_id == "precondition-trajectory-start" and not result.passed
+            for result in store.logs[-1].rule_results
+        ))
+        regenerated = self.generate(task["task_id"])
+        self.assertEqual(regenerated.status_code, 201, regenerated.text)
+        self.assertEqual(regenerated.json()["trajectory"][0]["position"]["x"], 1.5)
+
+    def test_small_robot_position_noise_allows_dispatch(self) -> None:
+        task = self.create_task("robot-01 로봇을 좌표 (1, 2, 0)로 이동해")
+        created = self.generate(task["task_id"])
+        self.assertEqual(created.status_code, 201, created.text)
+        proposal_id = created.json()["proposal_id"]
+        evaluated = self.client.post(f"/action-proposals/{proposal_id}/evaluate")
+        self.assertEqual(evaluated.json()["status"], "APPROVED")
+
+        with store.lock:
+            store.robots["robot-01"].pose.position.x = 0.04
+        with patch("app.main.action_dispatcher.dispatch") as dispatch:
+            executed = self.client.post(f"/action-proposals/{proposal_id}/execute")
+
+        self.assertEqual(executed.status_code, 200, executed.text)
+        dispatch.assert_called_once()
+        start_rule = next(
+            result
+            for result in store.logs[-1].rule_results
+            if result.rule_id == "precondition-trajectory-start"
+        )
+        self.assertTrue(start_rule.passed)
+        self.assertIn("0.040m", start_rule.reason)
 
     def test_generates_contract_aligned_manipulate_proposal(self) -> None:
         task = self.create_task("robot-01 로봇으로 상자 3을 B 작업대로 옮겨")
@@ -229,7 +515,9 @@ class ActionPlannerApiTest(unittest.TestCase):
                 "model_version": "0.1.0",
             },
         )
-        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("robot_id", response.json()["detail"])
+        self.assertEqual(store.proposals, {})
         self.assertEqual(store.tasks[task["task_id"]].status, "CREATED")
         self.assertEqual(store.proposals, {})
 

@@ -78,3 +78,33 @@ def test_move_to_drives_like_diff_drive(core):
     core.tick(T0 + 0.02, 0.02)
     linear, angular = core.command
     assert linear == 0.0 and abs(angular) > 0  # 뒤쪽 목표: 제자리 회전부터
+
+
+@pytest.mark.parametrize("first_late", [True, False])
+def test_estop_race_resyncs_holding_from_bridge(core, first_late):
+    """E-Stop 직전 브리지에서 PICK이 끝났는데 성공 결과가 E-Stop 뒤에 도착해도
+    어댑터 적재 상태가 브리지 실제 상태와 같아야 한다 (PR #104 리뷰 P1)."""
+    core.handle_action(manip("PICK", "p1"), T0)
+    core.load_outbox.clear()
+    core.handle_estop({"active": True, "triggered_by": "OPERATOR"}, T0 + 0.1)
+    late_success = {"command_id": "p1", "success": True, "reason_code": None, "message": "m",
+                    "held_object_id": "pallet:amr-01"}
+    cancel_reply = {"command_id": "p1", "success": False, "reason_code": "CANCELLED",
+                    "message": "진행 중 이송 없음", "held_object_id": "pallet:amr-01"}
+    order = [late_success, cancel_reply] if first_late else [cancel_reply, late_success]
+    for r in order:
+        assert core.handle_load_result(r, T0 + 0.2) == []  # 이미 E-Stop으로 보고한 제안
+    assert core.holding == "pallet:amr-01"
+    assert core.state(T0 + 0.2)["holding_object_id"] == "pallet:amr-01"
+
+
+def test_late_place_success_after_estop_clears_holding(core):
+    core.handle_action(manip("PICK", "p1"), T0)
+    finish(core, "p1")
+    core.handle_heartbeat(T0 + 1)
+    core.handle_action(manip("PLACE", "p2"), T0 + 1)
+    core.load_outbox.clear()
+    core.handle_estop({"active": True, "triggered_by": "OPERATOR"}, T0 + 1.1)
+    core.handle_load_result({"command_id": "p2", "success": True, "reason_code": None, "message": "m",
+                             "held_object_id": None}, T0 + 1.2)
+    assert core.holding is None
