@@ -23,7 +23,7 @@ from fastapi import (
     WebSocketDisconnect,
     status,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import AwareDatetime, BaseModel
 
@@ -78,7 +78,7 @@ from .models import (
 )
 from .safety import WORKER_SNAPSHOT_MAX_AGE_SECONDS, default_rules, evaluate_proposal
 from .state_stream import state_broadcaster
-from .store import store
+from .store import StoreUnavailableError, store
 from .task_parser import TaskParseError, parse_task_order, parse_task_order_preview
 from .vla_output import VlaOutputValidationError, validate_vla_proposal
 
@@ -304,9 +304,12 @@ def trajectory_start_distance_m(robot: Robot, trajectory_start: dict) -> float |
 
 
 def seed_rules() -> None:
-    if not store.rules:
-        rules = default_rules(perception_enabled=getenv("BACKEND_PERCEPTION_SAFETY_ENABLED") == "1")
-        store.rules.update({rule.rule_id: rule for rule in rules})
+    with store.lock:
+        if not store.rules:
+            rules = default_rules(
+                perception_enabled=getenv("BACKEND_PERCEPTION_SAFETY_ENABLED") == "1"
+            )
+            store.rules.update({rule.rule_id: rule for rule in rules})
 
 
 seed_rules()
@@ -392,9 +395,9 @@ def sync_estop(reason: str) -> None:
     항상 마지막 저장소 상태와 같다(Transient Local·Keep Last 1 latched 값 보장).
     """
     with ESTOP_PUBLISH_LOCK:
-        with store.lock:
-            active = bool(store.estop_hazard_ids)
-        _publish_estop(active, reason)
+        store.synchronize_safety_publish(
+            lambda active: _publish_estop(active, reason)
+        )
 
 
 def _publish_estop(active: bool, reason: str) -> None:
@@ -454,15 +457,36 @@ if hasattr(action_dispatcher, "ack_event_handler"):
 @app.on_event("startup")
 def start_action_dispatcher() -> None:
     action_dispatcher.start()
+    store.start_change_notifications(state_broadcaster.publish)
+    # Redis 재시작 복구 시 latched E-Stop 상태도 CTL에 다시 전달한다.
+    sync_estop("Backend 시작 상태 복구")
 
 
 @app.on_event("shutdown")
 def stop_action_dispatcher() -> None:
+    store.stop_change_notifications()
     action_dispatcher.stop()
+
+
+@app.exception_handler(StoreUnavailableError)
+def store_unavailable_handler(
+    request: Request,
+    exc: StoreUnavailableError,
+) -> JSONResponse:
+    # 읽기 실패나 잠금 경합은 503만 반환한다. 명령을 이미 발행한 요청의
+    # 커밋이 실패했을 때만 물리 실행과 Backend 상태 불일치를 막기 위해 정지한다.
+    if getattr(request.state, "estop_on_store_failure", False):
+        with ESTOP_PUBLISH_LOCK:
+            _publish_estop(True, f"Redis 실행 상태 커밋 실패: {exc}")
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": str(exc)},
+    )
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
+    store.ensure_available()
     return {"status": "ok"}
 
 
@@ -531,7 +555,8 @@ def create_robot(robot: Robot) -> Robot:
 
 @app.get("/robots", response_model=list[Robot])
 def list_robots() -> list[Robot]:
-    return list(store.robots.values())
+    with store.lock:
+        return list(store.robots.values())
 
 
 @app.post("/zones", response_model=Zone, status_code=status.HTTP_201_CREATED)
@@ -545,7 +570,8 @@ def create_zone(zone: Zone) -> Zone:
 
 @app.get("/zones", response_model=list[Zone])
 def list_zones() -> list[Zone]:
-    return list(store.zones.values())
+    with store.lock:
+        return list(store.zones.values())
 
 
 @app.get(
@@ -714,10 +740,11 @@ def create_task_from_natural_language(
 
 @app.get("/task-orders/{task_id}", response_model=TaskOrder)
 def get_task(task_id: str) -> TaskOrder:
-    task = store.tasks.get(task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="TaskOrder를 찾을 수 없습니다.")
-    return task
+    with store.lock:
+        task = store.tasks.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="TaskOrder를 찾을 수 없습니다.")
+        return task
 
 
 @app.post(
@@ -1059,7 +1086,7 @@ def evaluate_action(proposal_id: str) -> ActionProposal:
 
 
 @app.post("/action-proposals/{proposal_id}/execute", response_model=ActionProposal)
-def execute_action(proposal_id: str) -> ActionProposal:
+def execute_action(proposal_id: str, http_request: Request) -> ActionProposal:
     started_at = perf_counter()
     with store.lock:
         proposal = store.proposals.get(proposal_id)
@@ -1125,6 +1152,8 @@ def execute_action(proposal_id: str) -> ActionProposal:
             )
             raise HTTPException(status_code=409, detail="실행 직전 안전 재검증에 실패했습니다.")
 
+        # Redis 저장소가 끊긴 상태에서 캐시된 승인 명령을 로봇에 보내지 않는다.
+        store.ensure_available()
         try:
             dispatched_at = utc_now()
             if len(store.proposal_acks) >= MAX_ACK_RECORDS:
@@ -1152,6 +1181,7 @@ def execute_action(proposal_id: str) -> ActionProposal:
                 robot,
                 list(store.zones.values()),
             )
+            http_request.state.estop_on_store_failure = True
         except CommandSerializationError as exc:
             store.proposal_acks.pop(proposal.proposal_id, None)
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1370,9 +1400,11 @@ def resolve_hazard(hazard_id: str, request: HazardResolveRequest) -> HazardEvent
 @app.get("/safety-rules", response_model=list[SafetyRule])
 def list_safety_rules() -> list[SafetyRule]:
     seed_rules()
-    return list(store.rules.values())
+    with store.lock:
+        return list(store.rules.values())
 
 
 @app.get("/execution-logs", response_model=list[ExecutionLog])
 def list_execution_logs() -> list[ExecutionLog]:
-    return store.logs
+    with store.lock:
+        return list(store.logs)
