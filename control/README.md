@@ -92,10 +92,31 @@ macOS에서는 같은 Mac 안의 노드끼리도 서로 못 찾는 문제가 있
 | `pixi run mock-adapter` | Mock 어댑터만 실행 |
 | `pixi run tiago-adapter` | 공통 Action을 `/cmd_vel`·`/arm/command`로 바꾸는 TIAGo 어댑터 실행 |
 | `pixi run roundtrip` | Mock 어댑터 + 하네스 왕복·적합성 시험 (13개 항목) |
+| `pixi run backend-move-e2e` | 자연어 MOVE_TO → Backend → ROS 2 → TIAGo → MuJoCo → RESULT 최소 E2E |
 | `pixi run arm` / `arm-view` | Panda 로봇 팔 집기·놓기 / 뷰어로 보기 (처음 실행 시 모델 33MB를 내려받음) |
 | `pixi run fetch-models` | 저장소에 올리지 않는 모델(Panda)만 내려받기 |
 
 `sim-view`, `bridge-view`, `arm-view`는 macOS에서 `mjpython`으로 실행됩니다.
+
+### Backend 포함 MOVE_TO 최소 E2E
+
+자연어 명령이 Backend에서 `TaskOrder`·`ActionProposal`로 변환되고, 안전 평가를 통과한 뒤
+ROS 2의 `/safety/approved_action`으로 전달되어 TIAGo가 MuJoCo에서 이동하는 전체 경로를
+한 번에 확인합니다. 어댑터 ACK와 실제 RESULT가 Backend 상태에 반영되어야 성공합니다.
+
+Backend Python 의존성은 ROS 2와 같은 pixi 환경에 한 번 설치합니다.
+
+```bash
+cd control
+pixi run python -m pip install -r ../backend/requirements.txt
+pixi run backend-move-e2e
+```
+
+하네스는 Backend, MuJoCo 브리지, TIAGo 어댑터를 순서대로 띄우고 준비 상태를 확인합니다.
+성공하거나 실패하면 시작한 프로세스를 모두 종료합니다. 실패 로그는
+`$TMPDIR/safety-vla-move-e2e.*`에 남으며 `E2E_LOG_DIR`로 위치를 지정할 수 있습니다.
+성공 로그도 보존하려면 `KEEP_E2E_LOGS=1`을 사용합니다. 포트·로봇 ID가 겹치면
+`BACKEND_PORT`, `ROBOT_ID`로 바꿀 수 있습니다.
 
 ### 터미널에서 직접 로봇 움직이기
 

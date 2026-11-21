@@ -126,14 +126,19 @@ def wait_for_result(
         sleep(RESULT_POLL_INTERVAL_SECONDS)
 
 
-def register_robot(client: BackendClient, robot_id: str, frame_id: str) -> None:
+def register_robot(
+    client: BackendClient,
+    robot_id: str,
+    frame_id: str,
+    control_adapter: str,
+) -> None:
     existing = client.get("/robots")
     if any(robot.get("robot_id") == robot_id for robot in existing):
         return
     client.post("/robots", {
         "robot_id": robot_id,
         "robot_type": "MOBILE",
-        "control_adapter": "mock-mobile-adapter",
+        "control_adapter": control_adapter,
         "status": "IDLE",
         "pose": {
             "frame_id": frame_id,
@@ -255,6 +260,11 @@ def main(
         default="robot-01",
         help="실행 중인 CTL 어댑터와 같은 Robot ID",
     )
+    parser.add_argument(
+        "--control-adapter",
+        default="mock-mobile-adapter",
+        help="새 Robot 등록에 기록할 제어 어댑터 이름",
+    )
     parser.add_argument("--frame-id", default="world")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -266,7 +276,7 @@ def main(
     client = client_factory(args.base_url, args.timeout)
     robot_id = args.robot_id
     try:
-        register_robot(client, robot_id, args.frame_id)
+        register_robot(client, robot_id, args.frame_id, args.control_adapter)
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 1

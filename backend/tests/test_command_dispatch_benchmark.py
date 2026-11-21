@@ -154,6 +154,23 @@ class CommandDispatchBenchmarkTest(unittest.TestCase):
         )
         self.assertIn("tiago-ctl", task_call["instruction"])
 
+    def test_main_records_explicit_control_adapter(self):
+        client = FakeBackendClient()
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = main(
+                [
+                    "--runs",
+                    "1",
+                    "--control-adapter",
+                    "tiago-adapter",
+                    "--json",
+                ],
+                lambda _base_url, _timeout: client,
+            )
+        self.assertEqual(code, 0)
+        robot_call = next(body for path, body in client.calls if path == "/robots")
+        self.assertEqual(robot_call["control_adapter"], "tiago-adapter")
+
 
 if __name__ == "__main__":
     unittest.main()
