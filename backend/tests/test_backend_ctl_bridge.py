@@ -1,5 +1,6 @@
 import unittest
 from datetime import timedelta
+from threading import Event
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -169,7 +170,13 @@ class BackendCtlBridgeTest(unittest.TestCase):
 
     def test_ros_bridge_delivers_valid_ack_event(self) -> None:
         received = []
-        dispatcher = Ros2ActionDispatcher(ack_event_handler=received.append)
+        delivered = Event()
+
+        def record_ack(ack, _received_at):
+            received.append(ack)
+            delivered.set()
+
+        dispatcher = Ros2ActionDispatcher(ack_event_handler=record_ack)
         dispatcher._proposal_robots["proposal-1"] = "robot-01"
         message = SimpleNamespace(data=(
             '{"kind":"ACK","robot_id":"robot-01","proposal_id":"proposal-1",'
@@ -178,12 +185,15 @@ class BackendCtlBridgeTest(unittest.TestCase):
 
         dispatcher._on_result(message)
 
+        self.assertTrue(delivered.wait(1))
         self.assertEqual(len(received), 1)
         self.assertEqual(received[0].proposal_id, "proposal-1")
 
     def test_ros_bridge_ignores_ack_with_wrong_robot_or_timestamp(self) -> None:
         received = []
-        dispatcher = Ros2ActionDispatcher(ack_event_handler=received.append)
+        dispatcher = Ros2ActionDispatcher(
+            ack_event_handler=lambda ack, _received_at: received.append(ack)
+        )
         dispatcher._proposal_robots["proposal-1"] = "robot-01"
 
         dispatcher._on_result(SimpleNamespace(data=(
@@ -292,6 +302,7 @@ class BackendCtlBridgeTest(unittest.TestCase):
 
         self.assertEqual(first["status"], "ACKNOWLEDGED")
         self.assertIsNotNone(first["command_to_ack_ms"])
+        self.assertIsNotNone(first["dispatch_to_ack_ms"])
         self.assertEqual(first["ack_received_at"], duplicate["ack_received_at"])
         self.assertEqual(duplicate["duplicate_count"], 1)
 
@@ -330,6 +341,7 @@ class BackendCtlBridgeTest(unittest.TestCase):
         self.assertIsNotNone(late_ack["adapter_ack_at"])
         self.assertIsNotNone(late_ack["ack_received_at"])
         self.assertIsNotNone(late_ack["command_to_ack_ms"])
+        self.assertIsNotNone(late_ack["dispatch_to_ack_ms"])
 
     def test_ctl_estop_event_holds_active_execution(self) -> None:
         store.reset()

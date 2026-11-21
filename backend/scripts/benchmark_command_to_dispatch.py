@@ -154,10 +154,12 @@ def run_trial(
     frame_id: str = "world",
     result_timeout_seconds: float = 120.0,
 ) -> Trial:
-    instruction = f"{robot_id} 로봇을 좌표 (1, 0, 0)로 이동해"
+    target_x = 1 if index % 2 == 0 else 0
+    instruction = f"{robot_id} 로봇을 좌표 ({target_x}, 0, 0)로 이동해"
     task_id: str | None = None
     proposal_id: str | None = None
     elapsed_ms: float | None = None
+    ack_succeeded = False
     finalized = False
     failure: str | None = None
 
@@ -181,10 +183,20 @@ def run_trial(
         executing = client.post(f"/action-proposals/{proposal_id}/execute", {})
         if executing.get("status") != "EXECUTING":
             raise RuntimeError(f"Action publish 상태가 EXECUTING이 아닙니다: {executing.get('status')}")
-        ack = wait_for_ack(client, proposal_id, max(client.timeout, threshold_ms / 1000 + 1))
-        elapsed_ms = ack.get("command_to_ack_ms")
-        if ack.get("status") != "ACKNOWLEDGED" or elapsed_ms is None:
-            raise RuntimeError(f"어댑터 ACK가 기한 내 도착하지 않았습니다: {ack.get('status')}")
+        ack_failure: str | None = None
+        try:
+            ack = wait_for_ack(
+                client,
+                proposal_id,
+                max(client.timeout, threshold_ms / 1000 + 1),
+            )
+            elapsed_ms = ack.get("command_to_ack_ms")
+            if ack.get("status") != "ACKNOWLEDGED" or elapsed_ms is None:
+                ack_failure = f"어댑터 ACK가 기한 내 도착하지 않았습니다: {ack.get('status')}"
+            else:
+                ack_succeeded = True
+        except RuntimeError as exc:
+            ack_failure = str(exc)
 
         completed = wait_for_result(
             client,
@@ -195,17 +207,23 @@ def run_trial(
         if completed.get("status") != "COMPLETED":
             raise RuntimeError(f"실제 CTL RESULT가 성공이 아닙니다: {completed.get('status')}")
         finalized = True
+        failure = ack_failure
     except (KeyError, RuntimeError) as exc:
         failure = str(exc)
 
-    execution_succeeded = finalized and failure is None
+    execution_succeeded = finalized
     return Trial(
         index=index + 1,
         execution_succeeded=execution_succeeded,
         elapsed_ms=elapsed_ms,
         task_id=task_id,
         proposal_id=proposal_id,
-        latency_passed=execution_succeeded and elapsed_ms is not None and elapsed_ms <= threshold_ms,
+        latency_passed=(
+            execution_succeeded
+            and ack_succeeded
+            and elapsed_ms is not None
+            and elapsed_ms <= threshold_ms
+        ),
         error=failure,
     )
 

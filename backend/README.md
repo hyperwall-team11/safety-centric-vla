@@ -70,7 +70,9 @@ ROS 2 dispatcher와 CTL 어댑터를 함께 실행한 상태에서 자연어 명
 어댑터 ACK의 Backend 수신까지 10회 지연을 측정합니다. 각 회차의 실행 성공률과
 1초 이내 지연 통과율을 별도로 집계하며,
 한 회차가 실패해도 나머지 측정을 계속합니다. ACK 측정 후에는 실제 CTL `RESULT`가
-Backend에 반영될 때까지 기다리며, 벤치마크가 성공·실패 결과를 대신 등록하지 않습니다.
+Backend에 반영될 때까지 기다리며, ACK가 누락되거나 늦어도 현재 실행이
+끝나기 전에 다음 회차를 시작하지 않습니다. 벤치마크가 성공·실패 결과를 대신 등록하지
+않고, 이동 거리 0인 반복 명령을 피하도록 `(1, 0, 0)`과 `(0, 0, 0)`을 번갈아 지정합니다.
 
 ```bash
 cd backend
@@ -83,7 +85,8 @@ CTL 어댑터의 Robot ID가 기본값 `robot-01`과 다르면 `--robot-id`로 �
 
 Backend는 `GET /action-proposals/{proposal_id}/ack`에서 `PENDING`, `ACKNOWLEDGED`,
 `TIMED_OUT`을 반환합니다. 명령 수신·발행·CTL ACK·Backend ACK 수신 시각과
-`command_to_ack_ms`를 함께 보존하므로 원시 지연을 재현할 수 있습니다. 어댑터와
+`command_to_ack_ms`, `dispatch_to_ack_ms`를 함께 보존하므로 전체 KPI와 순수 발행→ACK
+지연을 구분할 수 있습니다. 어댑터와
 Backend의 시계 오차가 KPI에 영향을 주지 않도록 `command_to_ack_ms`는 Backend 수신 시각끼리
 계산합니다. `PENDING`의 1초 기한 경과는 ACK 조회 또는 늦은 ACK 처리 시점에
 `TIMED_OUT`으로 확정하며 별도 백그라운드 타이머는 없습니다. ACK 상태는 전송 진단값일

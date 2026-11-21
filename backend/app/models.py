@@ -523,6 +523,7 @@ class AdapterAckRecord(OntologyModel):
     adapter_ack_at: AwareDatetime | None = None
     ack_received_at: AwareDatetime | None = None
     command_to_ack_ms: float | None = Field(default=None, ge=0)
+    dispatch_to_ack_ms: float | None = Field(default=None, ge=0)
     duplicate_count: int = Field(default=0, ge=0)
 
 

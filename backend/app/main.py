@@ -118,6 +118,8 @@ TASK_ORDER_RESPONSE_HEADERS = {
 TRAJECTORY_START_TOLERANCE_M = 0.05
 # 개발계획서 v1.0 KPI 9의 명령 입력→어댑터 ACK 목표 시간과 같다.
 ADAPTER_ACK_TIMEOUT_SECONDS = 1.0
+# 조회용 ACK 이력은 유지하되 장시간 운영에서 무한히 늘지 않게 한다.
+MAX_ACK_RECORDS = 1000
 STATE_HEARTBEAT_SECONDS = 15.0
 # UI 상태 스트림 부하 제한이며 ROS 2 안전 heartbeat·판정 주기와 무관하다.
 STATE_MIN_PUSH_INTERVAL_SECONDS = 0.2
@@ -354,9 +356,12 @@ def _publish_estop(active: bool, reason: str) -> None:
         LOGGER.error("E-Stop 발행 실패(%s): %s", reason, exc)
 
 
-def apply_ctl_ack_event(ack: AdapterAckEvent) -> None:
+def apply_ctl_ack_event(
+    ack: AdapterAckEvent,
+    received_at: AwareDatetime | None = None,
+) -> None:
     """CTL ACK 첫 수신 기록을 보존하고 중복은 개수만 누적한다."""
-    received_at = utc_now()
+    received_at = received_at or utc_now()
     with store.lock:
         record = store.proposal_acks.get(ack.proposal_id)
         if record is None:
@@ -374,6 +379,10 @@ def apply_ctl_ack_event(ack: AdapterAckEvent) -> None:
         record.command_to_ack_ms = max(
             0.0,
             (received_at - record.command_received_at).total_seconds() * 1000,
+        )
+        record.dispatch_to_ack_ms = max(
+            0.0,
+            (received_at - record.dispatched_at).total_seconds() * 1000,
         )
         record.status = (
             AdapterAckStatus.ACKNOWLEDGED
@@ -761,6 +770,28 @@ class WorkerSnapshot(BaseModel):
     workers: list[Worker]
 
 
+@app.get(
+    "/workers/snapshot",
+    response_model=WorkerSnapshot,
+    responses={
+        status.HTTP_404_NOT_FOUND: {
+            "description": "저장된 Worker 관측 스냅샷 없음",
+        },
+    },
+)
+def get_worker_snapshot() -> WorkerSnapshot:
+    with store.lock:
+        if store.workers_observed_at is None or store.workers is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Worker 스냅샷을 찾을 수 없습니다.",
+            )
+        return WorkerSnapshot(
+            observed_at=store.workers_observed_at,
+            workers=list(store.workers),
+        )
+
+
 @app.put("/workers/snapshot", response_model=WorkerSnapshot)
 def replace_worker_snapshot(snapshot: WorkerSnapshot) -> WorkerSnapshot:
     workers = snapshot.workers
@@ -907,6 +938,18 @@ def execute_action(proposal_id: str) -> ActionProposal:
 
         try:
             dispatched_at = utc_now()
+            if len(store.proposal_acks) >= MAX_ACK_RECORDS:
+                removable = next(
+                    (
+                        candidate_id
+                        for candidate_id in store.proposal_acks
+                        if store.proposals.get(candidate_id) is None
+                        or store.proposals[candidate_id].status != ProposalStatus.EXECUTING
+                    ),
+                    None,
+                )
+                if removable is not None:
+                    store.proposal_acks.pop(removable, None)
             store.proposal_acks[proposal.proposal_id] = AdapterAckRecord(
                 proposal_id=proposal.proposal_id,
                 task_id=task.task_id,
@@ -1021,6 +1064,7 @@ def report_action_result(
 
         robot.updated_at = utc_now()
         store.proposal_results[proposal_id] = report
+        store.task_received_at.pop(task.task_id, None)
         store.logs.append(
             ExecutionLog(
                 proposal_id=proposal.proposal_id,
@@ -1033,6 +1077,27 @@ def report_action_result(
         )
         return proposal
 
+
+
+@app.get("/hazards", response_model=list[HazardEvent])
+def list_hazards(
+    hazard_status: Annotated[HazardStatus | None, Query(alias="status")] = None,
+    severity: Annotated[HazardSeverity | None, Query()] = None,
+    robot_id: Annotated[str | None, Query(min_length=1)] = None,
+) -> list[HazardEvent]:
+    with store.lock:
+        hazards = list(store.hazards.values())
+        if hazard_status is not None:
+            hazards = [hazard for hazard in hazards if hazard.status == hazard_status]
+        if severity is not None:
+            hazards = [hazard for hazard in hazards if hazard.severity == severity]
+        if robot_id is not None:
+            hazards = [
+                hazard
+                for hazard in hazards
+                if robot_id in hazard.related_robot_ids
+            ]
+        return hazards
 
 
 @app.post(

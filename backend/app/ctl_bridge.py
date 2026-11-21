@@ -222,7 +222,7 @@ class Ros2ActionDispatcher:
         self,
         result_api_base: str = "http://127.0.0.1:8000",
         safety_event_handler: Callable[[dict[str, Any]], None] | None = None,
-        ack_event_handler: Callable[[AdapterAckEvent], None] | None = None,
+        ack_event_handler: Callable[[AdapterAckEvent, datetime], None] | None = None,
     ) -> None:
         self.result_api_base = result_api_base.rstrip("/")
         self.safety_event_handler = safety_event_handler
@@ -334,6 +334,7 @@ class Ros2ActionDispatcher:
         self._heartbeat_publisher.publish(message)
 
     def _on_result(self, message: Any) -> None:
+        received_at = datetime.now(timezone.utc)
         try:
             event = json.loads(message.data)
             if event.get("kind") in {"HOLD", "ESTOP"}:
@@ -342,17 +343,24 @@ class Ros2ActionDispatcher:
                 return
             if event.get("kind") == "ACK":
                 ack = AdapterAckEvent.model_validate(event)
-                expected_robot_id = self._proposal_robots.get(ack.proposal_id)
+                with self._lock:
+                    expected_robot_id = self._proposal_robots.get(ack.proposal_id)
                 if expected_robot_id is None or ack.robot_id != expected_robot_id:
                     LOGGER.warning("대상 Robot이 일치하지 않는 CTL ACK를 무시했습니다: %s", event)
                     return
                 if self.ack_event_handler is not None:
-                    self.ack_event_handler(ack)
+                    threading.Thread(
+                        target=self._deliver_ack,
+                        args=(ack, received_at),
+                        name=f"ctl-ack-{ack.proposal_id}",
+                        daemon=True,
+                    ).start()
                 return
             if event.get("kind") != "RESULT":
                 return
             proposal_id = event.get("proposal_id")
-            expected_robot_id = self._proposal_robots.get(proposal_id)
+            with self._lock:
+                expected_robot_id = self._proposal_robots.get(proposal_id)
             if expected_robot_id is None or event.get("robot_id") != expected_robot_id:
                 LOGGER.warning("대상 Robot이 일치하지 않는 CTL RESULT를 무시했습니다: %s", event)
                 return
@@ -368,6 +376,17 @@ class Ros2ActionDispatcher:
             daemon=True,
         ).start()
 
+    def _deliver_ack(self, ack: AdapterAckEvent, received_at: datetime) -> None:
+        try:
+            if self.ack_event_handler is not None:
+                self.ack_event_handler(ack, received_at)
+        except Exception:
+            LOGGER.exception("CTL ACK 반영에 실패했습니다: %s", ack.proposal_id)
+
+    def _forget_proposal(self, proposal_id: str) -> None:
+        with self._lock:
+            self._proposal_robots.pop(proposal_id, None)
+
     def _post_result(self, proposal_id: str, report: AdapterResultReport) -> None:
         url = f"{self.result_api_base}/action-proposals/{proposal_id}/result"
         payload = report.model_dump_json(exclude_none=True).encode("utf-8")
@@ -381,16 +400,19 @@ class Ros2ActionDispatcher:
             try:
                 with request.urlopen(http_request, timeout=2) as response:
                     if response.status == 200:
+                        self._forget_proposal(proposal_id)
                         return
             except error.HTTPError as exc:
                 if exc.code < 500:
                     LOGGER.warning("CTL RESULT 반영이 거부되었습니다(%s): %s", exc.code, proposal_id)
+                    self._forget_proposal(proposal_id)
                     return
             except error.URLError:
                 pass
             if attempt < 2:
                 time.sleep(0.2 * (attempt + 1))
         LOGGER.error("CTL RESULT 반영에 실패했습니다: %s", proposal_id)
+        self._forget_proposal(proposal_id)
 
 
 def create_action_dispatcher() -> ActionDispatcher:

@@ -18,10 +18,19 @@ from benchmark_command_to_dispatch import (  # noqa: E402
 
 
 class FakeBackendClient:
-    def __init__(self, _base_url: str = "", _timeout: float = 0, *, reject: bool = False) -> None:
+    def __init__(
+        self,
+        _base_url: str = "",
+        _timeout: float = 0,
+        *,
+        reject: bool = False,
+        ack_status: str = "ACKNOWLEDGED",
+    ) -> None:
         self.reject = reject
+        self.ack_status = ack_status
         self.timeout = _timeout
         self.calls: list[tuple[str, dict]] = []
+        self.get_calls: list[str] = []
         self.sequence = 0
         self.latest_proposal_id: str | None = None
 
@@ -42,12 +51,13 @@ class FakeBackendClient:
         raise AssertionError(f"unexpected path: {path}")
 
     def get(self, path):
+        self.get_calls.append(path)
         if path == "/robots":
             return []
         if path.endswith("/ack"):
             return {
-                "status": "ACKNOWLEDGED",
-                "command_to_ack_ms": 25.0,
+                "status": self.ack_status,
+                "command_to_ack_ms": 25.0 if self.ack_status == "ACKNOWLEDGED" else None,
             }
         if path.endswith("/action-proposals"):
             return [{
@@ -89,6 +99,33 @@ class CommandDispatchBenchmarkTest(unittest.TestCase):
         self.assertFalse(trial.execution_succeeded)
         self.assertIn("REJECTED", trial.error)
         self.assertFalse(any(path.endswith("/execute") for path, _body in client.calls))
+
+    def test_ack_timeout_still_waits_for_execution_result(self):
+        client = FakeBackendClient(ack_status="TIMED_OUT")
+
+        trial = run_trial(client, "robot-01", 0, 1000)
+
+        self.assertTrue(trial.execution_succeeded)
+        self.assertFalse(trial.latency_passed)
+        self.assertIn("TIMED_OUT", trial.error)
+        self.assertTrue(any(
+            path.endswith("/action-proposals")
+            for path in client.get_calls
+        ))
+
+    def test_trials_alternate_between_two_destinations(self):
+        client = FakeBackendClient()
+
+        run_trial(client, "robot-01", 0, 1000)
+        run_trial(client, "robot-01", 1, 1000)
+
+        instructions = [
+            body["instruction"]
+            for path, body in client.calls
+            if path == "/task-orders/from-natural-language"
+        ]
+        self.assertIn("좌표 (1, 0, 0)", instructions[0])
+        self.assertIn("좌표 (0, 0, 0)", instructions[1])
 
     def test_main_exit_code_reflects_scenario_a_acceptance(self):
         with contextlib.redirect_stdout(io.StringIO()):
