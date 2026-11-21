@@ -10,6 +10,7 @@ from typing import Any, Callable, Protocol
 
 from .models import (
     ActionProposal,
+    AdapterAckRecord,
     AdapterResultReport,
     ExecutionLog,
     HazardEvent,
@@ -80,10 +81,12 @@ def _initialize_empty_state(target: Any) -> None:
     target.workers_observed_at: datetime | None = None
     target.zones: dict[str, Zone] = {}
     target.tasks: dict[str, TaskOrder] = {}
+    target.task_received_at: dict[str, datetime] = {}
     target.task_idempotency: dict[str, tuple[str, str]] = {}
     target.proposals: dict[str, ActionProposal] = {}
     target.proposal_idempotency: dict[tuple[str, str], tuple[str, str]] = {}
     target.proposal_results: dict[str, AdapterResultReport] = {}
+    target.proposal_acks: dict[str, AdapterAckRecord] = {}
     target.hazards: dict[str, HazardEvent] = {}
     # CRITICAL HazardEvent 중 E-Stop을 발행하게 한 hazard_id.
     target.estop_hazard_ids: set[str] = set()
@@ -110,6 +113,9 @@ def _serialize_state(source: Any) -> dict[str, Any]:
         ),
         "zones": {key: _dump_model(value) for key, value in source.zones.items()},
         "tasks": {key: _dump_model(value) for key, value in source.tasks.items()},
+        "task_received_at": {
+            key: value.isoformat() for key, value in source.task_received_at.items()
+        },
         "task_idempotency": {
             key: list(value) for key, value in source.task_idempotency.items()
         },
@@ -125,6 +131,9 @@ def _serialize_state(source: Any) -> dict[str, Any]:
         ],
         "proposal_results": {
             key: _dump_model(value) for key, value in source.proposal_results.items()
+        },
+        "proposal_acks": {
+            key: _dump_model(value) for key, value in source.proposal_acks.items()
         },
         "hazards": {key: _dump_model(value) for key, value in source.hazards.items()},
         "estop_hazard_ids": sorted(source.estop_hazard_ids),
@@ -157,6 +166,11 @@ def _restore_state(target: Any, snapshot: dict[str, Any]) -> None:
     target.tasks = {
         key: TaskOrder.model_validate(value) for key, value in snapshot["tasks"].items()
     }
+    # KPI 9 ACK 측정 필드는 이 필드가 없던 스냅샷도 읽을 수 있게 빈 값으로 복구한다.
+    target.task_received_at = {
+        key: datetime.fromisoformat(value)
+        for key, value in snapshot.get("task_received_at", {}).items()
+    }
     target.task_idempotency = {
         key: (value[0], value[1])
         for key, value in snapshot["task_idempotency"].items()
@@ -172,6 +186,10 @@ def _restore_state(target: Any, snapshot: dict[str, Any]) -> None:
     target.proposal_results = {
         key: AdapterResultReport.model_validate(value)
         for key, value in snapshot["proposal_results"].items()
+    }
+    target.proposal_acks = {
+        key: AdapterAckRecord.model_validate(value)
+        for key, value in snapshot.get("proposal_acks", {}).items()
     }
     target.hazards = {
         key: HazardEvent.model_validate(value)

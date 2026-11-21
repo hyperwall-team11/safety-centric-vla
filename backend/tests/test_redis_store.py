@@ -10,7 +10,9 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 
 import app.main as main_module
-from app.models import MotionLimits, Pose, Robot, Vector3
+from datetime import datetime, timedelta, timezone
+
+from app.models import AdapterAckRecord, MotionLimits, Pose, Robot, Vector3
 from app.store import RedisStore, StoreUnavailableError
 
 
@@ -159,6 +161,26 @@ class RedisStoreTest(unittest.TestCase):
             ("proposal-1", "fingerprint-2"),
         )
         self.assertEqual(restarted.estop_hazard_ids, {"hazard-1"})
+
+    def test_restores_adapter_ack_measurements_after_restart(self) -> None:
+        client = FakeRedis()
+        first = RedisStore("redis://unused", client=client)
+        received_at = datetime(2026, 11, 21, tzinfo=timezone.utc)
+        with first.lock:
+            first.task_received_at["task-1"] = received_at
+            first.proposal_acks["proposal-1"] = AdapterAckRecord(
+                proposal_id="proposal-1",
+                task_id="task-1",
+                robot_id="robot-01",
+                command_received_at=received_at,
+                dispatched_at=received_at,
+                timeout_at=received_at + timedelta(seconds=1),
+            )
+
+        restarted = RedisStore("redis://unused", client=client)
+
+        self.assertEqual(restarted.task_received_at["task-1"], received_at)
+        self.assertEqual(restarted.proposal_acks["proposal-1"].robot_id, "robot-01")
 
     def test_reloads_latest_snapshot_before_each_outer_transaction(self) -> None:
         client = FakeRedis()

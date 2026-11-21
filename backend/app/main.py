@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from datetime import timedelta
 from enum import Enum
 from hashlib import sha256
 from math import dist
@@ -39,6 +40,9 @@ from .ctl_bridge import (
 from .models import (
     ActionProposal,
     ActionType,
+    AdapterAckEvent,
+    AdapterAckRecord,
+    AdapterAckStatus,
     AdapterFailureCode,
     AdapterResultReport,
     AdapterResultStatus,
@@ -165,6 +169,10 @@ TASK_ORDER_RESPONSE_HEADERS = {
 }
 # control/robot_adapter/diff_drive_core.py의 도착 판정 허용 오차와 동일하다.
 TRAJECTORY_START_TOLERANCE_M = 0.05
+# 개발계획서 v1.0 KPI 9의 명령 입력→어댑터 ACK 목표 시간과 같다.
+ADAPTER_ACK_TIMEOUT_SECONDS = 1.0
+# 조회용 ACK 이력은 유지하되 장시간 운영에서 무한히 늘지 않게 한다.
+MAX_ACK_RECORDS = 1000
 STATE_HEARTBEAT_SECONDS = 15.0
 # UI 상태 스트림 부하 제한이며 ROS 2 안전 heartbeat·판정 주기와 무관하다.
 STATE_MIN_PUSH_INTERVAL_SECONDS = 0.2
@@ -404,9 +412,46 @@ def _publish_estop(active: bool, reason: str) -> None:
         LOGGER.error("E-Stop 발행 실패(%s): %s", reason, exc)
 
 
+def apply_ctl_ack_event(
+    ack: AdapterAckEvent,
+    received_at: AwareDatetime | None = None,
+) -> None:
+    """CTL ACK 첫 수신 기록을 보존하고 중복은 개수만 누적한다."""
+    received_at = received_at or utc_now()
+    with store.lock:
+        record = store.proposal_acks.get(ack.proposal_id)
+        if record is None:
+            LOGGER.warning("발행 기록이 없는 CTL ACK를 무시했습니다: %s", ack.proposal_id)
+            return
+        if record.robot_id != ack.robot_id:
+            LOGGER.warning("대상 Robot이 일치하지 않는 CTL ACK를 무시했습니다: %s", ack.proposal_id)
+            return
+        if record.ack_received_at is not None:
+            record.duplicate_count += 1
+            return
+
+        record.adapter_ack_at = ack.timestamp
+        record.ack_received_at = received_at
+        record.command_to_ack_ms = max(
+            0.0,
+            (received_at - record.command_received_at).total_seconds() * 1000,
+        )
+        record.dispatch_to_ack_ms = max(
+            0.0,
+            (received_at - record.dispatched_at).total_seconds() * 1000,
+        )
+        record.status = (
+            AdapterAckStatus.ACKNOWLEDGED
+            if received_at <= record.timeout_at
+            else AdapterAckStatus.TIMED_OUT
+        )
+
+
 action_dispatcher = create_action_dispatcher()
 if hasattr(action_dispatcher, "safety_event_handler"):
     action_dispatcher.safety_event_handler = apply_ctl_safety_event
+if hasattr(action_dispatcher, "ack_event_handler"):
+    action_dispatcher.ack_event_handler = apply_ctl_ack_event
 
 
 @app.on_event("startup")
@@ -657,6 +702,7 @@ def create_task_from_natural_language(
         Header(alias="Idempotency-Key"),
     ] = None,
 ) -> TaskOrder:
+    command_received_at = utc_now()
     normalized_key = normalize_idempotency_key(idempotency_key)
     request_fingerprint = make_request_fingerprint(request)
     with store.lock:
@@ -681,6 +727,7 @@ def create_task_from_natural_language(
         except TaskParseError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         store.tasks[task.task_id] = task
+        store.task_received_at[task.task_id] = command_received_at
         if normalized_key is not None:
             store.task_idempotency[normalized_key] = (
                 task.task_id,
@@ -1108,6 +1155,27 @@ def execute_action(proposal_id: str, http_request: Request) -> ActionProposal:
         # Redis 저장소가 끊긴 상태에서 캐시된 승인 명령을 로봇에 보내지 않는다.
         store.ensure_available()
         try:
+            dispatched_at = utc_now()
+            if len(store.proposal_acks) >= MAX_ACK_RECORDS:
+                removable = next(
+                    (
+                        candidate_id
+                        for candidate_id in store.proposal_acks
+                        if store.proposals.get(candidate_id) is None
+                        or store.proposals[candidate_id].status != ProposalStatus.EXECUTING
+                    ),
+                    None,
+                )
+                if removable is not None:
+                    store.proposal_acks.pop(removable, None)
+            store.proposal_acks[proposal.proposal_id] = AdapterAckRecord(
+                proposal_id=proposal.proposal_id,
+                task_id=task.task_id,
+                robot_id=robot.robot_id,
+                command_received_at=store.task_received_at.get(task.task_id, task.created_at),
+                dispatched_at=dispatched_at,
+                timeout_at=dispatched_at + timedelta(seconds=ADAPTER_ACK_TIMEOUT_SECONDS),
+            )
             action_dispatcher.dispatch(
                 proposal,
                 robot,
@@ -1115,8 +1183,10 @@ def execute_action(proposal_id: str, http_request: Request) -> ActionProposal:
             )
             http_request.state.estop_on_store_failure = True
         except CommandSerializationError as exc:
+            store.proposal_acks.pop(proposal.proposal_id, None)
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except DispatchError as exc:
+            store.proposal_acks.pop(proposal.proposal_id, None)
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=str(exc),
@@ -1140,6 +1210,25 @@ def execute_action(proposal_id: str, http_request: Request) -> ActionProposal:
             )
         )
         return proposal
+
+
+@app.get(
+    "/action-proposals/{proposal_id}/ack",
+    response_model=AdapterAckRecord,
+)
+def get_action_ack(proposal_id: str) -> AdapterAckRecord:
+    with store.lock:
+        if proposal_id not in store.proposals:
+            raise HTTPException(status_code=404, detail="ActionProposal을 찾을 수 없습니다.")
+        record = store.proposal_acks.get(proposal_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="ActionProposal의 ACK 대기 기록을 찾을 수 없습니다.")
+        if (
+            record.status == AdapterAckStatus.PENDING
+            and utc_now() > record.timeout_at
+        ):
+            record.status = AdapterAckStatus.TIMED_OUT
+        return record.model_copy(deep=True)
 
 
 @app.post("/action-proposals/{proposal_id}/result", response_model=ActionProposal)
@@ -1194,6 +1283,7 @@ def report_action_result(
 
         robot.updated_at = utc_now()
         store.proposal_results[proposal_id] = report
+        store.task_received_at.pop(task.task_id, None)
         store.logs.append(
             ExecutionLog(
                 proposal_id=proposal.proposal_id,
