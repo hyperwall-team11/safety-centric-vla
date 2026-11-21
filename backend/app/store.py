@@ -91,6 +91,8 @@ def _initialize_empty_state(target: Any) -> None:
     # CRITICAL HazardEvent 중 E-Stop을 발행하게 한 hazard_id.
     target.estop_hazard_ids: set[str] = set()
     target.logs: list[ExecutionLog] = []
+    # 평가 단계 사전 시뮬레이션 PASS의 snapshot_id. 실행 직전 같은 상태일 때만 재사용한다.
+    target.twin_simulation_passes: dict[str, str] = {}
     target.rules: dict[str, SafetyRule] = {}
 
 
@@ -138,6 +140,7 @@ def _serialize_state(source: Any) -> dict[str, Any]:
         "hazards": {key: _dump_model(value) for key, value in source.hazards.items()},
         "estop_hazard_ids": sorted(source.estop_hazard_ids),
         "logs": [_dump_model(value) for value in source.logs],
+        "twin_simulation_passes": dict(source.twin_simulation_passes),
         "rules": {key: _dump_model(value) for key, value in source.rules.items()},
     }
 
@@ -197,6 +200,8 @@ def _restore_state(target: Any, snapshot: dict[str, Any]) -> None:
     }
     target.estop_hazard_ids = set(snapshot["estop_hazard_ids"])
     target.logs = [ExecutionLog.model_validate(value) for value in snapshot["logs"]]
+    # 이 필드가 없던 스냅샷은 저장된 PASS가 없는 것으로 복구한다(실행 직전 다시 시뮬레이션).
+    target.twin_simulation_passes = dict(snapshot.get("twin_simulation_passes", {}))
     target.rules = {
         key: SafetyRule.model_validate(value) for key, value in snapshot["rules"].items()
     }

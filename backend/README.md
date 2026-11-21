@@ -118,6 +118,18 @@ ROS 2 모드에서는 실행 직전 재검증을 통과한 승인 스냅샷만 `
 
 `ZONE` 목적지를 실제 실행하려면 해당 Zone의 `geometry.navigation_target`에 `{x,y,z}` 좌표가 있어야 합니다. 없으면 명령을 추측해 보내지 않고 `422`로 차단합니다.
 
+### MuJoCo ② 사전 시뮬레이션 연결
+
+스키마 v1.1 승인 규칙 9번(`COLLISION`)을 적용하려면 CTL 사전 시뮬레이션 서비스를 띄우고 Backend를 아래처럼 실행합니다. 기본값은 비활성화입니다.
+
+```bash
+cd control && pixi run twin-sim          # http://127.0.0.1:8100/twin/simulate (PR #92 병합 후)
+cd backend
+BACKEND_TWIN_SIMULATION_ENABLED=1 python3 -m uvicorn app.main:app
+```
+
+다른 주소면 `BACKEND_TWIN_SIMULATE_URL`을 지정합니다. 활성화하면 서비스가 꺼져 있거나 Worker 스냅샷이 없을 때 이동 제안이 모두 거부됩니다(Fail-Closed). 동작 규칙은 [API 명세 3.9절](../docs/backend-api-spec-v0.2.md)을 참고합니다.
+
 ## 테스트
 
 ```bash

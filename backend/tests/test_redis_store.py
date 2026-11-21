@@ -182,6 +182,16 @@ class RedisStoreTest(unittest.TestCase):
         self.assertEqual(restarted.task_received_at["task-1"], received_at)
         self.assertEqual(restarted.proposal_acks["proposal-1"].robot_id, "robot-01")
 
+    def test_restores_twin_simulation_passes_after_restart(self) -> None:
+        client = FakeRedis()
+        first = RedisStore("redis://unused", client=client)
+        with first.lock:
+            first.twin_simulation_passes["proposal-1"] = "snap-1"
+
+        restarted = RedisStore("redis://unused", client=client)
+
+        self.assertEqual(restarted.twin_simulation_passes, {"proposal-1": "snap-1"})
+
     def test_reloads_latest_snapshot_before_each_outer_transaction(self) -> None:
         client = FakeRedis()
         first = RedisStore("redis://unused", client=client)
