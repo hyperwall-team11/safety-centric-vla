@@ -25,7 +25,11 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import AwareDatetime, BaseModel
 
-from .action_planner import ActionPlanningError, RuleBasedActionPlanner
+from .action_planner import (
+    ActionPlanningError,
+    ActionProviderError,
+    RuleBasedActionPlanner,
+)
 from .ctl_bridge import (
     CommandSerializationError,
     DispatchError,
@@ -643,11 +647,85 @@ def generate_action_proposal(
                 detail=f"이 TaskOrder에는 활성 ActionProposal이 이미 있습니다: {active_proposal.proposal_id}",
             )
 
-        try:
-            destination_zone = store.zones.get(getattr(task.destination, "zone_id", None))
-            proposal = planner.plan(task, robot, request, destination_zone=destination_zone)
-        except ActionPlanningError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        destination_zone = store.zones.get(getattr(task.destination, "zone_id", None))
+        task_snapshot = task.model_copy(deep=True)
+        robot_snapshot = robot.model_copy(deep=True)
+        destination_zone_snapshot = (
+            None if destination_zone is None else destination_zone.model_copy(deep=True)
+        )
+        selected_planner = planner
+
+    # VLA 추론은 수 초 이상 걸릴 수 있으므로 위험 이벤트와 상태 갱신을 막지 않게
+    # 저장소 잠금 밖에서 실행한다.
+    try:
+        proposal = selected_planner.plan(
+            task_snapshot,
+            robot_snapshot,
+            request,
+            destination_zone=destination_zone_snapshot,
+        )
+    except ActionPlanningError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ActionProviderError as exc:
+        LOGGER.warning("VLA 추론 요청 실패: %s", exc.__cause__ or exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+    with store.lock:
+        # 동일 멱등 요청이 추론 중 먼저 완료됐다면 그 결과를 재사용한다.
+        if normalized_key is not None:
+            replay = store.proposal_idempotency.get((task_id, normalized_key))
+            if replay is not None:
+                proposal_id, previous_fingerprint = replay
+                if previous_fingerprint != request_fingerprint:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="같은 Idempotency-Key를 다른 요청 본문에 재사용할 수 없습니다.",
+                    )
+                existing = store.proposals.get(proposal_id)
+                if existing is not None:
+                    response.status_code = status.HTTP_200_OK
+                    return existing
+
+        task = store.tasks.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="TaskOrder를 찾을 수 없습니다.")
+        robot = store.robots.get(task.target_robot_id)
+        if robot is None:
+            raise HTTPException(status_code=404, detail="TaskOrder의 대상 Robot을 찾을 수 없습니다.")
+        destination_zone = store.zones.get(getattr(task.destination, "zone_id", None))
+        if (
+            task != task_snapshot
+            or robot != robot_snapshot
+            or destination_zone != destination_zone_snapshot
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="VLA 추론 중 TaskOrder·Robot·Zone 문맥이 변경되어 결과를 저장하지 않습니다.",
+            )
+        if task.status not in PLANNABLE_TASK_STATUSES:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{task.status} 상태의 TaskOrder에서는 제안을 생성할 수 없습니다.",
+            )
+        if robot.status == "ERROR":
+            raise HTTPException(status_code=409, detail="ERROR 상태의 로봇에는 제안을 생성할 수 없습니다.")
+        active_proposal = next(
+            (
+                existing
+                for existing in store.proposals.values()
+                if existing.task_id == task_id
+                and existing.status in ACTIVE_PROPOSAL_STATUSES
+            ),
+            None,
+        )
+        if active_proposal is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"이 TaskOrder에는 활성 ActionProposal이 이미 있습니다: {active_proposal.proposal_id}",
+            )
 
         store.proposals[proposal.proposal_id] = proposal
         if task.status == TaskStatus.CREATED:

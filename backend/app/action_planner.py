@@ -23,6 +23,10 @@ class ActionPlanningError(ValueError):
     pass
 
 
+class ActionProviderError(RuntimeError):
+    """VLA 추론 서비스를 호출하지 못했거나 결과를 받지 못한 경우."""
+
+
 class ActionPlanner(Protocol):
     model_name: str
     model_version: str
@@ -69,12 +73,15 @@ class VlaActionPlanner:
         *,
         destination_zone: Zone | None = None,
     ) -> ActionProposal:
-        output = self.provider.generate(
-            task,
-            robot,
-            request,
-            destination_zone=destination_zone,
-        )
+        try:
+            output = self.provider.generate(
+                task,
+                robot,
+                request,
+                destination_zone=destination_zone,
+            )
+        except Exception as exc:
+            raise ActionProviderError("VLA 추론 서비스 호출에 실패했습니다.") from exc
         try:
             return convert_vla_output_to_proposal(
                 output,

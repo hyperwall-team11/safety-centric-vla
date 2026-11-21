@@ -1,4 +1,5 @@
 import unittest
+from threading import Event, Thread
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -44,6 +45,28 @@ class StubVlaOutputProvider:
             "frame_id": robot.pose.frame_id,
             "speed_limit": speed_limit,
         }
+
+
+class BlockingVlaOutputProvider(StubVlaOutputProvider):
+    def __init__(self) -> None:
+        self.started = Event()
+        self.release = Event()
+
+    def generate(self, task, robot, request, *, destination_zone=None):
+        self.started.set()
+        if not self.release.wait(2):
+            raise TimeoutError("테스트 추론 대기 시간 초과")
+        return super().generate(
+            task,
+            robot,
+            request,
+            destination_zone=destination_zone,
+        )
+
+
+class FailingVlaOutputProvider(StubVlaOutputProvider):
+    def generate(self, task, robot, request, *, destination_zone=None):
+        raise TimeoutError("모델 서버 응답 시간 초과")
 
 
 class ActionPlannerApiTest(unittest.TestCase):
@@ -144,6 +167,47 @@ class ActionPlannerApiTest(unittest.TestCase):
         self.assertEqual(proposal["speed_limit"], 0.2)
         self.assertEqual(proposal["model_name"], "stub-vla")
         self.assertEqual(proposal["model_version"], "test-1")
+
+    def test_vla_inference_releases_store_lock_and_rejects_stale_context(self) -> None:
+        task = self.create_task()
+        provider = BlockingVlaOutputProvider()
+        result = {}
+
+        def request_proposal() -> None:
+            result["response"] = self.generate(task["task_id"])
+
+        with patch("app.main.planner", VlaActionPlanner(provider)):
+            thread = Thread(target=request_proposal)
+            thread.start()
+            self.assertTrue(provider.started.wait(1))
+            acquired = store.lock.acquire(timeout=0.5)
+            try:
+                if acquired:
+                    store.robots["robot-01"].pose.position.x = 0.5
+            finally:
+                if acquired:
+                    store.lock.release()
+                provider.release.set()
+            thread.join(2)
+
+        self.assertTrue(acquired, "VLA 추론 중 store.lock이 점유됨")
+        self.assertFalse(thread.is_alive())
+        response = result["response"]
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("추론 중", response.json()["detail"])
+        self.assertEqual(store.proposals, {})
+        self.assertEqual(store.tasks[task["task_id"]].status, "CREATED")
+
+    def test_vla_provider_failure_returns_service_unavailable_without_storage(self) -> None:
+        task = self.create_task()
+
+        with patch("app.main.planner", VlaActionPlanner(FailingVlaOutputProvider())):
+            response = self.generate(task["task_id"])
+
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertIn("VLA 추론 서비스", response.json()["detail"])
+        self.assertEqual(store.proposals, {})
+        self.assertEqual(store.tasks[task["task_id"]].status, "CREATED")
 
     def test_external_robot_context_mismatch_returns_422_without_storage(self) -> None:
         task = self.create_task()

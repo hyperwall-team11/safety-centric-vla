@@ -128,6 +128,11 @@ VLA는 `action_type`, `parameters`, `trajectory`, `frame_id`, `speed_limit`만 �
 바꾸면 변환을 거부합니다.
 실제 모델 연동 클라이언트는 `VlaOutputProvider`를 구현하고 `VlaActionPlanner`에
 주입하면 기존 ActionProposal 생성 경로를 바꾸지 않고 규칙 기반 플래너를 교체할 수 있습니다.
+모델 추론은 저장소 잠금 밖에서 실행하며, 완료 후 TaskOrder·Robot·Zone과 활성
+Proposal을 다시 확인합니다. 추론 중 문맥이 바뀌면 오래된 결과를 저장하지 않고
+`409`를, 모델 서버 연결 실패·시간 초과 등 Provider 예외는 `503`을 반환합니다.
+일반적인 OpenVLA의 7차원 행동 벡터를 연결하려면 로봇별 좌표계·제어 주기에 맞춰
+이 구조화 계약으로 변환하는 별도 Adapter가 필요합니다.
 현재 TaskOrder v1.1에서 VLA 자동·직접 제안으로 허용하는 행동은 목적지가 구조화된
 `MOVE_TO`와 대상 물체·목적지가 구조화된 `MANIPULATE`입니다. `STOP`·`RESUME`은
 일반 VLA 출력으로 받지 않고 별도 안전 제어 경로에서만 생성합니다.

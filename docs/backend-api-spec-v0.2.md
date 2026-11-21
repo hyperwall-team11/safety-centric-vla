@@ -27,6 +27,7 @@
 | `404` | 요청한 Robot, TaskOrder, ActionProposal 또는 HazardEvent가 없음 | `{"detail":"...찾을 수 없습니다."}` |
 | `409` | 현재 상태에서 실행 불가, ID 중복, 활성 Proposal 또는 멱등성 충돌 | `{"detail":"..."}` |
 | `422` | JSON 스키마 위반, 자연어 해석 실패 또는 안전한 제안 생성 불가 | FastAPI 검증 오류 배열 또는 `{"detail":"..."}` |
+| `503` | VLA 추론 서비스 연결 실패·시간 초과 또는 제어 어댑터 전송 실패 | `{"detail":"..."}` |
 
 ## 2. 구현 엔드포인트
 
@@ -208,6 +209,12 @@ MANIPULATE 예:
 - MANIPULATE에 물체 ID 또는 명시적인 PICK/PLACE가 없음
 - MOVE_TO에 물체 또는 manipulation이 지정됨
 - TaskOrder v1.1로 안전하게 표현할 수 없는 STOP/RESUME 명령
+
+VLA Provider 추론은 위험 이벤트·Worker 관측·Robot 상태 갱신을 지연시키지 않도록
+저장소 잠금 밖에서 실행한다. Backend는 추론 전 TaskOrder·Robot·Zone을 스냅샷화하고,
+저장 직전에 현재 문맥과 활성 Proposal·멱등성 기록을 다시 검증한다. 추론 중
+문맥이 변경되면 `409`로 거부하고 아무 제안도 저장하지 않는다. Provider 예외는 `503`으로
+정규화하며 TaskOrder 상태를 변경하지 않는다.
 
 `GET /task-orders/{task_id}/action-proposals`는 해당 TaskOrder의 Proposal만 배열로 반환한다.
 
