@@ -14,6 +14,7 @@ class OpenApiContractTest(unittest.TestCase):
         expected_operations = {
             ("GET", "/health"),
             ("GET", "/auth/me"),
+            ("GET", "/api/v1/objects/{type}"),
             ("POST", "/robots"),
             ("GET", "/robots"),
             ("POST", "/zones"),
@@ -31,6 +32,7 @@ class OpenApiContractTest(unittest.TestCase):
             ("POST", "/action-proposals"),
             ("POST", "/action-proposals/{proposal_id}/evaluate"),
             ("POST", "/action-proposals/{proposal_id}/execute"),
+            ("GET", "/action-proposals/{proposal_id}/ack"),
             ("POST", "/action-proposals/{proposal_id}/result"),
             ("GET", "/hazards"),
             ("POST", "/hazards"),
@@ -40,9 +42,9 @@ class OpenApiContractTest(unittest.TestCase):
         }
 
         self.assertEqual(schema["info"]["version"], "0.2.0")
-        self.assertEqual(len(schema["paths"]), 20)
+        self.assertEqual(len(schema["paths"]), 22)
         self.assertEqual(actual_operations, expected_operations)
-        self.assertEqual(len(actual_operations), 25)
+        self.assertEqual(len(actual_operations), 27)
         self.assertEqual(
             schema["components"]["securitySchemes"]["BearerAuth"]["scheme"],
             "bearer",

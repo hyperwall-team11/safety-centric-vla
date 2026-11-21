@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from datetime import timedelta
+from enum import Enum
 from hashlib import sha256
 from math import dist
 from os import getenv
@@ -26,7 +28,11 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import AwareDatetime, BaseModel
 
-from .action_planner import ActionPlanningError, RuleBasedActionPlanner
+from .action_planner import (
+    ActionPlanningError,
+    ActionProviderError,
+    RuleBasedActionPlanner,
+)
 from .auth import TokenAuthenticator, websocket_bearer_token
 from .ctl_bridge import (
     CommandSerializationError,
@@ -36,6 +42,9 @@ from .ctl_bridge import (
 from .models import (
     ActionProposal,
     ActionType,
+    AdapterAckEvent,
+    AdapterAckRecord,
+    AdapterAckStatus,
     AdapterFailureCode,
     AdapterResultReport,
     AdapterResultStatus,
@@ -66,12 +75,29 @@ from .models import (
     TriggerSource,
     Worker,
     Zone,
+    ZoneDestination,
     utc_now,
 )
 from .safety import WORKER_SNAPSHOT_MAX_AGE_SECONDS, default_rules, evaluate_proposal
 from .state_stream import state_broadcaster
-from .store import store
+from .store import StoreUnavailableError, store
 from .task_parser import TaskParseError, parse_task_order, parse_task_order_preview
+from .twin_simulation import (
+    COLLISION_RULE_ID,
+    MAX_SIMULATION_ATTEMPTS,
+    TWIN_SIMULATION_ENABLED_ENV,
+    HttpTwinSimulator,
+    TwinSimulationError,
+    TwinSimulator,
+    blocked_result,
+    build_simulation_request,
+    collision_rule_applies,
+    compute_snapshot_id,
+    reused_pass_result,
+    stale_result,
+    run_simulation,
+)
+from .vla_output import VlaOutputValidationError, validate_vla_proposal
 
 
 app = FastAPI(
@@ -87,6 +113,7 @@ app.mount(
     name="console-assets",
 )
 planner = RuleBasedActionPlanner()
+twin_simulator: TwinSimulator = HttpTwinSimulator()
 ACTIVE_PROPOSAL_STATUSES = {
     ProposalStatus.PROPOSED,
     ProposalStatus.APPROVED,
@@ -96,6 +123,52 @@ ACTIVE_PROPOSAL_STATUSES = {
 PLANNABLE_TASK_STATUSES = {
     TaskStatus.CREATED,
     TaskStatus.PLANNING,
+}
+
+
+class OntologyObjectType(str, Enum):
+    ROBOT = "Robot"
+    SENSOR = "Sensor"
+    WORKER = "Worker"
+    ZONE = "Zone"
+    TASK_ORDER = "TaskOrder"
+    ACTION_PROPOSAL = "ActionProposal"
+    HAZARD_EVENT = "HazardEvent"
+    SAFETY_RULE = "SafetyRule"
+    EXECUTION_LOG = "ExecutionLog"
+
+
+OntologyObject = (
+    Robot
+    | Sensor
+    | Worker
+    | Zone
+    | TaskOrder
+    | ActionProposal
+    | HazardEvent
+    | SafetyRule
+    | ExecutionLog
+)
+OBJECT_STORE_ATTRIBUTES = {
+    OntologyObjectType.ROBOT: "robots",
+    OntologyObjectType.SENSOR: "sensors",
+    OntologyObjectType.WORKER: "workers",
+    OntologyObjectType.ZONE: "zones",
+    OntologyObjectType.TASK_ORDER: "tasks",
+    OntologyObjectType.ACTION_PROPOSAL: "proposals",
+    OntologyObjectType.HAZARD_EVENT: "hazards",
+    OntologyObjectType.SAFETY_RULE: "rules",
+    OntologyObjectType.EXECUTION_LOG: "logs",
+}
+OBJECT_LIST_RESPONSE_HEADERS = {
+    "X-Total-Count": {
+        "description": "페이지네이션 전 해당 객체 타입의 전체 건수",
+        "schema": {"type": "integer", "minimum": 0},
+    },
+    "X-Observed-At": {
+        "description": "Worker 전체 스냅샷의 관측 시각(Worker 조회에만 포함)",
+        "schema": {"type": "string", "format": "date-time"},
+    },
 }
 TASK_LIST_RESPONSE_HEADERS = {
     "X-Total-Count": {
@@ -115,6 +188,11 @@ TASK_ORDER_RESPONSE_HEADERS = {
 }
 # control/robot_adapter/diff_drive_core.py의 도착 판정 허용 오차와 동일하다.
 TRAJECTORY_START_TOLERANCE_M = 0.05
+TRAJECTORY_START_RULE_ID = "precondition-trajectory-start"
+# 개발계획서 v1.0 KPI 9의 명령 입력→어댑터 ACK 목표 시간과 같다.
+ADAPTER_ACK_TIMEOUT_SECONDS = 1.0
+# 조회용 ACK 이력은 유지하되 장시간 운영에서 무한히 늘지 않게 한다.
+MAX_ACK_RECORDS = 1000
 STATE_HEARTBEAT_SECONDS = 15.0
 # UI 상태 스트림 부하 제한이며 ROS 2 안전 heartbeat·판정 주기와 무관하다.
 STATE_MIN_PUSH_INTERVAL_SECONDS = 0.2
@@ -340,9 +418,14 @@ def trajectory_start_distance_m(robot: Robot, trajectory_start: dict) -> float |
 
 
 def seed_rules() -> None:
-    if not store.rules:
-        rules = default_rules(perception_enabled=getenv("BACKEND_PERCEPTION_SAFETY_ENABLED") == "1")
-        store.rules.update({rule.rule_id: rule for rule in rules})
+    # 저장소에 규칙이 이미 있어도(영속 저장소 복구 등) 새로 추가된 기본 규칙은 빠뜨리지 않는다. 기존 규칙은 덮어쓰지 않는다.
+    with store.lock:
+        rules = default_rules(
+            perception_enabled=getenv("BACKEND_PERCEPTION_SAFETY_ENABLED") == "1",
+            collision_simulation_enabled=getenv(TWIN_SIMULATION_ENABLED_ENV) == "1",
+        )
+        for rule in rules:
+            store.rules.setdefault(rule.rule_id, rule)
 
 
 seed_rules()
@@ -428,9 +511,9 @@ def sync_estop(reason: str) -> None:
     항상 마지막 저장소 상태와 같다(Transient Local·Keep Last 1 latched 값 보장).
     """
     with ESTOP_PUBLISH_LOCK:
-        with store.lock:
-            active = bool(store.estop_hazard_ids)
-        _publish_estop(active, reason)
+        store.synchronize_safety_publish(
+            lambda active: _publish_estop(active, reason)
+        )
 
 
 def _publish_estop(active: bool, reason: str) -> None:
@@ -445,23 +528,81 @@ def _publish_estop(active: bool, reason: str) -> None:
         LOGGER.error("E-Stop 발행 실패(%s): %s", reason, exc)
 
 
+def apply_ctl_ack_event(
+    ack: AdapterAckEvent,
+    received_at: AwareDatetime | None = None,
+) -> None:
+    """CTL ACK 첫 수신 기록을 보존하고 중복은 개수만 누적한다."""
+    received_at = received_at or utc_now()
+    with store.lock:
+        record = store.proposal_acks.get(ack.proposal_id)
+        if record is None:
+            LOGGER.warning("발행 기록이 없는 CTL ACK를 무시했습니다: %s", ack.proposal_id)
+            return
+        if record.robot_id != ack.robot_id:
+            LOGGER.warning("대상 Robot이 일치하지 않는 CTL ACK를 무시했습니다: %s", ack.proposal_id)
+            return
+        if record.ack_received_at is not None:
+            record.duplicate_count += 1
+            return
+
+        record.adapter_ack_at = ack.timestamp
+        record.ack_received_at = received_at
+        record.command_to_ack_ms = max(
+            0.0,
+            (received_at - record.command_received_at).total_seconds() * 1000,
+        )
+        record.dispatch_to_ack_ms = max(
+            0.0,
+            (received_at - record.dispatched_at).total_seconds() * 1000,
+        )
+        record.status = (
+            AdapterAckStatus.ACKNOWLEDGED
+            if received_at <= record.timeout_at
+            else AdapterAckStatus.TIMED_OUT
+        )
+
+
 action_dispatcher = create_action_dispatcher()
 if hasattr(action_dispatcher, "safety_event_handler"):
     action_dispatcher.safety_event_handler = apply_ctl_safety_event
+if hasattr(action_dispatcher, "ack_event_handler"):
+    action_dispatcher.ack_event_handler = apply_ctl_ack_event
 
 
 @app.on_event("startup")
 def start_action_dispatcher() -> None:
     action_dispatcher.start()
+    store.start_change_notifications(state_broadcaster.publish)
+    # Redis 재시작 복구 시 latched E-Stop 상태도 CTL에 다시 전달한다.
+    sync_estop("Backend 시작 상태 복구")
 
 
 @app.on_event("shutdown")
 def stop_action_dispatcher() -> None:
+    store.stop_change_notifications()
     action_dispatcher.stop()
+
+
+@app.exception_handler(StoreUnavailableError)
+def store_unavailable_handler(
+    request: Request,
+    exc: StoreUnavailableError,
+) -> JSONResponse:
+    # 읽기 실패나 잠금 경합은 503만 반환한다. 명령을 이미 발행한 요청의
+    # 커밋이 실패했을 때만 물리 실행과 Backend 상태 불일치를 막기 위해 정지한다.
+    if getattr(request.state, "estop_on_store_failure", False):
+        with ESTOP_PUBLISH_LOCK:
+            _publish_estop(True, f"Redis 실행 상태 커밋 실패: {exc}")
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": str(exc)},
+    )
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
+    store.ensure_available()
     return {"status": "ok"}
 
 
@@ -476,6 +617,55 @@ def auth_status(request: Request) -> AuthStatus:
         subject=principal.subject,
         role=principal.role,
     )
+
+
+@app.get(
+    "/api/v1/objects/{type}",
+    response_model=list[OntologyObject],
+    responses={
+        status.HTTP_200_OK: {
+            "description": "페이지네이션된 온톨로지 객체 목록",
+            "headers": OBJECT_LIST_RESPONSE_HEADERS,
+        },
+        status.HTTP_404_NOT_FOUND: {
+            "description": "Worker 관측 스냅샷이 아직 없음",
+        },
+    },
+)
+def list_ontology_objects(
+    type: OntologyObjectType,
+    response: Response,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> list[OntologyObject]:
+    if type == OntologyObjectType.SAFETY_RULE:
+        seed_rules()
+    with store.lock:
+        collection = getattr(store, OBJECT_STORE_ATTRIBUTES[type])
+        if collection is None:
+            if type == OntologyObjectType.WORKER:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Worker 관측 스냅샷이 아직 없습니다.",
+                )
+            collection = []
+        if isinstance(collection, dict):
+            collection = list(collection.values())
+        else:
+            collection = list(collection)
+        response.headers["X-Total-Count"] = str(len(collection))
+        if type == OntologyObjectType.WORKER:
+            observed_at = store.workers_observed_at
+            if observed_at is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Worker 관측 스냅샷이 아직 없습니다.",
+                )
+            response.headers["X-Observed-At"] = observed_at.isoformat()
+        return [
+            item.model_copy(deep=True)
+            for item in collection[offset : offset + limit]
+        ]
 
 
 @app.get("/console", include_in_schema=False)
@@ -494,7 +684,8 @@ def create_robot(robot: Robot) -> Robot:
 
 @app.get("/robots", response_model=list[Robot])
 def list_robots() -> list[Robot]:
-    return list(store.robots.values())
+    with store.lock:
+        return list(store.robots.values())
 
 
 @app.post("/zones", response_model=Zone, status_code=status.HTTP_201_CREATED)
@@ -508,7 +699,8 @@ def create_zone(zone: Zone) -> Zone:
 
 @app.get("/zones", response_model=list[Zone])
 def list_zones() -> list[Zone]:
-    return list(store.zones.values())
+    with store.lock:
+        return list(store.zones.values())
 
 
 @app.get(
@@ -639,6 +831,7 @@ def create_task_from_natural_language(
         Header(alias="Idempotency-Key"),
     ] = None,
 ) -> TaskOrder:
+    command_received_at = utc_now()
     normalized_key = normalize_idempotency_key(idempotency_key)
     request_fingerprint = make_request_fingerprint(request)
     with store.lock:
@@ -663,6 +856,7 @@ def create_task_from_natural_language(
         except TaskParseError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         store.tasks[task.task_id] = task
+        store.task_received_at[task.task_id] = command_received_at
         if normalized_key is not None:
             store.task_idempotency[normalized_key] = (
                 task.task_id,
@@ -675,10 +869,11 @@ def create_task_from_natural_language(
 
 @app.get("/task-orders/{task_id}", response_model=TaskOrder)
 def get_task(task_id: str) -> TaskOrder:
-    task = store.tasks.get(task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="TaskOrder를 찾을 수 없습니다.")
-    return task
+    with store.lock:
+        task = store.tasks.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="TaskOrder를 찾을 수 없습니다.")
+        return task
 
 
 @app.post(
@@ -751,11 +946,85 @@ def generate_action_proposal(
                 detail=f"이 TaskOrder에는 활성 ActionProposal이 이미 있습니다: {active_proposal.proposal_id}",
             )
 
-        try:
-            destination_zone = store.zones.get(getattr(task.destination, "zone_id", None))
-            proposal = planner.plan(task, robot, request, destination_zone=destination_zone)
-        except ActionPlanningError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        destination_zone = store.zones.get(getattr(task.destination, "zone_id", None))
+        task_snapshot = task.model_copy(deep=True)
+        robot_snapshot = robot.model_copy(deep=True)
+        destination_zone_snapshot = (
+            None if destination_zone is None else destination_zone.model_copy(deep=True)
+        )
+        selected_planner = planner
+
+    # VLA 추론은 수 초 이상 걸릴 수 있으므로 위험 이벤트와 상태 갱신을 막지 않게
+    # 저장소 잠금 밖에서 실행한다.
+    try:
+        proposal = selected_planner.plan(
+            task_snapshot,
+            robot_snapshot,
+            request,
+            destination_zone=destination_zone_snapshot,
+        )
+    except ActionPlanningError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ActionProviderError as exc:
+        LOGGER.warning("VLA 추론 요청 실패: %s", exc.__cause__ or exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+    with store.lock:
+        # 동일 멱등 요청이 추론 중 먼저 완료됐다면 그 결과를 재사용한다.
+        if normalized_key is not None:
+            replay = store.proposal_idempotency.get((task_id, normalized_key))
+            if replay is not None:
+                proposal_id, previous_fingerprint = replay
+                if previous_fingerprint != request_fingerprint:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="같은 Idempotency-Key를 다른 요청 본문에 재사용할 수 없습니다.",
+                    )
+                existing = store.proposals.get(proposal_id)
+                if existing is not None:
+                    response.status_code = status.HTTP_200_OK
+                    return existing
+
+        task = store.tasks.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="TaskOrder를 찾을 수 없습니다.")
+        robot = store.robots.get(task.target_robot_id)
+        if robot is None:
+            raise HTTPException(status_code=404, detail="TaskOrder의 대상 Robot을 찾을 수 없습니다.")
+        destination_zone = store.zones.get(getattr(task.destination, "zone_id", None))
+        if (
+            task != task_snapshot
+            or robot != robot_snapshot
+            or destination_zone != destination_zone_snapshot
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="VLA 추론 중 TaskOrder·Robot·Zone 문맥이 변경되어 결과를 저장하지 않습니다.",
+            )
+        if task.status not in PLANNABLE_TASK_STATUSES:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{task.status} 상태의 TaskOrder에서는 제안을 생성할 수 없습니다.",
+            )
+        if robot.status == "ERROR":
+            raise HTTPException(status_code=409, detail="ERROR 상태의 로봇에는 제안을 생성할 수 없습니다.")
+        active_proposal = next(
+            (
+                existing
+                for existing in store.proposals.values()
+                if existing.task_id == task_id
+                and existing.status in ACTIVE_PROPOSAL_STATUSES
+            ),
+            None,
+        )
+        if active_proposal is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"이 TaskOrder에는 활성 ActionProposal이 이미 있습니다: {active_proposal.proposal_id}",
+            )
 
         store.proposals[proposal.proposal_id] = proposal
         if task.status == TaskStatus.CREATED:
@@ -786,17 +1055,17 @@ def list_task_action_proposals(task_id: str) -> list[ActionProposal]:
 @app.post("/action-proposals", response_model=ActionProposal, status_code=status.HTTP_201_CREATED)
 def create_proposal(proposal: ActionProposal) -> ActionProposal:
     with store.lock:
-        robot = store.robots.get(proposal.robot_id)
-        if robot is None:
-            raise HTTPException(status_code=404, detail="대상 Robot을 찾을 수 없습니다.")
         task = store.tasks.get(proposal.task_id)
         if task is None:
             raise HTTPException(status_code=404, detail="대상 TaskOrder를 찾을 수 없습니다.")
         if proposal.robot_id != task.target_robot_id:
             raise HTTPException(
-                status_code=409,
+                status_code=422,
                 detail="ActionProposal의 robot_id가 TaskOrder의 대상 로봇과 다릅니다.",
             )
+        robot = store.robots.get(proposal.robot_id)
+        if robot is None:
+            raise HTTPException(status_code=404, detail="대상 Robot을 찾을 수 없습니다.")
         if task.status not in PLANNABLE_TASK_STATUSES:
             raise HTTPException(
                 status_code=409,
@@ -804,6 +1073,20 @@ def create_proposal(proposal: ActionProposal) -> ActionProposal:
             )
         if robot.status == "ERROR":
             raise HTTPException(status_code=409, detail="ERROR 상태의 로봇에는 제안을 등록할 수 없습니다.")
+        destination_zone = (
+            store.zones.get(task.destination.zone_id)
+            if isinstance(task.destination, ZoneDestination)
+            else None
+        )
+        try:
+            validate_vla_proposal(
+                proposal,
+                task,
+                robot,
+                destination_zone=destination_zone,
+            )
+        except VlaOutputValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         if proposal.proposal_id in store.proposals:
             raise HTTPException(status_code=409, detail="이미 등록된 proposal_id입니다.")
         if any(
@@ -896,141 +1179,358 @@ def evaluate_current_safety(
     )
 
 
+def needs_collision_simulation(
+    proposal: ActionProposal, rule_results: list[RuleResult], estop_requested: bool
+) -> bool:
+    """스키마 v1.1 5장 9번: 규칙 1~8을 모두 통과한 후보만 사전 시뮬레이션한다. 잠금 안에서 부른다."""
+    rule = store.rules.get(COLLISION_RULE_ID)
+    return (
+        rule is not None
+        and rule.enabled
+        and collision_rule_applies(proposal.action_type)
+        and not estop_requested
+        and all(result.passed for result in rule_results)
+    )
+
+
+def current_snapshot_id() -> str:
+    """제어 계약 13.3절 snapshot_id. 잠금 안에서 부른다."""
+    return compute_snapshot_id(
+        store.robots.values(),
+        store.workers,
+        store.workers_observed_at,
+        store.hazards.values(),
+        store.zones.values(),
+    )
+
+
+def prepare_collision_simulation(
+    proposal: ActionProposal, robot: Robot, snapshot_id: str
+) -> tuple[dict | None, RuleResult | None]:
+    """잠금 안에서 요청 본문을 값으로 복사해 둔다. 만들 수 없으면 차단 결과를 돌려준다."""
+    try:
+        payload = build_simulation_request(
+            proposal,
+            robot,
+            robots=list(store.robots.values()),
+            workers=None if store.workers is None else list(store.workers),
+            workers_observed_at=store.workers_observed_at,
+            zones=list(store.zones.values()),
+            snapshot_id=snapshot_id,
+            snapshot_at=utc_now(),
+        )
+    except TwinSimulationError as exc:
+        return None, blocked_result(f"사전 시뮬레이션 요청 불가로 차단: {exc}", snapshot_id)
+    except Exception as exc:  # 요청을 만들 수 없으면 통과로 보지 않는다(Fail-Closed)
+        return None, blocked_result(
+            f"사전 시뮬레이션 요청 불가로 차단: {type(exc).__name__}: {exc}", snapshot_id
+        )
+    return payload, None
+
+
+def select_collision_result(
+    proposal: ActionProposal,
+    robot: Robot,
+    snapshot_id: str,
+    simulated: tuple[str, RuleResult] | None,
+    attempts: int,
+    stored_pass_snapshot_id: str | None = None,
+) -> tuple[dict | None, RuleResult | None]:
+    """현재 snapshot_id에 쓸 수 있는 COLLISION 결과를 고르고, 없으면 새 요청 본문을 만든다. 잠금 안에서 부른다.
+
+    제어 계약 13.3절: 다른 snapshot_id의 PASS는 쓰지 않는다. 위반 결과는 상태가 바뀌어도 그대로 차단한다.
+    """
+    if simulated is not None and (simulated[0] == snapshot_id or not simulated[1].passed):
+        return None, simulated[1]
+    if stored_pass_snapshot_id == snapshot_id:
+        return None, reused_pass_result(snapshot_id)
+    if attempts >= MAX_SIMULATION_ATTEMPTS:
+        return None, stale_result(snapshot_id, attempts)
+    return prepare_collision_simulation(proposal, robot, snapshot_id)
+
+
+def load_proposal_for_update(
+    proposal_id: str, expected_status: ProposalStatus, detail: str
+) -> tuple[ActionProposal, Robot, TaskOrder]:
+    proposal = store.proposals.get(proposal_id)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail="ActionProposal을 찾을 수 없습니다.")
+    if proposal.status != expected_status:
+        raise HTTPException(status_code=409, detail=detail)
+    return proposal, store.robots[proposal.robot_id], store.tasks[proposal.task_id]
+
+
+def finish_evaluation(
+    proposal: ActionProposal,
+    robot: Robot,
+    task: TaskOrder,
+    rule_results: list[RuleResult],
+    hazard_ids: list[str],
+    estop_requested: bool,
+    started_at: float,
+) -> ActionProposal:
+    approved = all(result.passed for result in rule_results)
+    proposal.status = ProposalStatus.APPROVED if approved else ProposalStatus.REJECTED
+    decision = Decision.APPROVE if approved else Decision.REJECT
+    if estop_requested:
+        decision = Decision.ESTOP
+        task.status = TaskStatus.HELD
+        robot.status = RobotStatus.ESTOP
+        robot.updated_at = utc_now()
+    log = ExecutionLog(
+        proposal_id=proposal.proposal_id,
+        decision=decision,
+        triggered_by=TriggerSource.RULE_ENGINE if estop_requested else None,
+        rule_results=rule_results,
+        hazard_ids=hazard_ids,
+        robot_id=proposal.robot_id,
+        result_message="안전 규칙 통과" if approved else "안전 규칙 위반으로 거절",
+        evaluated_in_ms=(perf_counter() - started_at) * 1000,
+    )
+    store.logs.append(log)
+    return proposal
+
+
 @app.post("/action-proposals/{proposal_id}/evaluate", response_model=ActionProposal)
 def evaluate_action(proposal_id: str) -> ActionProposal:
     started_at = perf_counter()
-    with store.lock:
-        proposal = store.proposals.get(proposal_id)
-        if proposal is None:
-            raise HTTPException(status_code=404, detail="ActionProposal을 찾을 수 없습니다.")
-        if proposal.status != ProposalStatus.PROPOSED:
-            raise HTTPException(status_code=409, detail="PROPOSED 상태만 평가할 수 있습니다.")
+    not_proposed = "PROPOSED 상태만 평가할 수 있습니다."
+    attempts = 0
+    simulated: tuple[str, RuleResult] | None = None  # (시뮬레이션한 snapshot_id, 결과)
+    while True:
+        with store.lock:
+            proposal, robot, task = load_proposal_for_update(
+                proposal_id, ProposalStatus.PROPOSED, not_proposed
+            )
+            # 시뮬레이션 대기 중 바뀐 위험·로봇 상태도 결정에 반영한다.
+            rule_results, hazard_ids, estop_requested = evaluate_current_safety(
+                proposal, task, robot
+            )
+            payload = None
+            pass_snapshot_id = None
+            if needs_collision_simulation(proposal, rule_results, estop_requested):
+                # 평가 완료 시점의 snapshot_id와 같은 상태로 시뮬레이션한 결과만 쓴다.
+                snapshot_id = current_snapshot_id()
+                payload, collision_result = select_collision_result(
+                    proposal, robot, snapshot_id, simulated, attempts
+                )
+                if collision_result is not None:
+                    rule_results.append(collision_result)
+                    if collision_result.passed:
+                        pass_snapshot_id = snapshot_id
+            if payload is None:
+                proposal = finish_evaluation(
+                    proposal, robot, task, rule_results, hazard_ids, estop_requested, started_at
+                )
+                if proposal.status == ProposalStatus.APPROVED and pass_snapshot_id is not None:
+                    store.twin_simulation_passes[proposal_id] = pass_snapshot_id
+                return proposal
 
-        robot = store.robots[proposal.robot_id]
-        task = store.tasks[proposal.task_id]
-        rule_results, hazard_ids, estop_requested = evaluate_current_safety(proposal, task, robot)
-        approved = all(result.passed for result in rule_results)
-        proposal.status = ProposalStatus.APPROVED if approved else ProposalStatus.REJECTED
-        decision = Decision.APPROVE if approved else Decision.REJECT
-        if estop_requested:
-            decision = Decision.ESTOP
+        # 제어 계약 13.3절: HTTP 응답을 기다리는 동안 저장소 잠금을 잡지 않는다.
+        attempts += 1
+        simulated = (payload["snapshot_id"], run_simulation(twin_simulator, payload))
+
+
+def evaluate_execution_checks(
+    proposal: ActionProposal, task: TaskOrder, robot: Robot
+) -> tuple[list[RuleResult], list[str], bool]:
+    """실행 직전 재검증(규칙 1~8 + 경로 출발점). 잠금 안에서 부른다."""
+    rule_results, hazard_ids, estop_requested = evaluate_current_safety(proposal, task, robot)
+    if (
+        proposal.action_type == ActionType.MOVE_TO
+        and proposal.trajectory
+    ):
+        start_distance_m = trajectory_start_distance_m(robot, proposal.trajectory[0])
+        start_matches = (
+            robot.pose.frame_id == proposal.frame_id
+            and start_distance_m is not None
+            and start_distance_m <= TRAJECTORY_START_TOLERANCE_M
+        )
+        rule_results.append(RuleResult(
+            rule_id=TRAJECTORY_START_RULE_ID,
+            passed=start_matches,
+            reason=(
+                f"경로 출발점 허용 오차 이내({start_distance_m:.3f}m)"
+                if start_matches
+                else (
+                    "로봇 위치가 경로 출발점과 "
+                    f"{TRAJECTORY_START_TOLERANCE_M:.2f}m 넘게 다르거나 좌표계가 달라 "
+                    "재계획이 필요합니다."
+                )
+            ),
+        ))
+    return rule_results, hazard_ids, estop_requested
+
+
+def finish_execution(
+    proposal: ActionProposal,
+    robot: Robot,
+    task: TaskOrder,
+    rule_results: list[RuleResult],
+    hazard_ids: list[str],
+    estop_requested: bool,
+    started_at: float,
+    http_request: Request,
+) -> ActionProposal:
+    # 평가 단계 PASS는 이번 실행 판단에만 쓸 수 있다.
+    store.twin_simulation_passes.pop(proposal.proposal_id, None)
+    evaluated_in_ms = (perf_counter() - started_at) * 1000
+    failed_rule_ids = {result.rule_id for result in rule_results if not result.passed}
+    if failed_rule_ids:
+        requires_replan = failed_rule_ids == {TRAJECTORY_START_RULE_ID}
+        if requires_replan:
+            proposal.status = ProposalStatus.REJECTED
+            task.status = TaskStatus.PLANNING
+        else:
+            proposal.status = ProposalStatus.HELD
             task.status = TaskStatus.HELD
+        reject_only_rules = {
+            "rule-observation-gap",
+            "rule-safety-distance",
+            TRAJECTORY_START_RULE_ID,
+            # 시뮬레이션 실패·트윈 미가동은 실행 거부이며, 아직 움직이지 않은 로봇을 E-Stop하지 않는다.
+            COLLISION_RULE_ID,
+        }
+        requires_estop = estop_requested or bool(failed_rule_ids - reject_only_rules)
+        if requires_estop:
             robot.status = RobotStatus.ESTOP
             robot.updated_at = utc_now()
-        log = ExecutionLog(
-            proposal_id=proposal.proposal_id,
-            decision=decision,
-            triggered_by=TriggerSource.RULE_ENGINE if estop_requested else None,
-            rule_results=rule_results,
-            hazard_ids=hazard_ids,
-            robot_id=proposal.robot_id,
-            result_message="안전 규칙 통과" if approved else "안전 규칙 위반으로 거절",
-            evaluated_in_ms=(perf_counter() - started_at) * 1000,
-        )
-        store.logs.append(log)
-        return proposal
-
-
-@app.post("/action-proposals/{proposal_id}/execute", response_model=ActionProposal)
-def execute_action(proposal_id: str) -> ActionProposal:
-    started_at = perf_counter()
-    with store.lock:
-        proposal = store.proposals.get(proposal_id)
-        if proposal is None:
-            raise HTTPException(status_code=404, detail="ActionProposal을 찾을 수 없습니다.")
-        if proposal.status != ProposalStatus.APPROVED:
-            raise HTTPException(status_code=409, detail="APPROVED 상태만 실행할 수 있습니다.")
-
-        robot = store.robots[proposal.robot_id]
-        task = store.tasks[proposal.task_id]
-        rule_results, hazard_ids, estop_requested = evaluate_current_safety(proposal, task, robot)
-        start_rule_id = "precondition-trajectory-start"
-        if (
-            proposal.action_type == ActionType.MOVE_TO
-            and proposal.model_name == planner.model_name
-            and proposal.trajectory
-        ):
-            start_distance_m = trajectory_start_distance_m(robot, proposal.trajectory[0])
-            start_matches = (
-                robot.pose.frame_id == proposal.frame_id
-                and start_distance_m is not None
-                and start_distance_m <= TRAJECTORY_START_TOLERANCE_M
-            )
-            rule_results.append(RuleResult(
-                rule_id=start_rule_id,
-                passed=start_matches,
-                reason=(
-                    f"경로 출발점 허용 오차 이내({start_distance_m:.3f}m)"
-                    if start_matches
-                    else (
-                        "로봇 위치가 경로 출발점과 "
-                        f"{TRAJECTORY_START_TOLERANCE_M:.2f}m 넘게 다르거나 좌표계가 달라 "
-                        "재계획이 필요합니다."
-                    )
-                ),
-            ))
-
-        evaluated_in_ms = (perf_counter() - started_at) * 1000
-        failed_rule_ids = {result.rule_id for result in rule_results if not result.passed}
-        if failed_rule_ids:
-            requires_replan = failed_rule_ids == {start_rule_id}
-            if requires_replan:
-                proposal.status = ProposalStatus.REJECTED
-                task.status = TaskStatus.PLANNING
-            else:
-                proposal.status = ProposalStatus.HELD
-                task.status = TaskStatus.HELD
-            reject_only_rules = {"rule-observation-gap", "rule-safety-distance", start_rule_id}
-            requires_estop = estop_requested or bool(failed_rule_ids - reject_only_rules)
-            if requires_estop:
-                robot.status = RobotStatus.ESTOP
-                robot.updated_at = utc_now()
-            store.logs.append(
-                ExecutionLog(
-                    proposal_id=proposal.proposal_id,
-                    decision=Decision.ESTOP if requires_estop else Decision.REJECT,
-                    rule_results=rule_results,
-                    hazard_ids=hazard_ids,
-                    robot_id=proposal.robot_id,
-                    result_message="실행 직전 안전 재검증 실패",
-                    evaluated_in_ms=evaluated_in_ms,
-                    triggered_by=TriggerSource.RULE_ENGINE,
-                )
-            )
-            raise HTTPException(status_code=409, detail="실행 직전 안전 재검증에 실패했습니다.")
-
-        try:
-            action_dispatcher.dispatch(
-                proposal,
-                robot,
-                list(store.zones.values()),
-            )
-        except CommandSerializationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except DispatchError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=str(exc),
-            ) from exc
-
-        proposal.status = ProposalStatus.EXECUTING
-        task.status = TaskStatus.RUNNING
-        robot.status = RobotStatus.MOVING
-        robot.updated_at = utc_now()
         store.logs.append(
             ExecutionLog(
                 proposal_id=proposal.proposal_id,
-                decision=Decision.EXECUTE,
+                decision=Decision.ESTOP if requires_estop else Decision.REJECT,
                 rule_results=rule_results,
                 hazard_ids=hazard_ids,
                 robot_id=proposal.robot_id,
-                result_message=(
-                    f"{action_dispatcher.name} adapter({robot.control_adapter})로 전달됨"
-                ),
+                result_message="실행 직전 안전 재검증 실패",
                 evaluated_in_ms=evaluated_in_ms,
+                triggered_by=TriggerSource.RULE_ENGINE,
             )
         )
-        return proposal
+        raise HTTPException(status_code=409, detail="실행 직전 안전 재검증에 실패했습니다.")
+
+    # Redis 저장소가 끊긴 상태에서 캐시된 승인 명령을 로봇에 보내지 않는다.
+    store.ensure_available()
+    try:
+        dispatched_at = utc_now()
+        if len(store.proposal_acks) >= MAX_ACK_RECORDS:
+            removable = next(
+                (
+                    candidate_id
+                    for candidate_id in store.proposal_acks
+                    if store.proposals.get(candidate_id) is None
+                    or store.proposals[candidate_id].status != ProposalStatus.EXECUTING
+                ),
+                None,
+            )
+            if removable is not None:
+                store.proposal_acks.pop(removable, None)
+        store.proposal_acks[proposal.proposal_id] = AdapterAckRecord(
+            proposal_id=proposal.proposal_id,
+            task_id=task.task_id,
+            robot_id=robot.robot_id,
+            command_received_at=store.task_received_at.get(task.task_id, task.created_at),
+            dispatched_at=dispatched_at,
+            timeout_at=dispatched_at + timedelta(seconds=ADAPTER_ACK_TIMEOUT_SECONDS),
+        )
+        action_dispatcher.dispatch(
+            proposal,
+            robot,
+            list(store.zones.values()),
+        )
+        http_request.state.estop_on_store_failure = True
+    except CommandSerializationError as exc:
+        store.proposal_acks.pop(proposal.proposal_id, None)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except DispatchError as exc:
+        store.proposal_acks.pop(proposal.proposal_id, None)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+    proposal.status = ProposalStatus.EXECUTING
+    task.status = TaskStatus.RUNNING
+    robot.status = RobotStatus.MOVING
+    robot.updated_at = utc_now()
+    store.logs.append(
+        ExecutionLog(
+            proposal_id=proposal.proposal_id,
+            decision=Decision.EXECUTE,
+            rule_results=rule_results,
+            hazard_ids=hazard_ids,
+            robot_id=proposal.robot_id,
+            result_message=(
+                f"{action_dispatcher.name} adapter({robot.control_adapter})로 전달됨"
+            ),
+            evaluated_in_ms=evaluated_in_ms,
+        )
+    )
+    return proposal
+
+
+@app.post("/action-proposals/{proposal_id}/execute", response_model=ActionProposal)
+def execute_action(proposal_id: str, http_request: Request) -> ActionProposal:
+    started_at = perf_counter()
+    not_approved = "APPROVED 상태만 실행할 수 있습니다."
+    attempts = 0
+    simulated: tuple[str, RuleResult] | None = None  # (시뮬레이션한 snapshot_id, 결과)
+    while True:
+        with store.lock:
+            proposal, robot, task = load_proposal_for_update(
+                proposal_id, ProposalStatus.APPROVED, not_approved
+            )
+            rule_results, hazard_ids, estop_requested = evaluate_execution_checks(
+                proposal, task, robot
+            )
+            payload = None
+            if needs_collision_simulation(proposal, rule_results, estop_requested):
+                # 제어 계약 13.3절: 실행 직전 상태로 snapshot_id를 다시 계산해 같은 상태의 PASS만 쓴다.
+                snapshot_id = current_snapshot_id()
+                payload, collision_result = select_collision_result(
+                    proposal,
+                    robot,
+                    snapshot_id,
+                    simulated,
+                    attempts,
+                    store.twin_simulation_passes.get(proposal_id),
+                )
+                if collision_result is not None:
+                    rule_results.append(collision_result)
+            if payload is None:
+                return finish_execution(
+                    proposal,
+                    robot,
+                    task,
+                    rule_results,
+                    hazard_ids,
+                    estop_requested,
+                    started_at,
+                    http_request,
+                )
+
+        # 잠금 밖에서 기다려 대기 중에도 위험 이벤트 등록과 긴급 정지가 지연되지 않게 한다.
+        attempts += 1
+        simulated = (payload["snapshot_id"], run_simulation(twin_simulator, payload))
+
+
+@app.get(
+    "/action-proposals/{proposal_id}/ack",
+    response_model=AdapterAckRecord,
+)
+def get_action_ack(proposal_id: str) -> AdapterAckRecord:
+    with store.lock:
+        if proposal_id not in store.proposals:
+            raise HTTPException(status_code=404, detail="ActionProposal을 찾을 수 없습니다.")
+        record = store.proposal_acks.get(proposal_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="ActionProposal의 ACK 대기 기록을 찾을 수 없습니다.")
+        if (
+            record.status == AdapterAckStatus.PENDING
+            and utc_now() > record.timeout_at
+        ):
+            record.status = AdapterAckStatus.TIMED_OUT
+        return record.model_copy(deep=True)
 
 
 @app.post("/action-proposals/{proposal_id}/result", response_model=ActionProposal)
@@ -1085,6 +1585,7 @@ def report_action_result(
 
         robot.updated_at = utc_now()
         store.proposal_results[proposal_id] = report
+        store.task_received_at.pop(task.task_id, None)
         store.logs.append(
             ExecutionLog(
                 proposal_id=proposal.proposal_id,
@@ -1201,9 +1702,11 @@ def resolve_hazard(hazard_id: str, request: HazardResolveRequest) -> HazardEvent
 @app.get("/safety-rules", response_model=list[SafetyRule])
 def list_safety_rules() -> list[SafetyRule]:
     seed_rules()
-    return list(store.rules.values())
+    with store.lock:
+        return list(store.rules.values())
 
 
 @app.get("/execution-logs", response_model=list[ExecutionLog])
 def list_execution_logs() -> list[ExecutionLog]:
-    return store.logs
+    with store.lock:
+        return list(store.logs)
