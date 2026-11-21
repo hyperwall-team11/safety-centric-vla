@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app, seed_rules
 from app.store import store
+from app.vla_output import convert_vla_output_to_proposal
 
 
 class MockVlaSafetyTests(unittest.TestCase):
@@ -83,10 +84,8 @@ class MockVlaSafetyTests(unittest.TestCase):
             },
         )
 
-        # 실제 VLA 대신 Mock ActionProposal 등록
-        proposal = self.post("/action-proposals", {
-            "task_id": task["task_id"],
-            "robot_id": robot_id,
+        # 실제 VLA 대신 원시 출력을 ActionProposal로 변환해 등록
+        raw_output = {
             "action_type": "MOVE_TO",
             "parameters": {
                 "target_pose": {
@@ -98,9 +97,18 @@ class MockVlaSafetyTests(unittest.TestCase):
             "trajectory": trajectory,
             "frame_id": "map",
             "speed_limit": speed,
-            "model_name": "mock-vla",
-            "model_version": "test-0.1",
-        })
+        }
+        converted = convert_vla_output_to_proposal(
+            raw_output,
+            store.tasks[task["task_id"]],
+            store.robots[robot_id],
+            model_name="mock-vla",
+            model_version="test-0.1",
+        )
+        proposal = self.post(
+            "/action-proposals",
+            converted.model_dump(mode="json"),
+        )
 
         # 안전 규칙 평가
         result = self.client.post(

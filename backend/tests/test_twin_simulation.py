@@ -348,13 +348,16 @@ def test_straight_trajectory_to_target_is_simulated(client, sim):
     assert len(sim.payloads) == 1
 
 
-@pytest.mark.parametrize("trajectory, reason", [
+@pytest.mark.parametrize("stored_trajectory, reason", [
     # 트윈·CTL 어댑터는 직선으로 움직이므로 경유점을 지나는 경로는 검증할 수 없다
     ([*straight()[:1], {"position": {"x": 1.0, "y": 0.5, "z": 0.0}}, straight()[1]], "경유점"),
+    # 제안 등록 검증(VLA 출력 검증)을 거치지 않은 저장 상태도 사전 시뮬레이션에서 다시 막는다
     (straight({"x": 2.5, "y": 1.0, "z": 0.0}), "trajectory 끝점"),
 ])
-def test_trajectory_different_from_simulated_path_is_blocked(client, sim, trajectory, reason):
-    status, log = evaluate(client, propose(client, trajectory=trajectory))
+def test_trajectory_different_from_simulated_path_is_blocked(client, sim, stored_trajectory, reason):
+    proposal_id = propose(client, trajectory=straight())
+    store.proposals[proposal_id].trajectory = stored_trajectory
+    status, log = evaluate(client, proposal_id)
     assert status == "REJECTED"
     assert sim.payloads == []
     rule = collision_rule(log)
@@ -425,22 +428,15 @@ def test_execute_rejects_when_state_keeps_changing_during_simulation(client, sim
 def test_manipulate_is_blocked_until_contract_supports_it(client, sim):
     r = client.post(
         "/task-orders/from-natural-language",
-        json={"instruction": "robot-01 로봇을 A구역으로 이동해"},
+        json={"instruction": "robot-01 로봇으로 상자 3을 A구역으로 옮겨"},
     )
-    proposal = {
-        "task_id": r.json()["task_id"],
-        "robot_id": "robot-01",
-        "action_type": "MANIPULATE",
-        "parameters": {"manipulation": "PICK", "object_id": "box-1",
-                       "target_pose": {"type": "ZONE", "zone_id": "A구역"}},
-        "trajectory": None,
-        "frame_id": "world",
-        "speed_limit": 0.2,
-        "model_name": "mock-vla",
-        "model_version": "test-0.1",
-    }
-    r = client.post("/action-proposals", json=proposal)
     assert r.status_code == 201, r.text
+    r = client.post(
+        f"/task-orders/{r.json()['task_id']}/action-proposals",
+        json={"manipulation": "PLACE"},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["action_type"] == "MANIPULATE"
     status, log = evaluate(client, r.json()["proposal_id"])
     assert status == "REJECTED"
     assert sim.payloads == []

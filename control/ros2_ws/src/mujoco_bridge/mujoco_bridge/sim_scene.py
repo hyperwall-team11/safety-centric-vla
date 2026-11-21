@@ -22,6 +22,14 @@ ZONE_GEOMS = {
 }
 TABLE_GEOMS = {"table_a_top": "작업대 A", "table_b_top": "작업대 B"}
 CAMERAS = ("cctv_1", "cctv_2")
+# plant_scene.xml 등의 주변 설비 geom(prop_<종류>_<번호>) → 지도 라벨. 목록에 없는 종류는 종류 이름 그대로 쓴다
+PROP_LABELS = {
+    "forklift": "지게차", "tank": "탱크", "piperack": "배관 랙", "building": "전기실", "fence": "펜스",
+    "arm": "로봇 팔", "console": "조작반", "drum": "드럼", "rail": "난간", "pole": "기둥", "manhole": "맨홀",
+    "rack": "랙",
+}
+# 추가 작업자 위치 토픽(/sim/worker_pose_<n>)을 구독할 최대 번호. 작업자 1은 /sim/worker_pose
+MAX_WORKERS = 6
 
 
 def _box_polygon(cx: float, cy: float, hx: float, hy: float, yaw: float) -> list[list[float]]:
@@ -31,7 +39,7 @@ def _box_polygon(cx: float, cy: float, hx: float, hy: float, yaw: float) -> list
 
 
 def load_static_scene(xml_path: str) -> dict:
-    """장면 XML → 구역·작업대·카메라. 카메라는 바닥 위치, 바라보는 방향(yaw), 수평 시야각."""
+    """장면 XML → 구역·작업대·주변 설비(prop_*)·카메라. 카메라는 바닥 위치, 바라보는 방향(yaw), 수평 시야각."""
     import mujoco
 
     model = mujoco.MjModel.from_xml_path(xml_path)
@@ -47,6 +55,29 @@ def load_static_scene(xml_path: str) -> dict:
         yaw = math.atan2(mat[1, 0], mat[0, 0])
         hx, hy = model.geom_size[gid][:2]
         return _box_polygon(float(x), float(y), float(hx), float(hy), yaw)
+
+    props = []
+    for gid in range(model.ngeom):
+        name = model.geom(gid).name
+        if not name.startswith("prop_"):
+            continue
+        kind = name[len("prop_"):].rsplit("_", 1)[0]
+        x, y = (float(v) for v in data.geom_xpos[gid][:2])
+        mat = data.geom_xmat[gid].reshape(3, 3)
+        size = model.geom_size[gid]
+        if model.geom_type[gid] == mujoco.mjtGeom.mjGEOM_CYLINDER and abs(mat[2, 2]) > 0.7:
+            # 세워진 원기둥: 바닥 원을 12각형으로
+            r = float(size[0])
+            pts = [[round(x + r * math.cos(a), 4), round(y + r * math.sin(a), 4)]
+                   for a in (2 * math.pi * k / 12 for k in range(12))]
+        elif model.geom_type[gid] == mujoco.mjtGeom.mjGEOM_CYLINDER:
+            # 눕힌 원기둥: 축(z) 방향 길이 × 지름 사각형
+            yaw = math.atan2(mat[1, 2], mat[0, 2])
+            pts = _box_polygon(x, y, float(size[1]), float(size[0]), yaw)
+        else:
+            yaw = math.atan2(mat[1, 0], mat[0, 0])
+            pts = _box_polygon(x, y, float(size[0]), float(size[1]), yaw)
+        props.append({"name": name, "kind": kind, "label": PROP_LABELS.get(kind, kind), "points": pts})
 
     zones = [{"zone_id": zid, "zone_type": ztype, "points": pts}
              for geom, (zid, ztype) in ZONE_GEOMS.items() if (pts := geom_box(geom))]
@@ -70,11 +101,11 @@ def load_static_scene(xml_path: str) -> dict:
             "hfov": round(hfov, 4),
         })
 
-    xs = [p[0] for z in zones + tables for p in z["points"]] + [c["position"][0] for c in cameras]
-    ys = [p[1] for z in zones + tables for p in z["points"]] + [c["position"][1] for c in cameras]
+    xs = [p[0] for z in zones + tables + props for p in z["points"]] + [c["position"][0] for c in cameras]
+    ys = [p[1] for z in zones + tables + props for p in z["points"]] + [c["position"][1] for c in cameras]
     bounds = [min(xs), min(ys), max(xs), max(ys)] if xs else None
     return {"source": xml_path.rsplit("/", 1)[-1], "frame_id": "world", "zones": zones, "tables": tables,
-            "cameras": cameras, "bounds": bounds}
+            "props": props, "cameras": cameras, "bounds": bounds}
 
 
 @dataclass

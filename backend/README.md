@@ -8,7 +8,11 @@
 4. 승인된 제안만 mock 또는 ROS 2 제어 어댑터에 전달
 5. 승인, 거절, 실행, 완료·실패 판단을 `ExecutionLog`에 기록
 
-현재 저장소는 시연용 인메모리 구현입니다. 프로세스를 재시작하면 데이터가 초기화되며, 이후 Redis 저장소로 교체할 수 있도록 파서·안전규칙·API를 분리했습니다. 운영 화면은 `WS /ws/state`에서 연결 직후와 상태 변경 시 전체 상태 스냅샷을 구독할 수 있습니다. 연속 변경은 최소 200ms 간격으로 합쳐 전송하고 ExecutionLog는 최근 100건만 포함하며, 전체 로그는 `GET /execution-logs`로 조회합니다.
+기본값은 로컬 개발용 인메모리 저장소입니다. `BACKEND_STORE=redis`를 지정하면
+Redis에 버전화된 상태 스냅샷을 저장해 프로세스 재시작 후에도 복구합니다.
+Redis 연결·잠금·저장이 실패하면 fail-closed로 `503`을 반환합니다. 제어 명령을 이미
+발행한 뒤 실행 상태 커밋이 실패한 경우에만 상태 불일치를 막기 위해 E-Stop도 발행합니다.
+운영 화면은 `WS /ws/state`에서 연결 직후와 상태 변경 시 전체 상태 스냅샷을 구독할 수 있습니다. 연속 변경은 최소 200ms 간격으로 합쳐 전송하고 ExecutionLog는 최근 100건만 포함하며, 전체 로그는 `GET /execution-logs`로 조회합니다.
 
 금지구역 이동 경로 검사는 기존 GeoJSON `Polygon/coordinates`와
 [Backend–CTL 계약](../docs/backend-ctl-contract-v0.1.md)의 `polygon/points`를 지원합니다.
@@ -34,6 +38,63 @@ Swagger UI: <http://127.0.0.1:8000/docs>
 4. 작업 상태 필터와 최근 `ExecutionLog` 확인
 
 현재 코드 기준 요청·응답, 상태 전이, 오류와 기준 문서 대비 차이는 [Backend API 명세 v0.2](../docs/backend-api-spec-v0.2.md)를 참고합니다.
+
+### Redis 영속 저장소
+
+공유 시연 환경이나 재시작 복구가 필요하면 루트 디렉터리에서 Redis를 실행합니다.
+
+```bash
+docker compose up -d redis
+cd backend
+python3 -m pip install -r requirements.txt
+BACKEND_STORE=redis \
+BACKEND_REDIS_URL=redis://127.0.0.1:6379/0 \
+python3 -m uvicorn app.main:app --reload
+```
+
+`compose.yml`은 AOF를 `everysec`로 활성화하고 `redis-data` 볼륨에 저장합니다.
+`docker compose down`만 실행하면 볼륨은 남으며, `docker compose down -v`는 저장 데이터까지
+삭제하므로 필요할 때만 사용합니다.
+
+환경변수 예시는 루트의 `.env.example`에 있습니다.
+
+| 변수 | 기본값 | 설명 |
+|---|---|---|
+| `BACKEND_STORE` | `memory` | `redis`로 설정할 때만 Redis 사용 |
+| `BACKEND_REDIS_URL` | `redis://127.0.0.1:6379/0` | Redis 접속 URL |
+| `BACKEND_REDIS_KEY` | `safety-centric-vla:state:v1` | 공유 스냅샷 키. 환경별 분리 가능 |
+
+백업 파일을 즉시 생성하려면 다음을 실행합니다.
+
+```bash
+docker compose exec redis redis-cli BGSAVE
+```
+
+백엔드는 Redis 분산 잠금을 획득한 후 최신 스냅샷을 읽습니다. 저장할 때는 Lua 스크립트가
+잠금 토큰 비교와 전체 스냅샷 `SET`을 하나의 원자적 연산으로 수행합니다. 이 방식은 현재
+인메모리 API의 객체 수정 계약을 유지하면서 재시작 복구와 다중 백엔드 프로세스 직렬화를
+제공하고, 만료되거나 다른 프로세스가 다시 획득한 잠금으로 최신 스냅샷을 덮어쓰는 경쟁을
+차단합니다. 잠금 토큰이 일치하지 않으면 저장하지 않고 메모리 상태를 이전 스냅샷으로
+복구한 뒤 `503`을 반환합니다.
+
+일반적인 Redis 읽기 실패나 잠금 경합은 로봇 명령을 발행하지 않은 요청이므로 `503`만
+반환합니다. 실행 API가 제어 명령을 발행한 뒤 Redis 커밋에 실패한 경우에는 로봇의 물리
+상태와 Backend 상태가 어긋날 수 있으므로 추가로 E-Stop을 발행합니다.
+
+E-Stop 발행은 별도 Redis 분산 잠금과 최신 상태 스냅샷 읽기로 직렬화합니다. Backend가
+재시작되면 Redis의 정지 상태를 ROS 2 latched 토픽에 다시 발행합니다. Redis Pub/Sub 변경
+알림을 구독하므로 다른 Backend 인스턴스의 상태 변경도 각 인스턴스의 `/ws/state`
+구독자에게 전달됩니다. Pub/Sub 알림은 WebSocket 갱신용이며 상태의 기준은 항상 Redis
+스냅샷입니다.
+
+CI는 실제 Redis 7.4 서비스를 띄워 재시작 복구, 2개 저장소의 동시 쓰기, Pub/Sub 알림,
+E-Stop 상태 복구, Action 제출·검증을 검증합니다. 로컬에서 같은 통합 테스트를 실행하려면
+Redis를 실행한 뒤 다음처럼 지정합니다.
+
+```bash
+cd backend
+REDIS_TEST_URL=redis://127.0.0.1:6379/15 python3 -m pytest tests/test_redis_store.py -q
+```
 
 ### ROS 2 제어 어댑터 연결
 
@@ -76,25 +137,46 @@ cd backend
 python3 -m unittest discover -s tests -v
 ```
 
-## KPI 9 proxy: 명령→Action publish API 응답 지연 측정
+자연어 파서의 정상·거부 명령 100건 정확도와 처리시간은 별도 평가 명령으로 확인합니다.
 
-Backend를 실행한 상태에서 자연어 명령 생성부터 안전 평가와 승인 Action publish API 응답까지
-10회 왕복 시간을 측정합니다. 각 회차의 실행 성공률과 1초 이내 지연 통과율을 별도로 집계하며,
-한 회차가 실패해도 나머지 측정을 계속합니다. 실행 요청 뒤 실패한 경우 `FAILED` 결과를 보고해
-로봇이 `EXECUTING`/`MOVING` 상태에 남지 않도록 복구를 시도합니다.
+```bash
+python3 evaluation/run_command_evaluation.py
+```
+
+평가 데이터와 결과 해석은 [`evaluation/README.md`](evaluation/README.md)를 참고합니다.
+
+## KPI 9: 명령→어댑터 ACK 지연 측정
+
+ROS 2 dispatcher와 CTL 어댑터를 함께 실행한 상태에서 자연어 명령의 Backend 수신부터
+어댑터 ACK의 Backend 수신까지 10회 지연을 측정합니다. 각 회차의 실행 성공률과
+1초 이내 지연 통과율을 별도로 집계하며,
+한 회차가 실패해도 나머지 측정을 계속합니다. ACK 측정 후에는 실제 CTL `RESULT`가
+Backend에 반영될 때까지 기다리며, ACK가 누락되거나 늦어도 현재 실행이
+끝나기 전에 다음 회차를 시작하지 않습니다. 벤치마크가 성공·실패 결과를 대신 등록하지
+않고, 이동 거리 0인 반복 명령을 피하도록 `(1, 0, 0)`과 `(0, 0, 0)`을 번갈아 지정합니다.
 
 ```bash
 cd backend
 python3 scripts/benchmark_command_to_dispatch.py --runs 10 --threshold-ms 1000
 ```
 
-기본 Backend의 mock dispatcher와 ROS 2 dispatcher 모두 사용할 수 있습니다. 이 수치는 승인 Action을
-publish한 API 응답까지의 시간이며 CTL이 별도로 보내는 ACK 시각은 현재 Backend가 저장하지 않으므로
-**어댑터 ACK가 제외된 KPI 9 proxy**입니다. CTL ACK 저장 계약이 추가되면 종료 시점을 확장합니다.
+CTL 어댑터의 Robot ID가 기본값 `robot-01`과 다르면 `--robot-id`로 같은 값을
+지정합니다. 좌표계는 기본 `world`이며 필요하면 `--frame-id`로 바꿉니다. 실제 동작
+완료 대기시간은 `--result-timeout`(기본 120초)으로 지정합니다.
+
+Backend는 `GET /action-proposals/{proposal_id}/ack`에서 `PENDING`, `ACKNOWLEDGED`,
+`TIMED_OUT`을 반환합니다. 명령 수신·발행·CTL ACK·Backend ACK 수신 시각과
+`command_to_ack_ms`, `dispatch_to_ack_ms`를 함께 보존하므로 전체 KPI와 순수 발행→ACK
+지연을 구분할 수 있습니다. 어댑터와
+Backend의 시계 오차가 KPI에 영향을 주지 않도록 `command_to_ack_ms`는 Backend 수신 시각끼리
+계산합니다. `PENDING`의 1초 기한 경과는 ACK 조회 또는 늦은 ACK 처리 시점에
+`TIMED_OUT`으로 확정하며 별도 백그라운드 타이머는 없습니다. ACK 상태는 전송 진단값일
+뿐 Proposal·TaskOrder·Robot의 실행 상태를 변경하지 않습니다. mock dispatcher는 ACK를
+보내지 않으므로 KPI 측정에 사용할 수 없습니다.
 
 > **주의:** ROS 2 dispatcher를 활성화한 환경에서는 벤치마크 MOVE가 실제 ROS Action을 발행하므로
-> mock 또는 격리된 시험 환경에서만 실행합니다. 현재 Robot 삭제 API가 없어 벤치마크가 등록한 Robot은
-> 저장소에 남으므로 측정 뒤 개발 서버의 저장소를 초기화해야 합니다.
+> mock 또는 격리된 시험 환경에서만 실행합니다. `--robot-id`에 이미 등록된 Robot을 지정하면
+> 재등록하지 않습니다. 새 ID를 지정한 경우 현재 Robot 삭제 API가 없어 저장소에 남습니다.
 
 ## 자연어 파서 예시
 
@@ -123,6 +205,31 @@ TaskOrder 생성 요청에 선택적인 `Idempotency-Key` 헤더를 보내면 �
 공백이 포함된 구역명은 `"조립 라인 구역"으로`처럼 따옴표로 묶습니다. 물체 ID는 `상자3`, `상자 번호 3`, `3번 상자`, `박스3`, `box-3`, `obj-3` 형식을 지원합니다.
 
 현재 자동 변환 범위는 로봇 이동과 물체 운반입니다. `STOP`, `RESUME`은 Action enum에는 존재하지만 목적지가 필수인 TaskOrder v1.1 계약상 아직 자동 변환하지 않고 `422`를 반환합니다.
+
+외부 VLA가 `POST /action-proposals`로 제안을 등록하면 Pydantic 필드 검증에 더해
+TaskOrder의 행동, 대상 로봇·물체, 목적지와 좌표계가 바뀌지 않았는지 검증합니다.
+불일치 출력은 저장하거나 안전 규칙에 넘기지 않고 `422`로 거부합니다. 속도와 경로가
+현장 안전 기준을 만족하는지는 이 문맥 검증과 분리해 기존 제출 기준 평가에서 판정합니다.
+직접 제출하는 `MOVE_TO trajectory`가 있으면 시작점은 Robot 현재 위치와, 좌표 목적지
+또는 같은 좌표계의 Zone `navigation_target`이 있으면 끝점도 목적지와 0.05m 이내로
+일치해야 합니다. 물리 좌표가 없는 Zone은 의미상 `target_pose` 일치만 검증합니다.
+
+VLA 추론 런타임은 `app.vla_output.convert_vla_output_to_proposal()`에 JSON 문자열
+또는 파싱된 객체를 넘겨 원시 출력을 `ActionProposal(PROPOSED)`로 변환할 수 있습니다.
+VLA는 `action_type`, `parameters`, `trajectory`, `frame_id`, `speed_limit`만 제공하며,
+`proposal_id`, `task_id`, `robot_id`, `status`, 모델 이름·버전은 신뢰된 Backend 문맥에서
+생성합니다. 모델이 서버 소유 필드를 추가하거나 TaskOrder의 행동·대상·목적지를
+바꾸면 변환을 거부합니다.
+실제 모델 연동 클라이언트는 `VlaOutputProvider`를 구현하고 `VlaActionPlanner`에
+주입하면 기존 ActionProposal 생성 경로를 바꾸지 않고 규칙 기반 플래너를 교체할 수 있습니다.
+모델 추론은 저장소 잠금 밖에서 실행하며, 완료 후 TaskOrder·Robot·Zone과 활성
+Proposal을 다시 확인합니다. 추론 중 문맥이 바뀌면 오래된 결과를 저장하지 않고
+`409`를, 모델 서버 연결 실패·시간 초과 등 Provider 예외는 `503`을 반환합니다.
+일반적인 OpenVLA의 7차원 행동 벡터를 연결하려면 로봇별 좌표계·제어 주기에 맞춰
+이 구조화 계약으로 변환하는 별도 Adapter가 필요합니다.
+현재 TaskOrder v1.1에서 VLA 자동·직접 제안으로 허용하는 행동은 목적지가 구조화된
+`MOVE_TO`와 대상 물체·목적지가 구조화된 `MANIPULATE`입니다. `STOP`·`RESUME`은
+일반 VLA 출력으로 받지 않고 별도 안전 제어 경로에서만 생성합니다.
 
 ## ActionProposal 생성
 
@@ -165,6 +272,7 @@ curl -X POST http://127.0.0.1:8000/task-orders/{task_id}/action-proposals \
 - `POST /action-proposals`
 - `POST /action-proposals/{proposal_id}/evaluate`
 - `POST /action-proposals/{proposal_id}/execute`
+- `GET /action-proposals/{proposal_id}/ack`
 - `POST /action-proposals/{proposal_id}/result`
 - `POST /hazards`
 - `POST /hazards/{hazard_id}/resolve`
