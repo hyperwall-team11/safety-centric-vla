@@ -46,6 +46,9 @@ twin-sim = { cmd = "python mujoco/twin_simulate.py" }
 mock-adapter = { cmd = "bash -c 'source ros2_ws/install/setup.bash && ros2 run robot_adapter mock_adapter'", depends-on = ["build"] }
 tiago-adapter = { cmd = "bash -c 'source ros2_ws/install/setup.bash && ros2 run robot_adapter tiago_adapter'", depends-on = ["build"] }
 roundtrip = { cmd = "bash scripts/roundtrip.sh", depends-on = ["build"] }
+# Backend까지 포함한 최소 MOVE_TO E2E: 자연어 → 승인 → ROS 2 → TIAGo → MuJoCo → RESULT
+backend-move-e2e = { cmd = "bash scripts/backend_move_e2e.sh", depends-on = ["build"] }
+backend-hazard-e2e = { cmd = "bash scripts/backend_hazard_e2e.sh", depends-on = ["build"] }
 # Panda 로봇 팔 집기·놓기 (모델은 저장소에 없으므로 처음 실행 시 내려받음)
 fetch-models = { cmd = "bash scripts/fetch_models.sh" }
 arm = { cmd = "python mujoco/manipulator.py", depends-on = ["fetch-models"] }
