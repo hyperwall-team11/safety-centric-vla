@@ -2,7 +2,7 @@
 
 - 상태: Draft (팀 승인 전)
 - 작성일: 2026-11-04
-- 개정: 2026-11-06 v0.2 — 가상 CCTV 영상 출력(3장)과 MuJoCo ② 사전 시뮬레이션 서비스(13장) 추가. 2026-11-15 3장에 CCTV 보정 파일 필드 추가(#79). 2026-11-21 13.1절에 `MOVE_TO` 실행 경로(방향 정렬 후 직선 0.05 m 이내) 명시. 기존 1~12장 변경 없음. 파일명은 링크 유지를 위해 v0.1 그대로 둔다.
+- 개정: 2026-11-06 v0.2 — 가상 CCTV 영상 출력(3장)과 MuJoCo ② 사전 시뮬레이션 서비스(13장) 추가. 2026-11-15 3장에 CCTV 보정 파일 필드 추가(#79). 2026-11-23 13.1절에 `MANIPULATE` 사전 시뮬레이션 요청 형식(#95)과 Worker `velocity`(#97) 추가 제안(Backend·ONT 승인 전). 2026-11-21 13.1절에 `MOVE_TO` 실행 경로(방향 정렬 후 직선 0.05 m 이내) 명시. 기존 1~12장 변경 없음. 파일명은 링크 유지를 위해 v0.1 그대로 둔다.
 - 적용 대상: `backend` 검증 서버, `control` ROS 2 제어 어댑터
 - 승인 필요: ONT 임성현, CTL 최민서
 - 관련 이슈: #28
@@ -345,8 +345,8 @@ Backend는 5 Hz로 발행한다. CTL이 마지막 정상 heartbeat 후 1초 동�
 | 멱등성 | Backend 결과 API만 멱등 | 구현(CT-03): 같은 `proposal_id`·같은 본문은 기존 ACK·최종 RESULT 재전송, 본문이 다르면 `INVALID` |
 | Robot state | CTL 고유 축약 형식 | v0.1은 관측용, 후속 계약으로 분리 |
 
-| CCTV 영상 | MuJoCo 렌더링 | Three.js 렌더링 (v0.2, 계획) |
-| 사전 시뮬레이션 | 없음 | MuJoCo ② 서비스 (v0.2, 계획) |
+| CCTV 영상 | MuJoCo 렌더링 | Three.js 렌더링 (v0.2, CTL 구현: #55) |
+| 사전 시뮬레이션 | 없음 | MuJoCo ② 서비스 (v0.2, CTL 구현: #53 `MOVE_TO`, #95 `MANIPULATE`·#97 작업자 이동 예측은 13.1절 형식 승인 대기) |
 
 이 차이는 명세 승인 후 Backend·CTL 각각의 구현 PR로 분리한다. 이 문서 자체는 현재 구현 완료를 의미하지 않는다.
 
@@ -361,7 +361,7 @@ Backend는 5 Hz로 발행한다. CTL이 마지막 정상 heartbeat 후 1초 동�
 
 ### 13.1 첫 지원 범위와 요청 형식
 
-- 첫 버전은 `MOVE_TO`만 지원한다. `MANIPULATE`(PICK·PLACE)는 대상 물체와 관절 초기 상태가 계약에 정해진 뒤 추가한다. 지원하지 않는 `action_type` 요청에는 `ERROR`를 돌려준다.
+- `MOVE_TO`와 `MANIPULATE`(PICK·PLACE)를 지원한다. `MANIPULATE` 형식은 13.1.1절이며 Backend·ONT 승인 전 제안이다. 지원하지 않는 `action_type` 요청에는 `ERROR`를 돌려준다.
 - 후보 행동은 4장 `ApprovedActionCommand`와 같은 값으로 보낸다. Backend가 4.1절 규칙으로 해석한 결과를 그대로 쓴다.
   - `target_pose`: `ZONE` 목적지를 `navigation_target`으로 해석한 **실제 CTL 전송 좌표**
   - `speed_limit`: 4.1절의 유효 속도 상한 `min(proposal.speed_limit, parameters.speed_limit, robot.motion_limits.max_speed)`
@@ -390,6 +390,43 @@ Backend는 5 Hz로 발행한다. CTL이 마지막 정상 heartbeat 후 1초 동�
   }
 }
 ```
+
+### 13.1.1 MANIPULATE 요청과 상태 확장 [v0.2 제안, 승인 전]
+
+`MANIPULATE`는 로봇 팔의 관절 상태와 대상 물체가 있어야 시뮬레이션할 수 있다. 요청 `state`에 아래 필드를 더한다. 모두 선택 필드이며, 없으면 기존 `MOVE_TO` 동작과 같다.
+
+```json
+{
+  "action": {"action_type": "MANIPULATE", "robot_id": "arm-ur10e", "speed_limit": 0.25,
+             "parameters": {"manipulation": "PICK", "object_id": "box-01",
+                            "target_pose": {"frame_id": "world", "position": [5.25, 2.6, 0.6]}}},
+  "state": {
+    "robots": [{"robot_id": "arm-ur10e", "robot_model": "ur10e", "frame_id": "world",
+                "position": [4.35, 2.6, 0.30], "yaw_rad": 0.0,
+                "joint_positions": null, "holding_object_id": null}],
+    "workers": {"observed_at": "2026-11-06T00:00:00Z",
+                "items": [{"worker_id": "worker-01", "frame_id": "world",
+                           "position": [2.1, 0.4, 0.0], "velocity": [0.0, -0.4, 0.0]}]},
+    "zones": [],
+    "objects": [{"object_id": "box-01", "frame_id": "world", "position": [5.25, 2.6, 0.6], "size": [0.3, 0.3, 0.3]}]
+  }
+}
+```
+
+| 필드 | 값 | 설명 |
+|---|---|---|
+| `action.parameters` | 4.3절과 같음 | `manipulation`(`PICK`·`PLACE`), `object_id`, `target_pose` |
+| `robots[].robot_model` | CTL 팔 모델 키(`ur5e`, `ur10e`, `iiwa14`, `panda`) | 있으면 단순 원기둥 대신 실제 팔 모델로 넣는다. `position`은 베이스 위치 |
+| `robots[].joint_positions` | rad 배열 또는 `null` | 현재 관절각. 어댑터 상태 `joints.positions`를 그대로 쓴다. `null`이면 모델 기본 자세 |
+| `robots[].holding_object_id` | 문자열 또는 `null` | 들고 있는 물체. `PLACE`에 필요 |
+| `objects[]` | `object_id`, `frame_id`, `position`(중심, m), `size`(m) | 대상 물체·상자 장애물. `MOVE_TO`에서도 장애물로 쓴다 |
+| `workers.items[].velocity` | `[vx, vy, vz]` m/s 또는 생략 | 작업자 속도(#97). 있으면 `observed_at`부터 등속으로 외삽하고 예측 시간에 따라 여유 반경을 키운다. 출처(CV 보고 vs Backend 추정)는 CV·ONT 협의 |
+
+판정은 13.2절과 같다. `MANIPULATE`에서는 팔·공구(들고 있는 동안은 물체 포함)가 다른 물체·로봇·작업자와 닿으면 `COLLISION`(팔과 대상 물체의 접촉은 제외), 작업자와 몸 표면 거리가 기준 미만이면 `UNSAFE_DISTANCE`, 경유점 도달 오차가 0.02 m를 넘으면 `GOAL_NOT_REACHED`다.
+
+다음 요청은 `ERROR`다(Fail-Closed): 대상 로봇에 `robot_model`이 없음, `manipulation`이 `PICK`·`PLACE`가 아님, `object_id`가 `objects`에 없음, `PICK`의 `target_pose`가 물체 중심에서 0.05 m 넘게 떨어짐, `PLACE`인데 그 물체를 들고 있지 않음, `joint_positions` 개수가 모델과 다름, 작업자 속도가 2.0 m/s를 넘거나 유한하지 않음.
+
+Backend는 `joint_positions`·`holding_object_id`를 어댑터 상태 토픽(9장)에서 얻는다. 9장 상태 변환이 확정되기 전까지는 이 두 값의 출처가 미정이므로, Backend 연동 범위는 별도 이슈로 정한다.
 
 ### 13.2 응답과 판정
 
