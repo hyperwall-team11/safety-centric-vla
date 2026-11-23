@@ -37,6 +37,8 @@ class ArmCore(MockRobotCore):
         self.robot_model = robot_model
         self.q = list(planner.home)  # 명령한 관절각 (피드백이 오면 그 값)
         self.q_measured = None
+        self.dq_measured = None  # 관절 속도 rad/s (#96, 관측 보고용)
+        self.tau_measured = None  # 관절 토크 N·m (#96, 관측 보고용)
         self.gripper_closed = False
         self.holding = None  # 들고 있는 object_id
         self.plan = None
@@ -46,9 +48,14 @@ class ArmCore(MockRobotCore):
         self.outbox = [("joints", list(self.q)), ("gripper", False)]
 
     # ---- 피드백 ----
-    def update_joints(self, positions):
+    def update_joints(self, positions, velocities=None, efforts=None):
+        """브리지 /joint_states 피드백. 속도·토크는 관측 보고용이며(#96) 한계 검사는 #51 결정 후 넣는다."""
         if len(positions) == len(self.q):
             self.q_measured = [float(v) for v in positions]
+            n = len(self.q)
+            # 개수가 맞지 않거나 비어 있으면(토크를 채우지 않는 발행자) 모른다(None)로 둔다
+            self.dq_measured = [float(v) for v in velocities] if velocities and len(velocities) == n else None
+            self.tau_measured = [float(v) for v in efforts] if efforts and len(efforts) == n else None
 
     def handle_grasp_feedback(self, held, now):
         """브리지가 알려 준 실제 파지 결과(held: 잡은 물체 이름 또는 None). 적재 상태는 이 값이 기준이다.
@@ -172,8 +179,11 @@ class ArmCore(MockRobotCore):
     def state(self, now):
         out = super().state(now)
         out["robot_model"] = self.robot_model
+        dq, tau = self.dq_measured, self.tau_measured
         out["joints"] = {"names": list(self.planner.joint_names),
-                         "positions": [round(v, 4) for v in (self.q_measured or self.q)]}
+                         "positions": [round(v, 4) for v in (self.q_measured or self.q)],
+                         "velocities": None if dq is None else [round(v, 4) for v in dq],
+                         "efforts": None if tau is None else [round(v, 3) for v in tau]}
         out["tcp_position"] = [round(float(v), 4) for v in self.planner.tcp(self.q_measured or self.q)]
         out["gripper_closed"] = self.gripper_closed
         out["holding_object_id"] = self.holding

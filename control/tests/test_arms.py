@@ -69,6 +69,20 @@ def test_plant_arms_hold_pose_under_physics_and_carry_box():
     assert arm.robot_id not in pa.held
 
 
+def test_plant_arm_joint_state_reports_gravity_holding_torque():
+    # #96: 팔을 중력에 맞서 들고 있으면 어깨·팔꿈치 관절 토크가 0이 아니다
+    model, data, kins = arms.build_plant_with_arms()
+    pa = arms.PlantArms(model, data, kins)
+    for _ in range(200):
+        mujoco.mj_step(model, data)
+    for robot_id, kin in kins.items():
+        q, dq, tau = pa.joint_state(data, robot_id)
+        assert len(q) == len(dq) == len(tau) == kin.dof
+        assert np.all(np.isfinite(tau))
+        assert np.abs(tau).max() > 1.0, robot_id
+        assert np.abs(dq).max() < 0.1  # 자세를 유지하는 중이라 거의 멈춰 있다
+
+
 # ---- MANIPULATE 사전 시뮬레이션 ----
 
 BASE = [0.0, 0.0, 0.45]

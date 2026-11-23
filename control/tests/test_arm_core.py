@@ -191,3 +191,23 @@ def test_late_grasp_feedback_after_estop_syncs_holding(arm):
     assert arm.holding is None
     assert arm.handle_grasp_feedback("box-1", T0 + 1.2) == []
     assert arm.holding == "box-1"  # 브리지가 실제로 잡았으면 그 상태를 따른다
+
+
+def test_state_reports_joint_velocity_and_effort(arm):
+    # #96: 브리지 /joint_states의 속도·토크를 어댑터 상태에 그대로 보고한다(관측용)
+    arm.update_joints([0.2, -0.1], [0.5, -0.25], [12.3456, -3.0])
+    joints = arm.state(0.0)["joints"]
+    assert joints["positions"] == [0.2, -0.1]
+    assert joints["velocities"] == [0.5, -0.25]
+    assert joints["efforts"] == [12.346, -3.0]
+
+
+def test_missing_or_mismatched_effort_is_reported_as_unknown(arm):
+    # 토크를 채우지 않는 발행자(빈 effort)나 개수가 다른 값은 0이 아니라 모름(None)이다
+    arm.update_joints([0.2, -0.1], [0.5, -0.25], [])
+    joints = arm.state(0.0)["joints"]
+    assert joints["velocities"] == [0.5, -0.25]
+    assert joints["efforts"] is None
+    arm.update_joints([0.2, -0.1], [0.5], [1.0, 2.0, 3.0])
+    joints = arm.state(0.0)["joints"]
+    assert joints["velocities"] is None and joints["efforts"] is None
