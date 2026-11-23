@@ -103,6 +103,8 @@ macOS에서는 같은 Mac 안의 노드끼리도 서로 못 찾는 문제가 있
 자연어 명령이 Backend에서 `TaskOrder`·`ActionProposal`로 변환되고, 안전 평가를 통과한 뒤
 ROS 2의 `/safety/approved_action`으로 전달되어 TIAGo가 MuJoCo에서 이동하는 전체 경로를
 한 번에 확인합니다. 어댑터 ACK와 실제 RESULT가 Backend 상태에 반영되어야 성공합니다.
+성공 RESULT 뒤 Proposal `SUCCEEDED`, Task `COMPLETED`, Robot `IDLE` 세 상태를 모두
+확인합니다. ACK 지연 KPI는 함께 출력하지만 기능 E2E의 성공 여부와는 분리합니다.
 
 Backend Python 의존성은 ROS 2와 같은 pixi 환경에 한 번 설치합니다.
 
