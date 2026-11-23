@@ -10,7 +10,11 @@ MANIPULATE(이슈 #95)는 ``state.robots``에 ``robot_model``이 있는 로봇 �
 그 위치에 붙여 PICK·PLACE 관절 궤적을 돌리고, 팔·공구가 장애물·물체·다른 로봇·작업자와 닿는지 본다.
 요청 형식은 control/README.md "MANIPULATE 사전 시뮬레이션 (잠정)"에 있다.
 
-결과는 시뮬레이션용 단순화 모델(로봇 원기둥, 정지한 작업자)의 접촉 검사다. 안전 보장으로 해석하지 않고,
+작업자 이동 예측(이슈 #97): Worker 항목에 ``velocity``가 있으면 관측 시각부터 등속으로 움직인다고 보고
+시뮬레이션 시각마다 작업자 위치를 옮기고, 예측 오차만큼 여유 반경을 시간에 따라 키운다. ``velocity``가 없으면
+지금처럼 스냅샷 위치에 멈춰 있다고 가정한다.
+
+결과는 시뮬레이션용 단순화 모델(로봇 원기둥, 등속 또는 정지 작업자)의 접촉 검사다. 안전 보장으로 해석하지 않고,
 Safety Gate의 ``SAFETY_DISTANCE`` 판정을 대신하지 않는다.
 """
 from __future__ import annotations
@@ -43,6 +47,11 @@ UNSAFE_DISTANCE_M = 0.6
 MAX_HORIZON_S = 30.0
 
 GOAL_TOLERANCE_M = 0.05
+# 작업자 이동 예측(#97) 잠정값. CV·ONT가 속도 입력과 기준을 정하면(#50) 바꾼다.
+# 등속 외삽은 방향 전환·정지를 모르므로 예측 시간에 비례해 여유 반경을 키운다(보수적 처리)
+WORKER_MAX_SPEED_MPS = 2.0  # 빠른 걸음(약 1.5 m/s) 이상. 넘으면 측정 오류로 보고 ERROR(Fail-Closed)
+WORKER_MARGIN_GROWTH_MPS = 0.10  # 예측 1초마다 여유 반경 증가량
+WORKER_MARGIN_MAX_M = 1.0  # 여유 반경 상한(CV 여유 반경 포함)
 # MOVE_TO 경로는 실제 어댑터(robot_adapter/diff_drive_core.py)와 같은 제어기로 굴려 본다 (PR #92 리뷰 P1).
 # 어댑터는 방향을 5° 안으로 맞춘 뒤 전진해 직선에서 0.05 m 안에 머물지만, 제자리 회전·감속 시간까지 같게 보려고
 # 같은 제어기를 적분한다. 값은 diff_drive_core와 같아야 하며
@@ -102,6 +111,59 @@ def _response(result, snapshot_id, started, *, min_distance=None, contact_at=Non
     return body
 
 
+class WorkerMotion:
+    """트윈 작업자를 시뮬레이션 시각에 맞춰 옮긴다(#97).
+
+    ``velocity``가 있는 작업자는 ``observed_at``부터 등속으로 움직인다고 보고 위치를 외삽하고,
+    여유 반경을 ``WORKER_MARGIN_GROWTH_MPS``씩 키운다. ``velocity``가 없으면 스냅샷 위치에 고정한다.
+    """
+
+    def __init__(self, model, workers_state, snapshot_at):
+        self.model = model
+        items = workers_state.get("items") or []
+        bodies = [i for i in range(model.nbody) if model.body(i).name.startswith("worker:")]
+        if len(bodies) != len(items):
+            raise SimulationError("worker bodies do not match workers.items")
+        age = (_parse_time(snapshot_at, "snapshot_at")
+               - _parse_time(workers_state.get("observed_at"), "workers.observed_at")).total_seconds()
+        self.age = max(age, 0.0)
+        self.workers = []
+        for body_id, item in zip(bodies, items):
+            geom_id = int(model.body_geomadr[body_id])
+            velocity = item.get("velocity")
+            if velocity is not None:
+                velocity = _vec3(velocity, f"worker {item.get('worker_id')!r}.velocity")[:2]
+                if math.hypot(*velocity) > WORKER_MAX_SPEED_MPS:
+                    raise SimulationError(f"worker {item.get('worker_id')!r} speed exceeds "
+                                          f"{WORKER_MAX_SPEED_MPS} m/s")
+            self.workers.append({
+                "mocap": int(model.body_mocapid[body_id]),
+                "geom": geom_id,
+                "start": (float(model.body_pos[body_id][0]), float(model.body_pos[body_id][1])),
+                "velocity": velocity,
+                "margin": WORKER_MARGIN_M,
+            })
+
+    def apply(self, data, t):
+        """시뮬레이션 시각 t(s)의 작업자 위치·여유 반경을 장면에 넣는다. 호출 뒤 mj_forward가 필요하다."""
+        tau = self.age + t
+        for w in self.workers:
+            if w["velocity"] is None:
+                continue
+            vx, vy = w["velocity"]
+            data.mocap_pos[w["mocap"]][0] = w["start"][0] + vx * tau
+            data.mocap_pos[w["mocap"]][1] = w["start"][1] + vy * tau
+            w["margin"] = min(WORKER_MARGIN_M + WORKER_MARGIN_GROWTH_MPS * tau, WORKER_MARGIN_MAX_M)
+            self.model.geom_size[w["geom"]][0] = WORKER_BODY_RADIUS_M + w["margin"]
+
+    def positions(self, data):
+        return [(float(data.mocap_pos[w["mocap"]][0]), float(data.mocap_pos[w["mocap"]][1]))
+                for w in self.workers]
+
+    def margin_by_geom(self):
+        return {w["geom"]: w["margin"] for w in self.workers}
+
+
 def _robot_contacts(model, data, geom_id):
     for contact in data.contact[:data.ncon]:
         if geom_id in (contact.geom1, contact.geom2):
@@ -135,7 +197,7 @@ def _simulate(req, started):
         raise SimulationError("state is required")
     check_snapshot_fresh(req.get("snapshot_at"), state.get("workers"))
     if action.get("action_type") == "MANIPULATE":
-        return _simulate_manipulate(action, state, snapshot_id, started)
+        return _simulate_manipulate(action, state, snapshot_id, started, req.get("snapshot_at"))
 
     target = action.get("target_pose") or {}
     if target.get("frame_id") != "world":
@@ -183,13 +245,14 @@ def _simulate(req, started):
         return (float(data.xpos[body.id][0]), float(data.xpos[body.id][1]))
 
     start = world()
-    workers = [(float(model.body(i).pos[0]), float(model.body(i).pos[1]))
-               for i in range(model.nbody) if model.body(i).name.startswith("worker:")]
+    motion = WorkerMotion(model, state["workers"], req.get("snapshot_at"))
+    motion.apply(data, 0.0)
+    mujoco.mj_forward(model, data)
 
     def gap(x, y):
         # 로봇과 작업자 몸 표면 사이 거리. CV 여유 반경은 빼지 않고 접촉 판정(COLLISION)에만 쓴다
-        return min((math.dist((x, y), w) - robot_radius - WORKER_BODY_RADIUS_M for w in workers),
-                   default=None)
+        return min((math.dist((x, y), w) - robot_radius - WORKER_BODY_RADIUS_M
+                    for w in motion.positions(data)), default=None)
 
     dt = float(model.opt.timestep)
     min_gap = gap(*start)
@@ -213,6 +276,7 @@ def _simulate(req, started):
         heading += w * dt
         t = step * dt
         set_world(x, y)
+        motion.apply(data, t)
         mujoco.mj_forward(model, data)
         g = gap(x, y)
         if g is not None:
@@ -276,7 +340,7 @@ def build_manipulation_twin(state):
     return model, data, kins
 
 
-def _simulate_manipulate(action, state, snapshot_id, started):
+def _simulate_manipulate(action, state, snapshot_id, started, snapshot_at):
     robot_id = action.get("robot_id")
     robots = {r.get("robot_id"): r for r in state.get("robots") or []}
     if robot_id not in robots:
@@ -322,18 +386,22 @@ def _simulate_manipulate(action, state, snapshot_id, started):
     obj_geom = model.geom(f"object:{object_id}").id
     if manipulation == "PLACE":
         data.mocap_pos[obj_mocap] = kin.tcp(data)  # 들고 있는 물체는 TCP에 있다
-        mujoco.mj_forward(model, data)
+    motion = WorkerMotion(model, state["workers"], snapshot_at)
+    motion.apply(data, 0.0)
+    mujoco.mj_forward(model, data)
     workers = [g for g in range(model.ngeom) if model.geom(g).name.startswith("worker:")]
     fromto = np.zeros(6)
 
     def gap(held):
         # 팔·공구(들고 있으면 물체 포함) 표면과 작업자 몸 표면 사이 거리.
         # 트윈의 작업자 캡슐에는 CV 여유 반경이 더해져 있어 다시 더한다
+        # 이동 예측으로 커진 여유 반경(#97)도 작업자별로 다시 더한다
         mine = list(kin.geom_ids) + ([obj_geom] if held else [])
+        margins = motion.margin_by_geom()
         best = None
         for g in mine:
             for w in workers:
-                d = mujoco.mj_geomDistance(model, data, g, w, 10.0, fromto) + WORKER_MARGIN_M
+                d = mujoco.mj_geomDistance(model, data, g, w, 10.0, fromto) + margins.get(w, WORKER_MARGIN_M)
                 best = d if best is None else min(best, d)
         return best
 
@@ -376,6 +444,7 @@ def _simulate_manipulate(action, state, snapshot_id, started):
         mujoco.mj_kinematics(model, data)
         if p.holding:
             data.mocap_pos[obj_mocap] = kin.tcp(data)
+        motion.apply(data, t)
         mujoco.mj_forward(model, data)
         g = gap(p.holding)
         if g is not None:
