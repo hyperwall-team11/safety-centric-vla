@@ -104,6 +104,8 @@ macOS에서는 같은 Mac 안의 노드끼리도 서로 못 찾는 문제가 있
 자연어 명령이 Backend에서 `TaskOrder`·`ActionProposal`로 변환되고, 안전 평가를 통과한 뒤
 ROS 2의 `/safety/approved_action`으로 전달되어 TIAGo가 MuJoCo에서 이동하는 전체 경로를
 한 번에 확인합니다. 어댑터 ACK와 실제 RESULT가 Backend 상태에 반영되어야 성공합니다.
+성공 RESULT 뒤 Proposal `SUCCEEDED`, Task `COMPLETED`, Robot `IDLE` 세 상태를 모두
+확인합니다. ACK 지연 KPI는 함께 출력하지만 기능 E2E의 성공 여부와는 분리합니다.
 
 Backend Python 의존성은 ROS 2와 같은 pixi 환경에 한 번 설치합니다.
 
@@ -123,9 +125,10 @@ pixi run backend-move-e2e
 
 정상 MOVE_TO 실행과 어댑터 ACK 뒤 실행 중인 로봇에 `CRITICAL WORKER_INTRUSION`을
 등록하고, Backend가 `/safety/estop`을 발행해 CTL 어댑터의 E-Stop 이벤트가 돌아오는지
-확인합니다. Robot은 `ESTOP`, Task와 Proposal은 `HELD`가 되어야 통과하며 위험 등록부터
-세 상태가 반영될 때까지 걸린 시간도 출력합니다. CV 탐지 모델은 이 시험 범위에 포함하지
-않고 `POST /hazards`부터 검증합니다.
+확인합니다. 위험 등록 직전 Proposal이 여전히 `EXECUTING`이어야 하며, 어댑터 result
+토픽에서 `ESTOP` 이벤트를 직접 수신해야 통과합니다. Robot은 `ESTOP`, Task와 Proposal은
+`HELD`가 되어야 하며, 어댑터가 보고한 실제 `latency_ms`와 이벤트 관측 시간도 출력합니다.
+CV 탐지 모델은 이 시험 범위에 포함하지 않고 `POST /hazards`부터 검증합니다.
 
 ```bash
 cd control

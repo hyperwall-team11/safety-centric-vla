@@ -76,6 +76,7 @@ import socket
 import sys
 
 with socket.socket() as server:
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((sys.argv[1], int(sys.argv[2])))
 PY
   then
@@ -98,11 +99,29 @@ wait_for_topic() {
   fail "$name 준비 대기 시간이 초과되었습니다: $topic"
 }
 
+wait_for_log() {
+  local pid=$1
+  local name=$2
+  local log_file=$3
+  local marker=$4
+  local deadline=$((SECONDS + 30))
+  while ((SECONDS < deadline)); do
+    wait_for_process "$pid" "$name"
+    if grep -Fq "$marker" "$log_file" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  fail "$name 준비 로그 대기 시간이 초과되었습니다: $marker"
+}
+
 if [[ ! -f "$LIB_DIR/setup.bash" ]]; then
   fail "ROS 2 작업공간이 빌드되지 않았습니다. 먼저 'pixi run build'를 실행하세요."
 fi
 # shellcheck disable=SC1091
+set +u
 source "$LIB_DIR/setup.bash"
+set -u
 
 command -v ros2 >/dev/null || fail "ros2 명령을 찾을 수 없습니다. pixi 환경에서 실행하세요."
 "$PYTHON_BIN" -c "import fastapi, uvicorn" 2>/dev/null || fail \
@@ -127,6 +146,7 @@ echo "[2/4] MuJoCo 브리지 시작"
   --ros-args -p cameras:=false >"$LOG_DIR/bridge.log" 2>&1 &
 BRIDGE_PID=$!
 PIDS+=("$BRIDGE_PID")
+wait_for_log "$BRIDGE_PID" "MuJoCo 브리지" "$LOG_DIR/bridge.log" "MuJoCo bridge ready"
 wait_for_topic "$BRIDGE_PID" "MuJoCo 브리지" "/odom"
 
 echo "[3/4] TIAGo 어댑터 시작: robot_id=$ROBOT_ID"
@@ -137,6 +157,7 @@ PIDS+=("$ADAPTER_PID")
 ROBOT_TOPIC_ID="$("$PYTHON_BIN" -c \
   'import sys; from safety_control.interfaces import topic_segment; print(topic_segment(sys.argv[1]))' \
   "$ROBOT_ID")"
+wait_for_log "$ADAPTER_PID" "TIAGo 어댑터" "$LOG_DIR/adapter.log" "tiago_adapter ready"
 wait_for_topic "$ADAPTER_PID" "TIAGo 어댑터" "/adapter/${ROBOT_TOPIC_ID}/state"
 
 case "${E2E_SCENARIO:-move}" in
@@ -147,6 +168,7 @@ case "${E2E_SCENARIO:-move}" in
       --robot-id "$ROBOT_ID" \
       --control-adapter tiago-adapter \
       --runs 1 \
+      --no-latency-gate \
       --result-timeout "$RESULT_TIMEOUT" \
       2>&1 | tee "$LOG_DIR/benchmark.log"
     echo "[PASS] 자연어 MOVE_TO E2E가 완료되었습니다."
@@ -157,6 +179,7 @@ case "${E2E_SCENARIO:-move}" in
       --base-url "$BACKEND_URL" \
       --robot-id "$ROBOT_ID" \
       --control-adapter tiago-adapter \
+      --result-topic "/adapter/${ROBOT_TOPIC_ID}/result" \
       2>&1 | tee "$LOG_DIR/hazard.log"
     echo "[PASS] 위험 개입 E2E가 완료되었습니다."
     ;;

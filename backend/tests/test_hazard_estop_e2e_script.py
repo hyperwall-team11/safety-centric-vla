@@ -54,6 +54,23 @@ class FakeBackendClient:
         raise AssertionError(f"unexpected path: {path}")
 
 
+class FakeAdapterEventMonitor:
+    def __init__(self, topic: str, _discovery_timeout_seconds: float) -> None:
+        self.topic = topic
+        self.closed = False
+
+    def wait_for_estop(self, robot_id: str, _timeout_seconds: float):
+        return {
+            "kind": "ESTOP",
+            "robot_id": robot_id,
+            "triggered_by": "RULE_ENGINE",
+            "latency_ms": 12.5,
+        }
+
+    def close(self):
+        self.closed = True
+
+
 class HazardEStopE2EScriptTest(unittest.TestCase):
     def test_scenario_registers_critical_hazard_and_waits_for_held_state(self):
         client = FakeBackendClient()
@@ -66,6 +83,7 @@ class HazardEStopE2EScriptTest(unittest.TestCase):
             3,
             5,
             0,
+            estop_event_waiter=FakeAdapterEventMonitor("unused", 1).wait_for_estop,
             sleep_fn=lambda _seconds: None,
         )
 
@@ -77,14 +95,41 @@ class HazardEStopE2EScriptTest(unittest.TestCase):
         self.assertEqual(report["robot_status"], "ESTOP")
         self.assertEqual(report["task_status"], "HELD")
         self.assertEqual(report["proposal_status"], "HELD")
+        self.assertEqual(report["adapter_estop_latency_ms"], 12.5)
+        self.assertEqual(report["adapter_estop_triggered_by"], "RULE_ENGINE")
 
     def test_main_returns_success_for_completed_estop_roundtrip(self):
         with contextlib.redirect_stdout(io.StringIO()):
             code = main(
                 ["--hazard-delay", "0", "--json"],
                 FakeBackendClient,
+                FakeAdapterEventMonitor,
             )
         self.assertEqual(code, 0)
+
+    def test_scenario_rejects_hazard_after_motion_already_completed(self):
+        client = FakeBackendClient()
+        original_get = client.get
+
+        def get_with_completed_proposal(path):
+            result = original_get(path)
+            if path == "/task-orders/task-e2e/action-proposals" and not client.hazard_posted:
+                result[0]["status"] = "SUCCEEDED"
+            return result
+
+        client.get = get_with_completed_proposal
+        with self.assertRaisesRegex(RuntimeError, "실행 중이 아닙니다"):
+            run_hazard_scenario(
+                client,
+                "robot-01",
+                "tiago-adapter",
+                "world",
+                3,
+                5,
+                0,
+                estop_event_waiter=FakeAdapterEventMonitor("unused", 1).wait_for_estop,
+                sleep_fn=lambda _seconds: None,
+            )
 
 
 if __name__ == "__main__":
