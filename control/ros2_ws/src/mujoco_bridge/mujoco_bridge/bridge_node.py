@@ -125,11 +125,10 @@ class MujocoBridge(Node):
         self.crossing_amr_id = None
         if warehouse_demo:
             amr = load_amr(mujoco_dir)
-            arms = load_arms(mujoco_dir)
             import warehouse
 
-            model, data, _ = arms.build_plant_with_arms([], extras=(warehouse.add_warehouse,))
-            self.sim = simulation.DiffDriveSim(robot, model=model, data=data)
+            model, data = warehouse.build_warehouse()
+            self.sim = simulation.MujocoSim(model, data)
             self.plant_amrs = amr.PlantAmrs(
                 model, data, warehouse.WAREHOUSE_AMRS, self.cmd_timeout, preloaded=True,
             )
@@ -157,7 +156,8 @@ class MujocoBridge(Node):
         names = {m.joint(i).name for i in range(m.njnt)}
         self.joint_names = [n for n in self.scn.JOINT_STATE_NAMES if n in names]
         self.joint_adr = [(m.joint(n).qposadr[0], m.joint(n).dofadr[0]) for n in self.joint_names]
-        self.base_body = m.joint(self.sim.spec.base_joint).bodyid[0]  # freejoint가 달린 로봇 베이스
+        if not warehouse_demo:
+            self.base_body = m.joint(self.sim.spec.base_joint).bodyid[0]
 
         self.worker = None
         bodies = {m.body(i).name for i in range(m.nbody)}
@@ -234,9 +234,10 @@ class MujocoBridge(Node):
                 self.amr_odom_pubs[rid] = self.create_publisher(Odometry, f"/{seg}/odom", 10)
                 self.amr_result_pubs[rid] = self.create_publisher(String, f"/{seg}/amr/load_result", 10)
 
-        self.create_subscription(Twist, "/cmd_vel", self._on_cmd_vel, 10)
-        self.odom_pub = self.create_publisher(Odometry, "/odom", 10)
-        self.joint_pub = self.create_publisher(JointState, "/joint_states", 10)
+        if not warehouse_demo:
+            self.create_subscription(Twist, "/cmd_vel", self._on_cmd_vel, 10)
+            self.odom_pub = self.create_publisher(Odometry, "/odom", 10)
+            self.joint_pub = self.create_publisher(JointState, "/joint_states", 10)
         self.tf_pub = TransformBroadcaster(self)
         self.static_tf_pub = StaticTransformBroadcaster(self)
         self._publish_static_tf()
@@ -246,7 +247,7 @@ class MujocoBridge(Node):
         # 실시간 기준점은 초기화(렌더러·Three.js 장면 준비)가 끝난 뒤로 잡는다. 아니면 시작하자마자 시뮬 시각이 한꺼번에 뛴다
         self.wall_start = self.last_rtf_log = time.monotonic()
         self.sim_start = self.sim.time
-        max_linear = self.sim.max_wheel_speed * self.sim.wheel_radius
+        max_linear = amr.MAX_SPEED if warehouse_demo else self.sim.max_wheel_speed * self.sim.wheel_radius
         self.get_logger().info(
             f"MuJoCo bridge ready: {robot} ({model_path or self.sim.spec.model_path.name}), "
             f"max linear {max_linear:.2f} m/s, joints {len(self.joint_names)}, "
@@ -325,8 +326,7 @@ class MujocoBridge(Node):
         self.viewer.sync()
 
     # ---- 상태 발행 ----
-    def _publish_state(self):
-        stamp = self.get_clock().now().to_msg()
+    def _publish_base_state(self, stamp, d):
         x, y, _ = self.sim.pose()
         quat = self.sim.orientation()
         v, w = self.sim.twist()
@@ -346,12 +346,17 @@ class MujocoBridge(Node):
         js = JointState()
         js.header.stamp = stamp
         js.name = self.joint_names
-        d = self.sim.data
         js.position = [float(d.qpos[q]) for q, _ in self.joint_adr]
         js.velocity = [float(d.qvel[v_]) for _, v_ in self.joint_adr]
         # 액추에이터가 낸 힘(직선 관절, N) 또는 토크(회전 관절, N·m). 액추에이터가 없는 관절은 0 (#96)
         js.effort = [float(d.qfrc_actuator[v_]) for _, v_ in self.joint_adr]
         self.joint_pub.publish(js)
+
+    def _publish_state(self):
+        stamp = self.get_clock().now().to_msg()
+        d = self.sim.data
+        if self.crossing_amr_id is None:
+            self._publish_base_state(stamp, d)
 
         for rid, pub in self.arm_joint_pubs.items():
             q, dq, tau = self.plant_arms.joint_state(d, rid)
