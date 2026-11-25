@@ -48,9 +48,9 @@ def add_warehouse(spec):
     for name in ("worker_2", "worker_3"):
         spec.delete(spec.body(name))
 
-    def box(name, pos, size, color, collidable=True):
+    def box(name, pos, size, color, collidable=True, quat=None):
         world.add_geom(name=name, type=mujoco.mjtGeom.mjGEOM_BOX, pos=pos, size=size, rgba=color,
-                       contype=int(collidable), conaffinity=int(collidable))
+                       contype=int(collidable), conaffinity=int(collidable), **({"quat": quat} if quat else {}))
 
     for index, (x, y) in enumerate(((-3.5, -1.5), (-0.9, -1.5), (3.1, -1.5),
                                      (-3.3, -7.3), (-0.7, -7.3), (3.1, -7.3))):
@@ -59,13 +59,26 @@ def add_warehouse(spec):
             for dy in (-0.50, 0.50):
                 box(f"{prefix}_post_{dx}_{dy}", [x+dx, y+dy, 1.65], [0.045, 0.045, 1.65], STEEL)
                 box(f"{prefix}_guard_{dx}_{dy}", [x+dx, y+dy, 0.19], [0.085, 0.085, 0.19], YELLOW)
+            for level in range(3):
+                angle = math.atan2((-1) ** level, 0.92)
+                box(f"{prefix}_brace_{dx}_{level}", [x + dx, y, 0.75 + level * 0.93],
+                    [0.020, 0.019, 0.67], STEEL, False,
+                    [math.cos(angle / 2), math.sin(angle / 2), 0, 0])
+            for side in (-1, 1):
+                box(f"{prefix}_sign_{side}_{dx}", [x + dx, y + side * 0.556, 1.47],
+                    [0.125, 0.007, 0.13], WHITE, False)
         for tier, z in enumerate((0.30, 1.05, 1.80, 2.55)):
-            box(f"{prefix}_shelf_{tier}", [x, y, z], [1.10, 0.52, 0.05], ORANGE)
+            box(f"{prefix}_deck_{tier}", [x, y, z], [1.10, 0.49, 0.035], STEEL)
+            for side in (-1, 1):
+                box(f"{prefix}_shelf_{tier}_{side}", [x, y + side * 0.50, z],
+                    [1.10, 0.035, 0.066], ORANGE)
             for slot, dx in enumerate((-0.68, 0.0, 0.68)):
                 dz = 0.14 + 0.035 * ((index + tier + slot) % 4)
                 box(f"{prefix}_pallet_{tier}_{slot}", [x+dx, y, z+0.08], [0.28, 0.41, 0.025],
                     [0.49, 0.34, 0.21, 1])
-                box(f"{prefix}_box_{tier}_{slot}", [x+dx, y, z+0.105+dz], [0.26, 0.34, dz],
+                width = 0.21 + 0.025 * ((tier + slot) % 3)
+                depth = 0.27 + 0.025 * ((index + slot) % 3)
+                box(f"{prefix}_box_{tier}_{slot}", [x+dx, y, z+0.105+dz], [width, depth, dz],
                     [0.68 + 0.04 * (slot % 2), 0.49, 0.31, 1])
 
     for y in (-2.8, -5.2):
@@ -76,14 +89,24 @@ def add_warehouse(spec):
     for name, x, color in (("supply", -4.0, YELLOW), ("inspection", 4.0, [0.21, 0.70, 0.90, 1])):
         for side in (-1, 1):
             box(f"{name}_bay_{side}", [x, -4 + side * 0.72, 0.009], [0.85, 0.045, 0.006], color, False)
-    for x in (-4, -1, 2, 5):
-        box(f"ceiling_fixture_{x}", [x, -4.0, 5.1], [0.68, 0.13, 0.04], WHITE)
-        world.add_light(name=f"warehouse_light_{x}", pos=[x, -4, 5], dir=[0, 0, -1])
-    box("warehouse_back_wall", [0, -8.5, 2.6], [7, 0.1, 2.6], STEEL)
-    box("warehouse_end_wall", [6.3, -4.0, 2.6], [0.1, 4.5, 2.6], STEEL)
+    for x in (-5, -2.5, 0, 2.5, 5):
+        box(f"ceiling_beam_{x}", [x, -4.1, 4.82], [0.11, 4.6, 0.13], STEEL, False)
+        for y in (-2.2, -5.9):
+            box(f"ceiling_fixture_{x}_{y}", [x, y, 4.45], [0.59, 0.095, 0.033], WHITE, False)
+            for shift in (-0.46, 0.46):
+                box(f"ceiling_hanger_{x}_{y}_{shift}", [x + shift, y, 4.62],
+                    [0.009, 0.009, 0.15], STEEL, False)
+    box("ceiling_roof", [0, -4.1, 5.10], [7, 4.5, 0.08], [0.33, 0.32, 0.30, 1], False)
+    for side, y in (("back", -8.5), ("aisle", 0.25)):
+        box(f"warehouse_{side}_wall", [0, y, 2.6], [7, 0.09, 2.6], [0.65, 0.66, 0.64, 1])
+        box(f"warehouse_{side}_skirting", [0, y + (0.10 if side == "back" else -0.10), 0.41],
+            [7, 0.02, 0.41], STEEL, False)
+    box("warehouse_end_wall", [6.3, -4.0, 2.6], [0.1, 4.5, 2.6], [0.65, 0.66, 0.64, 1])
+    box("warehouse_shutter", [6.18, -4.0, 1.47], [0.025, 1.45, 1.47], STEEL, False)
+    box("warehouse_shutter_header", [6.10, -4.0, 2.98], [0.12, 1.55, 0.11], STEEL, False)
 
     for name, pos, target, fovy in (
-        ("cctv_1", (-6.2, -6.2, 4.8), (-0.1, -3.9, 0.15), 66),
+        ("cctv_1", (-6.2, -5.55, 3.45), (0.25, -3.93, 0.82), 67),
         ("cctv_2", (4.4, -3.2, 3.9), (1.0, -4.2, 0.65), 68),
     ):
         target_body = world.add_body(name=f"{name}_target", pos=target)

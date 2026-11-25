@@ -454,6 +454,8 @@ class MujocoBridge(Node):
             live_moving_cameras=[s for s in self.threejs_sensors if self.scn.CAMERAS[s][2] != "world"],
         )
         meta.update({"frames": 1, "fps": self.camera_hz, "live": True})
+        if self.crossing_amr_id is not None:
+            meta["scene"] = "warehouse_demo"
         (Path(data_dir) / "scene.json").write_text(__import__("json").dumps(meta))
 
         def publish(sensor, sim_time, rgb):
