@@ -24,6 +24,7 @@ def test_backend_move_e2e_sources_ros_setup_without_nounset():
 def test_backend_move_e2e_task_builds_ros_workspace_first():
     pixi = (CONTROL_DIR / "pixi.toml").read_text(encoding="utf-8")
     assert 'backend-move-e2e = { cmd = "bash scripts/backend_move_e2e.sh", depends-on = ["build"] }' in pixi
+    assert 'backend-openai-e2e = { cmd = "bash scripts/backend_openai_e2e.sh", depends-on = ["build"] }' in pixi
     assert 'backend-hazard-e2e = { cmd = "bash scripts/backend_hazard_e2e.sh", depends-on = ["build"] }' in pixi
 
 
@@ -55,3 +56,15 @@ def test_backend_move_e2e_supports_hazard_scenario():
 def test_backend_move_e2e_keeps_ack_latency_as_a_report_only_metric():
     script = SCRIPT.read_text(encoding="utf-8")
     assert "--no-latency-gate" in script
+    assert '--timeout "$BACKEND_HTTP_TIMEOUT"' in script
+    assert '--expected-model-name "${EXPECTED_ACTION_MODEL:-}"' in script
+
+
+def test_openai_e2e_fails_without_key_and_selects_openai_provider():
+    script = (CONTROL_DIR / "scripts" / "backend_openai_e2e.sh").read_text(
+        encoding="utf-8"
+    )
+    assert 'if [[ -z "${OPENAI_API_KEY:-}" ]]' in script
+    assert "export BACKEND_ACTION_PLANNER=openai" in script
+    assert "export EXPECTED_ACTION_MODEL=openai-responses-action-provider" in script
+    assert 'export BACKEND_HTTP_TIMEOUT="${BACKEND_HTTP_TIMEOUT:-45}"' in script

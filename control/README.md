@@ -117,6 +117,17 @@ pixi run python -m pip install -r ../backend/requirements.txt
 pixi run backend-move-e2e
 ```
 
+OpenAI가 실제로 생성한 Proposal만 허용해 같은 경로를 검증하려면 저장소 루트의
+gitignore된 `.env.local`에 `OPENAI_API_KEY`를 저장한 뒤 아래 task를 실행합니다. 하네스는
+Backend를 `BACKEND_ACTION_PLANNER=openai`로 시작하고 생성된 Proposal의
+`model_name=openai-responses-action-provider`까지 확인하므로 규칙 플래너 fallback은 성공으로
+간주하지 않습니다.
+
+```bash
+cd control
+pixi run backend-openai-e2e
+```
+
 하네스는 Backend, MuJoCo 브리지, TIAGo 어댑터를 순서대로 띄우고 준비 상태를 확인합니다.
 성공하거나 실패하면 시작한 프로세스를 모두 종료합니다. 실패 로그는
 `$TMPDIR/safety-vla-move-e2e.*`에 남으며 `E2E_LOG_DIR`로 위치를 지정할 수 있습니다.

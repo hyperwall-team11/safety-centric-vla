@@ -170,6 +170,7 @@ def run_trial(
     *,
     frame_id: str = "world",
     result_timeout_seconds: float = 120.0,
+    expected_model_name: str | None = None,
 ) -> Trial:
     target_x = 1 if index % 2 == 0 else 0
     instruction = f"{robot_id} 로봇을 좌표 ({target_x}, 0, 0)로 이동해"
@@ -193,6 +194,14 @@ def run_trial(
             {"Idempotency-Key": f"benchmark-proposal-{uuid4()}"},
         )
         proposal_id = proposal["proposal_id"]
+        if (
+            expected_model_name
+            and proposal.get("model_name") != expected_model_name
+        ):
+            raise RuntimeError(
+                "ActionProposal 모델이 예상과 다릅니다: "
+                f"{proposal.get('model_name')} != {expected_model_name}"
+            )
         approved = client.post(f"/action-proposals/{proposal_id}/evaluate", {})
         if approved.get("status") != "APPROVED":
             raise RuntimeError(f"안전 평가가 승인되지 않았습니다: {approved.get('status')}")
@@ -292,6 +301,11 @@ def main(
     )
     parser.add_argument("--frame-id", default="world")
     parser.add_argument(
+        "--expected-model-name",
+        default="",
+        help="생성된 Proposal이 이 model_name이 아니면 E2E 실패",
+    )
+    parser.add_argument(
         "--no-latency-gate",
         action="store_true",
         help="기능 E2E 종료 코드는 실행 성공률만 사용하고 ACK 지연은 출력만 함",
@@ -319,6 +333,7 @@ def main(
             args.threshold_ms,
             frame_id=args.frame_id,
             result_timeout_seconds=args.result_timeout,
+            expected_model_name=args.expected_model_name or None,
         )
         for index in range(args.runs)
     ]

@@ -47,7 +47,10 @@ class FakeBackendClient:
             return {"task_id": self.latest_task_id}
         if path.endswith("/action-proposals"):
             self.latest_proposal_id = f"proposal-{self.sequence}"
-            return {"proposal_id": self.latest_proposal_id}
+            return {
+                "proposal_id": self.latest_proposal_id,
+                "model_name": "test-model",
+            }
         if path.endswith("/evaluate"):
             return {"status": "REJECTED" if self.reject else "APPROVED"}
         if path.endswith("/execute"):
@@ -109,6 +112,20 @@ class CommandDispatchBenchmarkTest(unittest.TestCase):
         self.assertFalse(trial.execution_succeeded)
         self.assertIn("REJECTED", trial.error)
         self.assertFalse(any(path.endswith("/execute") for path, _body in client.calls))
+
+    def test_run_trial_rejects_unexpected_action_model(self):
+        client = FakeBackendClient()
+
+        trial = run_trial(
+            client,
+            "robot-01",
+            0,
+            1000,
+            expected_model_name="openai-responses-action-provider",
+        )
+
+        self.assertFalse(trial.execution_succeeded)
+        self.assertIn("test-model != openai-responses-action-provider", trial.error)
 
     def test_ack_timeout_still_waits_for_execution_result(self):
         client = FakeBackendClient(ack_status="TIMED_OUT")
