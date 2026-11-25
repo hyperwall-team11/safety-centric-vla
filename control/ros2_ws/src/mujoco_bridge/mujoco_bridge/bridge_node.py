@@ -328,16 +328,19 @@ class MujocoBridge(Node):
         d = self.sim.data
         js.position = [float(d.qpos[q]) for q, _ in self.joint_adr]
         js.velocity = [float(d.qvel[v_]) for _, v_ in self.joint_adr]
+        # 액추에이터가 낸 힘(직선 관절, N) 또는 토크(회전 관절, N·m). 액추에이터가 없는 관절은 0 (#96)
+        js.effort = [float(d.qfrc_actuator[v_]) for _, v_ in self.joint_adr]
         self.joint_pub.publish(js)
 
         for rid, pub in self.arm_joint_pubs.items():
-            q, dq = self.plant_arms.joint_state(d, rid)
+            q, dq, tau = self.plant_arms.joint_state(d, rid)
             kin = self.plant_arms.kins[rid]
             arm_js = JointState()
             arm_js.header.stamp = stamp
             arm_js.name = kin.joint_names
             arm_js.position = [float(v) for v in q]
             arm_js.velocity = [float(v) for v in dq]
+            arm_js.effort = [float(v) for v in tau]
             pub.publish(arm_js)
 
         for rid, pub in self.amr_odom_pubs.items():

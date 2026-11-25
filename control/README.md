@@ -20,6 +20,7 @@ ROS 2 제어 어댑터, 안전 경로(HOLD·E-Stop), MuJoCo 시뮬레이션 환�
 | #97 | MuJoCo ② 작업자 이동 예측: Worker `velocity`로 등속 외삽, 예측 시간에 따라 여유 반경 확대 (요청 형식·수치 잠정, 예측 오차 평가 미구현) | 진행 중 | `pixi run test` |
 | #55 | Three.js CCTV 실시간 발행: 브리지 MuJoCo 상태 → Three.js 렌더 → `/cctv_{n}/image_raw`(stamp = 시뮬레이션 시각) | 완료 (카메라당 15Hz) | `pixi run bridge-threejs` + `pixi run cctv-threejs` |
 | AMR | 이동형 운반 로봇(AMR) 2대: 창고 ↔ TIAGo 작업 셀 팔레트 운반, `MOVE_TO`·`MANIPULATE`(싣기·내리기) 어댑터, 사전 시뮬레이션 차체 크기에 실린 팔레트 반영 | 완료 | `pixi run amr-demo`, `pixi run test` |
+| #96 | 관절 토크·속도 보고: 브리지 `/joint_states`에 `effort` 채움, 팔 어댑터 상태 `joints`에 `velocities`·`efforts` 추가 (관측용. 한계 검사·초과 시 HOLD는 #51 결정 후) | 진행 중 | `pixi run test` |
 
 다음 단계는 Backend와 TIAGo 어댑터를 함께 띄운 통합 시나리오 자동화입니다.
 
@@ -212,7 +213,7 @@ pixi run amr-cycle-demo         # 터미널 4: 순환 데모 (검증 서버 대�
 |---|---|---|---|
 | `/cmd_vel` | 외부 → 브리지 | 기본 | `geometry_msgs/Twist` (linear.x m/s, angular.z rad/s) |
 | `/odom` | 브리지 → 외부 | 기본, 50Hz | `nav_msgs/Odometry` (`odom` → `base_link`, TF 함께 발행) |
-| `/joint_states` | 브리지 → 외부 | 기본, 50Hz | `sensor_msgs/JointState`: 팔 7, 몸통, 머리 2, 그리퍼 2, 바퀴 2 (위치·속도) |
+| `/joint_states` | 브리지 → 외부 | 기본, 50Hz | `sensor_msgs/JointState`: 팔 7, 몸통, 머리 2, 그리퍼 2, 바퀴 2 (위치·속도·힘/토크. `effort`는 액추에이터가 관절에 가한 힘 또는 토크로, 직선 관절은 N, 회전 관절은 N·m이며 액추에이터가 없는 관절은 0) |
 | `/cctv_1/image_raw`, `/cctv_2/image_raw` | 브리지 → 외부 | sensor data, 15Hz | `sensor_msgs/Image` rgb8 640×480, frame_id `camera_cctv_1`·`camera_cctv_2`. `cctv_renderer:=threejs`이면 Three.js 렌더 영상, stamp는 시뮬레이션 시각 |
 | `/robot/head_camera/image_raw` | 브리지 → 외부 | sensor data, 15Hz | 로봇 머리 카메라, frame_id `camera_head_camera` |
 | `.../camera_info` | 브리지 → 외부 | sensor data, 15Hz | 각 카메라의 `CameraInfo` (fovy로 계산한 K·P, 왜곡 없음) |
@@ -364,8 +365,8 @@ pixi run arm-cycle-demo   # 데모: 4대가 상자를 계속 옮김 (검증 서�
 | `/<seg>/arm/joint_command` | 어댑터 → 브리지 | `sensor_msgs/JointState` 위치 목표 |
 | `/<seg>/arm/gripper` | 어댑터 → 브리지 | `std_msgs/Bool` (닫힘) |
 | `/<seg>/arm/grasp_state` | 브리지 → 어댑터 | `std_msgs/String` JSON `{closed, held}`. 그리퍼 명령마다 실제로 잡은 물체 이름(`held`, 못 잡으면 `null`)을 알린다. 어댑터는 이 결과로 파지 성공을 확정하고, 실패하거나 1초 안에 오지 않으면 `HW_ERROR`로 끝낸다 |
-| `/<seg>/joint_states` | 브리지 → 어댑터 | `sensor_msgs/JointState` 실제 관절각 |
-| `/adapter/<seg>/state` | 어댑터 → 검증 서버 | 기존 상태에 `robot_model`, `joints`, `tcp_position`, `gripper_closed`, `holding_object_id` 추가 |
+| `/<seg>/joint_states` | 브리지 → 어댑터 | `sensor_msgs/JointState` 실제 관절각·속도·토크(`effort`, N·m) |
+| `/adapter/<seg>/state` | 어댑터 → 검증 서버 | 기존 상태에 `robot_model`, `joints`, `tcp_position`, `gripper_closed`, `holding_object_id` 추가. `joints`는 `names`, `positions`(rad), `velocities`(rad/s), `efforts`(N·m, #96). 속도·토크를 못 받았거나 개수가 맞지 않으면 `null` |
 
 **`MANIPULATE` 사전 시뮬레이션 (잠정)**: 제어 계약 13.1절은 대상 물체와 관절 초기 상태 형식을 정하지 않았습니다. 아래 형식은 CTL이 제안하는 **잠정 형식**이며 Backend·ONT 승인 후 계약에 넣습니다.
 

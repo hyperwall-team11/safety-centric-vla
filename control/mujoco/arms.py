@@ -582,8 +582,9 @@ class PlantArms:
             data.mocap_pos[mocap] = self.kins[robot_id].tcp(data)
 
     def joint_state(self, data, robot_id):
+        """(관절각 rad, 관절 속도 rad/s, 관절 토크 N·m). 토크는 위치 액추에이터가 관절에 낸 힘(qfrc_actuator)이다 (#96)."""
         kin = self.kins[robot_id]
-        return kin.get(data), data.qvel[kin.dof_ids].copy()
+        return kin.get(data), data.qvel[kin.dof_ids].copy(), data.qfrc_actuator[kin.dof_ids].copy()
 
 
 def run_demo(snapshot_dir: Path | None = None, speed=0.25):
