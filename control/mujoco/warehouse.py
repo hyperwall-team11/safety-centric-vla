@@ -55,6 +55,22 @@ class CrossingWorker(WorkerScript):
         return elapsed * self.speed, float(elapsed == 0.0 or elapsed >= self.duration)
 
 
+
+def build_warehouse():
+    """공장 장면에서 팔·작업 셀을 떼고 창고에 필요한 모델만 구성한다."""
+    from arms import PLANT_SCENE, scene_root
+
+    spec = scene_root(mujoco.MjSpec.from_file(str(PLANT_SCENE)))
+    for element in [*spec.actuators, *spec.excludes]:
+        spec.delete(element)
+    for name in ("base_link", "table_a", "table_b", "part_box"):
+        spec.delete(spec.body(name))
+    add_warehouse(spec)
+    model = spec.compile()
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    return model, data
+
 def add_warehouse(spec):
     world = spec.worldbody
     for geom in list(world.geoms):

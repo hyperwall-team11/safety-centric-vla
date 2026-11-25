@@ -1,8 +1,7 @@
 import numpy as np
 
 from amr import DECK_TOP, PlantAmrs
-from arms import build_plant_with_arms
-from warehouse import AMR, CROSS_X, TRIGGER_X, WALK_END_Y, WALK_START_Y, DEMO_WORKERS, WAREHOUSE_AMRS, CrossingWorker, add_warehouse
+from warehouse import AMR, CROSS_X, TRIGGER_X, WALK_END_Y, WALK_START_Y, DEMO_WORKERS, WAREHOUSE_AMRS, CrossingWorker, build_warehouse
 
 
 def test_worker_crosses_once_after_amr_reaches_trigger_while_moving():
@@ -18,7 +17,7 @@ def test_worker_crosses_once_after_amr_reaches_trigger_while_moving():
 def test_loaded_pallet_and_front_camera_move_with_amr():
     import mujoco
 
-    model, data, _ = build_plant_with_arms([], extras=(add_warehouse,))
+    model, data = build_warehouse()
     amrs = PlantAmrs(model, data, (AMR,), preloaded=True)
     x, y, *_ = amrs.odom(AMR.robot_id)
     pallet = amrs.pallets[AMR.pallet_id]
@@ -38,7 +37,7 @@ def test_approved_resume_and_new_move_deliver_loaded_pallet_in_control_core():
     from robot_adapter.amr_core import AmrCore
     from robot_adapter.diff_drive_core import ARRIVAL_TOLERANCE_M
 
-    model, data, _ = build_plant_with_arms([], extras=(add_warehouse,))
+    model, data = build_warehouse()
     amrs = PlantAmrs(model, data, (AMR,), preloaded=True)
     core = AmrCore(AMR.robot_id)
     target = [*AMR.cell_dock[:2], 0.0]
@@ -87,7 +86,7 @@ def test_approved_resume_and_new_move_deliver_loaded_pallet_in_control_core():
 
 
 def test_warehouse_has_two_loaded_amrs_parked_outside_the_demo_lane():
-    model, data, _ = build_plant_with_arms([], extras=(add_warehouse,))
+    model, data = build_warehouse()
     amrs = PlantAmrs(model, data, WAREHOUSE_AMRS, preloaded=True)
     amrs.set_velocity(AMR.robot_id, 0.4, 0)
     amrs.step(data, 0.2)
@@ -102,7 +101,7 @@ def test_warehouse_has_two_loaded_amrs_parked_outside_the_demo_lane():
 
 
 def test_storage_workers_and_camera_are_outside_the_amr_lane():
-    model, data, _ = build_plant_with_arms([], extras=(add_warehouse,))
+    model, data = build_warehouse()
     assert len(DEMO_WORKERS) == 4
     for number, worker in enumerate(DEMO_WORKERS[1:], start=2):
         assert model.body_mocapid[model.body(f"worker_{number}").id] >= 0
@@ -113,7 +112,7 @@ def test_storage_workers_and_camera_are_outside_the_amr_lane():
 
 
 def test_spilled_boxes_block_the_rack_gap_outside_the_transport_lane():
-    model, data, _ = build_plant_with_arms([], extras=(add_warehouse,))
+    model, data = build_warehouse()
     boxes = [model.geom(f"spill_box_{index}") for index in range(7)]
     assert all(model.geom_contype[g.id] and model.geom_conaffinity[g.id] for g in boxes)
     assert all(data.geom_xpos[g.id][1] - np.linalg.norm(g.size[:2]) > 6.0 for g in boxes)
@@ -130,3 +129,14 @@ def test_spilled_boxes_block_the_rack_gap_outside_the_transport_lane():
             occupied |= bool(np.all(np.abs(local) <= geom.size))
         covered.append(occupied)
     assert sum(covered) >= 150
+
+
+def test_warehouse_model_has_only_amrs_and_no_tiago_workcell():
+    import mujoco
+
+    model, _ = build_warehouse()
+    assert model.nu == 0 and model.njnt == 0
+    body_names = {model.body(index).name for index in range(model.nbody)}
+    assert {"base_link", "table_a", "table_b", "part_box"}.isdisjoint(body_names)
+    assert model.ncam == 5
+    assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "head_camera") == -1
