@@ -68,6 +68,7 @@ class Frame:
     height: int
     received_at: float  # time.time()
     seq: int
+    stamp: tuple[int, int] | None = None
 
 
 @dataclass
@@ -78,10 +79,11 @@ class FrameStore:
     _frames: dict[str, Frame] = field(default_factory=dict)
     _cond: threading.Condition = field(default_factory=threading.Condition)
 
-    def put(self, sensor_id: str, jpeg: bytes, width: int, height: int) -> None:
+    def put(self, sensor_id: str, jpeg: bytes, width: int, height: int,
+            stamp: tuple[int, int] | None = None) -> None:
         with self._cond:
             prev = self._frames.get(sensor_id)
-            self._frames[sensor_id] = Frame(jpeg, width, height, time.time(), (prev.seq + 1) if prev else 1)
+            self._frames[sensor_id] = Frame(jpeg, width, height, time.time(), (prev.seq + 1) if prev else 1, stamp)
             self._cond.notify_all()
 
     def latest(self, sensor_id: str) -> Frame | None:
@@ -113,12 +115,17 @@ def make_handler(store: FrameStore, stop: threading.Event, scene: SceneState | N
         def log_message(self, *_args):  # 프레임마다 로그가 쌓이지 않게 한다
             pass
 
-        def _send(self, code: int, body: bytes, ctype: str) -> None:
+        def _send(self, code: int, body: bytes, ctype: str, frame: Frame | None = None) -> None:
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("Access-Control-Allow-Origin", "*")
+            if frame is not None:
+                self.send_header("X-Frame-Sequence", str(frame.seq))
+                self.send_header("X-Frame-Received-At", str(frame.received_at))
+                if frame.stamp is not None:
+                    self.send_header("X-ROS-Stamp", f"{frame.stamp[0]}.{frame.stamp[1]:09d}")
             self.end_headers()
             self.wfile.write(body)
 
@@ -136,7 +143,7 @@ def make_handler(store: FrameStore, stop: threading.Event, scene: SceneState | N
                     frame = store.latest(sensor_id)
                     if frame is None:
                         return self._send(404, b'{"detail":"no frame yet"}', "application/json")
-                    return self._send(200, frame.jpeg, "image/jpeg")
+                    return self._send(200, frame.jpeg, "image/jpeg", frame)
                 if kind == "stream":
                     return self._stream(sensor_id)
             return self._send(404, b'{"detail":"not found"}', "application/json")
@@ -206,7 +213,7 @@ def main():
         except ValueError as exc:
             node.get_logger().warn(f"{sensor_id}: {exc}", throttle_duration_sec=10.0)
             return
-        store.put(sensor_id, jpeg, msg.width, msg.height)
+        store.put(sensor_id, jpeg, msg.width, msg.height, (stamp.sec, stamp.nanosec))
 
     for sensor_id, topic in DEFAULT_CAMERAS.items():
         node.create_subscription(Image, topic, lambda m, s=sensor_id: on_image(s, m), qos_profile_sensor_data)
