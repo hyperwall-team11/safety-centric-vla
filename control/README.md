@@ -81,6 +81,8 @@ macOS에서는 같은 Mac 안의 노드끼리도 서로 못 찾는 문제가 있
 
 ## 실행
 
+최종 발표용 적재 AMR과 실시간 CCTV를 함께 실행하려면 [물류창고 시연 안내](../docs/warehouse-presentation.md)의 `pixi run warehouse-demo` 절차를 따릅니다.
+
 | 명령 | 내용 |
 |---|---|
 | `pixi run test` | 단위 테스트 (어댑터, 안전 게이트, 바퀴 로봇, 시나리오 장면) |
