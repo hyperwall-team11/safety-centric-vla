@@ -424,7 +424,7 @@ Backend는 5 Hz로 발행한다. CTL이 마지막 정상 heartbeat 후 1초 동�
 
 판정은 13.2절과 같다. `MANIPULATE`에서는 팔·공구(들고 있는 동안은 물체 포함)가 다른 물체·로봇·작업자와 닿으면 `COLLISION`(팔과 대상 물체의 접촉은 제외), 작업자와 몸 표면 거리가 기준 미만이면 `UNSAFE_DISTANCE`, 경유점 도달 오차가 0.02 m를 넘으면 `GOAL_NOT_REACHED`다.
 
-다음 요청은 `ERROR`다(Fail-Closed): 대상 로봇에 `robot_model`이 없음, `manipulation`이 `PICK`·`PLACE`가 아님, `object_id`가 `objects`에 없음, `PICK`의 `target_pose`가 물체 중심에서 0.05 m 넘게 떨어짐, `PLACE`인데 그 물체를 들고 있지 않음, `joint_positions` 개수가 모델과 다름, 작업자 속도가 2.0 m/s를 넘거나 유한하지 않음.
+다음 요청은 `ERROR`다(Fail-Closed): 대상 로봇에 `robot_model`이 없음, `manipulation`이 `PICK`·`PLACE`가 아님, `object_id`가 `objects`에 없음, `PICK`의 `target_pose`가 물체 중심에서 0.05 m 넘게 떨어짐, `PLACE`인데 그 물체를 들고 있지 않음, `joint_positions` 개수가 모델과 다름, 작업자 속도가 성분 3개의 유한한 벡터가 아니거나, 수직 성분이 0이 아니거나, 평면 속력이 2.0 m/s를 넘음.
 
 Backend는 `joint_positions`·`holding_object_id`를 어댑터 상태 토픽(9장)에서 얻는다. 9장 상태 변환이 확정되기 전까지는 이 두 값의 출처가 미정이므로, Backend 연동 범위는 별도 이슈로 정한다.
 
