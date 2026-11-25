@@ -49,6 +49,18 @@ class ObjectQueryApiTest(unittest.TestCase):
         )
         self.assertEqual(zone.status_code, 201, zone.text)
 
+        physical_object = self.client.post(
+            "/physical-objects",
+            json={
+                "object_id": "box-01",
+                "object_type": "BOX",
+                "pose": POSE,
+                "current_zone_id": "A구역",
+                "movable": True,
+            },
+        )
+        self.assertEqual(physical_object.status_code, 201, physical_object.text)
+
         sensor = self.client.put(
             "/sensors/sensor-01",
             json={
@@ -132,6 +144,7 @@ class ObjectQueryApiTest(unittest.TestCase):
             "Sensor": ("sensor_id", "sensor-01"),
             "Worker": ("worker_id", "worker-01"),
             "Zone": ("zone_id", "A구역"),
+            "PhysicalObject": ("object_id", "box-01"),
             "TaskOrder": ("task_id", generated_ids["TaskOrder"]),
             "ActionProposal": ("proposal_id", generated_ids["ActionProposal"]),
             "HazardEvent": ("hazard_id", generated_ids["HazardEvent"]),

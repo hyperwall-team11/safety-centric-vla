@@ -124,10 +124,18 @@ def validate_vla_proposal(
         raise VlaOutputValidationError(f"TaskOrder 행동을 확인할 수 없습니다: {exc}") from exc
 
     actual_action = ActionType(proposal.action_type)
-    if actual_action != expected_action:
+    allowed_actions = {expected_action}
+    if task.target_object_id is not None and expected_action == ActionType.MANIPULATE:
+        # 물체 운반 Task는 OpenVLA 조작과 Navigation Planner 이동이 같은
+        # TaskOrder 아래에서 순차 ActionProposal로 실행된다.
+        allowed_actions.add(ActionType.MOVE_TO)
+    if actual_action not in allowed_actions:
+        allowed_action_names = ", ".join(
+            sorted(action.value for action in allowed_actions)
+        )
         raise VlaOutputValidationError(
             f"VLA 출력 action_type({actual_action.value})이 "
-            f"TaskOrder 행동({expected_action.value})과 다릅니다."
+            f"TaskOrder에서 허용한 행동({allowed_action_names})과 다릅니다."
         )
     if actual_action in {ActionType.STOP, ActionType.RESUME}:
         raise VlaOutputValidationError(
@@ -142,8 +150,6 @@ def validate_vla_proposal(
     if actual_action == ActionType.MANIPULATE:
         if proposal.parameters.get("object_id") != task.target_object_id:
             raise VlaOutputValidationError("VLA 출력의 object_id가 TaskOrder 대상 물체와 다릅니다.")
-    elif task.target_object_id is not None:
-        raise VlaOutputValidationError("대상 물체가 있는 TaskOrder에는 MANIPULATE 제안이 필요합니다.")
 
     expected_frame = (
         task.destination.frame_id

@@ -44,6 +44,7 @@ class StateWebSocketTest(unittest.TestCase):
         self.assertIsNone(snapshot["workers"])
         self.assertEqual(snapshot["robots"], [])
         self.assertEqual(snapshot["sensors"], [])
+        self.assertEqual(snapshot["physical_objects"], [])
         self.assertEqual(snapshot["zones"], [])
         self.assertEqual(snapshot["task_orders"], [])
         self.assertEqual(snapshot["action_proposals"], [])
