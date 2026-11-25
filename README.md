@@ -41,9 +41,9 @@ CV: CCTV 2대 작업자 탐지·결합·바닥 좌표 추정
 Ontology: Worker · Robot · Zone(KEEP_OUT) · Sensor · HazardEvent
           │ 온톨로지 상태 스냅샷
           ▼
-MuJoCo ②: 디지털 트윈 재구성 (계획)
+MuJoCo ②: MOVE_TO 디지털 트윈 재구성
           ▼
-Safety Gate: 규칙 5종 + MuJoCo ② 사전 시뮬레이션(계획)
+Safety Gate: 규칙 5종 + MuJoCo ② 사전 시뮬레이션(MOVE_TO 구현, MANIPULATE 후속)
   APPROVED / REJECTED / ESTOP, 실행 직전 재검증 실패 시 HELD
           │ 승인된 Action만
           ▼
@@ -97,10 +97,11 @@ ROS 2 제어 → MuJoCo ① 로봇 이동 → 다음 CCTV 프레임
 ### Scenario 2. 작업자 위험구역 접근
 
 1. MuJoCo ①에서 작업자가 로봇 작업구역에 접근
-2. 가상 CCTV 영상 생성 (Three.js는 계획, 현재는 MuJoCo 렌더링)
+2. Three.js 또는 MuJoCo 가상 CCTV 영상 생성
 3. CV가 연속 2프레임에서 금지구역 안 작업자를 보면 `CRITICAL` `WORKER_INTRUSION` HazardEvent 등록
-4. 이후 제안 거부와 `TriggerEStop` / `Hold State` (실행 중 로봇 즉시 정지는 미구현)
-5. `ResolveHazard`와 `ResumeTask` 승인 후 작업 재개
+4. Backend가 `/safety/estop`에 정지 신호를 발행하고, CTL 어댑터가 로봇을 정지한 뒤 `ESTOP` 이벤트를 보고
+5. Backend가 Robot을 `ESTOP`, 실행 중 Proposal·Task를 `HELD`로 반영하고 이후 제안을 차단
+6. `ResolveHazard` 승인으로 정지 신호 해제 (`ResumeTask` 승인 전이는 아직 미구현)
 
 ### Scenario 3. 서로 다른 현장 구성 (계획)
 
@@ -150,10 +151,10 @@ ROS 2 제어 → MuJoCo ① 로봇 이동 → 다음 CCTV 프레임
 ## 기술 스택
 
 - AI: PyTorch, OpenVLA, RT-DETR, Florence-2, OpenCV
-- 온톨로지 백엔드: FastAPI, REST (WebSocket `/ws/state`는 예정)
+- 온톨로지 백엔드: FastAPI, REST, WebSocket `/ws/state`
 - 로봇 제어: ROS 2 Humble/Jazzy
 - 시뮬레이션: MuJoCo 3.15.0 (ROS 2 브리지 직접 구현)
-- 실사형 렌더링: Three.js (계획), MPFB2 + Blender 작업자 모델
+- 실사형 렌더링: Three.js, MPFB2 + Blender 작업자 모델
 - 모델·상태 연동: Object/Link/Action 스키마, MuJoCo 양방향 동기화
 
 ## 제약사항

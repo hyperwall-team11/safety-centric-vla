@@ -4,7 +4,7 @@
 - 기준 코드: `backend/app/main.py`, `backend/app/models.py`
 - 기준 버전: FastAPI application `0.2.0`
 - 작성일: 2026-10-30
-- 수정일: 2026-11-21
+- 수정일: 2026-11-25
 - 기본 URL(로컬): `http://127.0.0.1:8000`
 - 대화형 문서: `/docs`
 - OpenAPI JSON: `/openapi.json`
@@ -437,7 +437,7 @@ ActionProposal: PROPOSED ── evaluate 통과 ──> APPROVED
                 EXECUTING ── 실패 보고 ──> FAILED
 ```
 
-ResumeTask 전이와 실제 ROS 2 어댑터 결과 토픽 연결은 아직 구현하지 않았다. 현재 결과 API는 Mock adapter 및 연동 시험용 HTTP 경계다.
+ResumeTask 전이는 아직 구현하지 않았다. ROS 2 모드에서는 승인 명령을 발행할 때 로봇별 `/adapter/{robot_topic_id}/result`를 구독하고 `ACK`, `RESULT`, `HOLD`, `ESTOP` 이벤트를 처리한다. `RESULT`는 브리지가 기존 HTTP 결과 API에 최대 3회 전달하며, 성공·실패 상태 전이와 멱등 감사 로그를 동일한 경계에서 적용한다. 이 ROS 2 왕복 경로는 PR #117의 MOVE_TO E2E와 PR #119의 위험 E-Stop E2E에서 검증했다.
 
 ## 5. 기준 문서와 현재 구현의 차이
 
@@ -449,13 +449,13 @@ ResumeTask 전이와 실제 ROS 2 어댑터 결과 토픽 연결은 아직 구�
 | ResumeTask | 관리자 승인 2단계 복귀 | 미구현, HELD 생성 요청은 `409` |
 | 인증·권한 | CRITICAL 해제와 Resume는 관리자 전용 | 선택형 역할별 API 토큰 인증과 요청자 전달 구현. CRITICAL 해제 요청의 `resolved_by=OPERATOR` 검사만 있고 역할별 인가는 미구현 |
 | 규칙 SR-01~06 | 속도·구역·거리·위험·상태·센서 공백 | SR-01 기본 0.4m/s·Robot·Zone 상한, 로봇 상태·adapter·관련 CRITICAL 위험 구현. KEEP_OUT 경로 검사를 구현하고 거리·센서 공백은 관측 안전 검사 활성화 시 적용 |
-| E-Stop | ROS 2 latched 전용 경로 | 실행 재검증 실패 시 Robot ESTOP·Task HELD·감사 로그 구현. `CRITICAL` HazardEvent가 실행 중 로봇과 연결되면 `/safety/estop` 발행(3.6절). 운영자 E-Stop API와 로봇별 정지는 미구현 |
-| 어댑터 실행 결과 | ROS 2 result 토픽으로 완료·실패 보고 | HTTP 결과 보고, 상태 전이, 멱등 감사 로그 구현. ROS 2 토픽 연결은 미구현 |
+| E-Stop | ROS 2 latched 전용 경로 | 실행 재검증 실패 또는 실행 중 로봇과 연결된 `CRITICAL` HazardEvent 등록 시 `/safety/estop` 발행. CTL `ESTOP` 이벤트로 Robot `ESTOP`, Proposal·Task `HELD` 반영 및 E2E 검증 완료. 운영자 E-Stop API와 로봇별 정지는 미구현 |
+| 어댑터 실행 결과 | ROS 2 result 토픽으로 완료·실패 보고 | 로봇별 result 토픽의 `ACK`, `RESULT`, `HOLD`, `ESTOP` 구독, 상태 전이, 멱등 감사 로그 및 MOVE_TO E2E 검증 구현 |
 | 상태 구독 | WebSocket `/ws/state` | 전체 상태 스냅샷 구독과 15초 heartbeat 구현, delta 복구는 미구현 |
 | 영속 저장 | Redis 또는 ROS 2 상태 연동 | 인메모리 기본, Redis 스냅샷·분산 잠금 선택 가능 |
 | 판정 시간 | `evaluated_in_ms` 기록 | 평가·실행 직전 재평가 로그에 구현 |
 | Observation 등록 | CV가 Observation을 제출하고 ONT가 병합해 HazardEvent 생성 | 미구현. CV가 `PUT /sensors/{sensor_id}`, `PUT /workers/snapshot`, `POST /hazards`로 직접 갱신 |
-| HazardEvent 즉시 정지 | `CRITICAL` 등록 시 실행 중 로봇 `TriggerEStop` | 미구현. 이후 평가와 실행 직전 재검증만 차단 |
+| HazardEvent 즉시 정지 | `CRITICAL` 등록 시 실행 중 로봇 `TriggerEStop` | 구현. 관련 실행 로봇이 있으면 `/safety/estop`을 발행하고 CTL `ESTOP` 이벤트로 상태 전이를 반영하며, PR #119에서 실제 왕복을 검증 |
 | 사전 시뮬레이션(`COLLISION`) | 규칙 통과 후보를 MuJoCo ② 서비스로 검증, 시간 초과·미가동 시 거부 | `BACKEND_TWIN_SIMULATION_ENABLED=1`일 때 `MOVE_TO` 호출·Fail-Closed·`snapshot_id` 재검증 구현(3.9절). 기본 비활성화, 시간 제한은 #50 확정 전 잠정값, `MANIPULATE`는 계약 확정 전까지 차단 |
 | 토크·관절 속도 검사 | 스키마 미결 | 미구현 |
 | 스키마 v1.1 선택 필드 | 모델에서 선택적으로 허용 | Robot, Sensor, Observation, Worker, Zone, SafetyRule, HazardEvent, ExecutionLog에 반영 |
