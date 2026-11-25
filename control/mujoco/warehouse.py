@@ -16,7 +16,7 @@ WAREHOUSE_AMRS = (
 DEMO_WORKERS = [
     {"waypoints": [(1.0, -1.5, 1.0), (1.0, -6.6, 1.0)], "speed": 0.6,
      "vest": "lime", "pants": "navy", "helmet": "white"},
-    {"waypoints": [(-5.7, 4.0, 2.0), (-1.0, 4.0, 1.0)], "speed": 0.55,
+    {"waypoints": [(-3.9, 4.0, 2.0), (-1.0, 4.0, 1.0)], "speed": 0.55,
      "vest": "orange", "pants": "jeans", "helmet": "yellow"},
     {"waypoints": [(1.2, 5.8, 2.0), (5.8, 5.8, 2.0)], "speed": 0.55,
      "vest": "lime", "pants": "jeans", "helmet": "orange"},
