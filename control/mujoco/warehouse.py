@@ -12,6 +12,16 @@ WAREHOUSE_AMRS = (
     PlantAmr("amr-02", "pallet:amr-02", (7.55, -8.35, 0.0), (10.35, -8.35, 0.0)),
     PlantAmr("amr-03", "pallet:amr-03", (7.55, -2.75, 0.0), (10.35, -2.75, 0.0)),
 )
+DEMO_WORKERS = [
+    {"waypoints": [(1.0, -1.5, 1.0), (1.0, -6.6, 1.0)], "speed": 0.6,
+     "vest": "lime", "pants": "navy", "helmet": "white"},
+    {"waypoints": [(-5.7, 4.0, 2.0), (-1.0, 4.0, 1.0)], "speed": 0.55,
+     "vest": "orange", "pants": "jeans", "helmet": "yellow"},
+    {"waypoints": [(1.2, 5.8, 2.0), (5.8, 5.8, 2.0)], "speed": 0.55,
+     "vest": "lime", "pants": "jeans", "helmet": "orange"},
+    {"waypoints": [(8.2, 3.0, 1.5), (8.2, 6.5, 2.0)], "speed": 0.5,
+     "vest": "orange", "pants": "navy", "helmet": "white"},
+]
 CROSS_X = 1.0
 TRIGGER_X = -2.4
 WALK_START_Y, WALK_END_Y = -1.5, -6.6
@@ -50,8 +60,13 @@ def add_warehouse(spec):
     for geom in list(world.geoms):
         if geom.name.startswith("prop_") or geom.name in {"keep_out_zone", "zone_a_marking", "zone_b_marking"}:
             spec.delete(geom)
-    for name in ("worker_2", "worker_3"):
-        spec.delete(spec.body(name))
+    for i, worker in enumerate(DEMO_WORKERS[1:], start=2):
+        name = f"worker_{i}"
+        x, y, _ = worker["waypoints"][0]
+        if i == 4:
+            world.add_body(name=name, pos=[x, y, 0], mocap=True)
+        else:
+            spec.body(name).pos = [x, y, 0]
 
     def box(name, pos, size, color, collidable=True, quat=None):
         world.add_geom(name=name, type=mujoco.mjtGeom.mjGEOM_BOX, pos=pos, size=size, rgba=color,
@@ -59,7 +74,8 @@ def add_warehouse(spec):
 
     for index, (x, y) in enumerate(((-3.5, -1.5), (-0.9, -1.5), (3.1, -1.5), (5.8, -1.5),
                                      (-3.3, -7.3), (-0.7, -7.3), (3.1, -7.3), (5.8, -7.3),
-                                     (-3.5, 2.5), (-0.9, 2.5), (3.1, 2.5), (5.8, 2.5))):
+                                     (-3.5, 2.5), (-0.9, 2.5), (3.1, 2.5), (5.8, 2.5),
+                                     (-3.5, 7.0), (-0.9, 7.0), (3.1, 7.0), (5.8, 7.0))):
         prefix = f"rack_{index}"
         for dx in (-1.08, 1.08):
             for dy in (-0.50, 0.50):
@@ -96,18 +112,18 @@ def add_warehouse(spec):
         for side in (-1, 1):
             box(f"{name}_bay_{side}", [x, -4 + side * 0.72, 0.009], [0.85, 0.045, 0.006], color, False)
     for x in (-7.5, -5, -2.5, 0, 2.5, 5, 7.5, 10):
-        box(f"ceiling_beam_{x}", [x, -3.1, 6.0], [0.11, 7.5, 0.13], STEEL, False)
-        for y in (-8.3, -5.3, -2.3, 1.0, 3.4):
+        box(f"ceiling_beam_{x}", [x, -0.35, 6.0], [0.11, 10.25, 0.13], STEEL, False)
+        for y in (-8.3, -5.3, -2.3, 1.0, 4.3, 7.6):
             box(f"ceiling_fixture_{x}_{y}", [x, y, 5.55], [0.65, 0.095, 0.033], WHITE, False)
-    box("ceiling_roof", [0.5, -3.1, 6.28], [11.5, 7.5, 0.08], [0.33, 0.32, 0.30, 1], False)
-    for side, y in (("back", -10.55), ("aisle", 4.35)):
+    box("ceiling_roof", [0.5, -0.35, 6.28], [11.5, 10.25, 0.08], [0.33, 0.32, 0.30, 1], False)
+    for side, y in (("back", -10.55), ("aisle", 9.85)):
         box(f"warehouse_{side}_wall", [0.5, y, 3.1], [11.5, 0.09, 3.1], [0.65, 0.66, 0.64, 1])
         box(f"warehouse_{side}_skirting", [0.5, y + (0.10 if side == "back" else -0.10), 0.41],
             [11.5, 0.02, 0.41], STEEL, False)
         for x in (-7.5, -2.5, 2.5, 7.5):
             box(f"warehouse_column_{side}_{x}", [x, y + (0.22 if side == "back" else -0.22), 3.0],
                 [0.14, 0.15, 3.0], STEEL)
-    box("warehouse_end_wall", [11.7, -3.1, 3.1], [0.1, 7.5, 3.1], [0.65, 0.66, 0.64, 1])
+    box("warehouse_end_wall", [11.7, -0.35, 3.1], [0.1, 10.25, 3.1], [0.65, 0.66, 0.64, 1])
     for y in (-7.6, -4.0, 0.1):
         box(f"warehouse_shutter_{y}", [11.58, y, 1.67], [0.025, 1.44, 1.67], STEEL, False)
         box(f"warehouse_shutter_header_{y}", [11.50, y, 3.39], [0.12, 1.53, 0.10], STEEL, False)
@@ -125,9 +141,10 @@ def add_warehouse(spec):
         ("cctv_1", (-9.25, -5.8, 4.75), (2.15, -3.6, 1.05), 65),
         ("cctv_2", (4.4, -3.2, 3.9), (1.0, -4.2, 0.65), 68),
         ("cctv_3", (10.6, -5.8, 4.65), (2.1, -3.7, 0.90), 70),
+        ("cctv_4", (-8.4, 8.3, 4.85), (3.0, 4.9, 0.85), 71),
     ):
         target_body = world.add_body(name=f"{name}_target", pos=target)
-        if name == "cctv_3":
+        if name in {"cctv_3", "cctv_4"}:
             world.add_camera(name=name, pos=pos, targetbody=target_body.name, fovy=fovy,
                              mode=mujoco.mjtCamLight.mjCAMLIGHT_TARGETBODY)
         else:

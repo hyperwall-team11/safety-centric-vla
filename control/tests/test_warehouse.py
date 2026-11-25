@@ -2,7 +2,7 @@ import numpy as np
 
 from amr import DECK_TOP, PlantAmrs
 from arms import build_plant_with_arms
-from warehouse import AMR, CROSS_X, TRIGGER_X, WALK_END_Y, WALK_START_Y, WAREHOUSE_AMRS, CrossingWorker, add_warehouse
+from warehouse import AMR, CROSS_X, TRIGGER_X, WALK_END_Y, WALK_START_Y, DEMO_WORKERS, WAREHOUSE_AMRS, CrossingWorker, add_warehouse
 
 
 def test_worker_crosses_once_after_amr_reaches_trigger_while_moving():
@@ -99,3 +99,14 @@ def test_warehouse_has_two_loaded_amrs_parked_outside_the_demo_lane():
         assert amrs.odom(parked.robot_id) == (x, y, yaw, 0.0, 0.0)
         pallet = amrs.pallets[parked.pallet_id]
         np.testing.assert_allclose(data.mocap_pos[pallet], (x, y, DECK_TOP))
+
+
+def test_storage_workers_and_camera_are_outside_the_amr_lane():
+    model, data, _ = build_plant_with_arms([], extras=(add_warehouse,))
+    assert len(DEMO_WORKERS) == 4
+    for number, worker in enumerate(DEMO_WORKERS[1:], start=2):
+        assert model.body_mocapid[model.body(f"worker_{number}").id] >= 0
+        assert all(y >= 3.0 for _, y, _ in worker["waypoints"])
+    camera = model.camera("cctv_4").id
+    assert model.cam_bodyid[camera] == 0
+    assert data.cam_xpos[camera][1] > 3.0

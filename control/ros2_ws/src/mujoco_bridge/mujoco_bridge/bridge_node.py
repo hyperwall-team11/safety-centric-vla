@@ -451,8 +451,13 @@ class MujocoBridge(Node):
         if "worker_head" not in {m.body(i).name for i in range(m.nbody)}:
             raise RuntimeError("cctv_renderer:=threejs needs a scene with the worker model")
         # 렌더러가 읽을 정적 장면(scene.json·텍스처). 작업자 1은 브리지의 작업자 스크립트 위치 그대로 둔다
+        workers_cfg = export_scene.WORKERS
+        if self.crossing_amr_id is not None:
+            import warehouse
+
+            workers_cfg = warehouse.DEMO_WORKERS
         meta, self.packer = export_scene.prepare(
-            m, d, Path(data_dir), self.worker or False,
+            m, d, Path(data_dir), self.worker or False, workers_cfg=workers_cfg,
             live_moving_cameras=[s for s in self.threejs_sensors if self.scn.CAMERAS[s][2] != "world"],
         )
         meta.update({"frames": 1, "fps": self.camera_hz, "live": True})
@@ -472,7 +477,7 @@ class MujocoBridge(Node):
     def _pack_threejs_frame(self):
         frame, states = self.packer.pack(self.sim.model, self.sim.data, self.sim.time)
         self.live.set_frame(frame, self.sim.time)
-        # 추가 작업자(worker_2, worker_3 mocap) 실제 위치. 작업자 1의 /sim/worker_pose와 같은 형식
+        # 추가 작업자(worker_2 이후 mocap) 실제 위치. 작업자 1의 /sim/worker_pose와 같은 형식
         if not hasattr(self, "extra_worker_pubs"):
             self.extra_worker_pubs = {i: self.create_publisher(PoseStamped, f"/sim/worker_pose_{i + 1}", 10)
                                       for i, _ in self.packer.extra}
