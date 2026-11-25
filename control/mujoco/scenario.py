@@ -19,11 +19,12 @@ CAMERAS = {
     # sensor_id: (MuJoCo 카메라 이름, ROS 2 토픽 접두어, 탑재 위치)
     "cctv_1": ("cctv_1", "/cctv_1", "world"),
     "cctv_2": ("cctv_2", "/cctv_2", "world"),
+    "cctv_3": ("cctv_3", "/cctv_3", "world"),
     "amr_camera": ("amr_camera", "/amr_camera", "amr_01/base_link"),
     "head_camera": ("head_camera", "/robot/head_camera", "base_link"),
 }
 
-DEFAULT_CAMERAS = tuple(sensor for sensor in CAMERAS if sensor != "amr_camera")
+DEFAULT_CAMERAS = tuple(sensor for sensor in CAMERAS if sensor not in {"cctv_3", "amr_camera"})
 
 # /joint_states로 내보낼 TIAGo 관절 (팔·몸통·머리·그리퍼·바퀴). 보조바퀴(caster)는 수동 관절이라 제외.
 JOINT_STATE_NAMES = [

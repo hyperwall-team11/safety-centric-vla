@@ -119,10 +119,15 @@ def add_warehouse(spec):
     for name, pos, target, fovy in (
         ("cctv_1", (-9.25, -5.8, 4.75), (2.15, -3.6, 1.05), 65),
         ("cctv_2", (4.4, -3.2, 3.9), (1.0, -4.2, 0.65), 68),
+        ("cctv_3", (10.6, -5.8, 4.65), (2.1, -3.7, 0.90), 70),
     ):
         target_body = world.add_body(name=f"{name}_target", pos=target)
-        camera = spec.camera(name)
-        camera.pos, camera.targetbody, camera.fovy = pos, target_body.name, fovy
+        if name == "cctv_3":
+            world.add_camera(name=name, pos=pos, targetbody=target_body.name, fovy=fovy,
+                             mode=mujoco.mjtCamLight.mjCAMLIGHT_TARGETBODY)
+        else:
+            camera = spec.camera(name)
+            camera.pos, camera.targetbody, camera.fovy = pos, target_body.name, fovy
 
     add_plant_amrs(spec, (AMR,))
     chassis = spec.body(f"amr:{AMR.robot_id}")

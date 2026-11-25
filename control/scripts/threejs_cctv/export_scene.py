@@ -209,7 +209,9 @@ def export_static(m, d, out: Path, workers_cfg=WORKERS, robot_camera=False, live
         })
 
     cams = {}
-    for sensor in ("cctv_1", "cctv_2") + ((ROBOT_CAMERA,) if robot_camera else ()) + tuple(live_moving_cameras):
+    fixed = tuple(sensor for sensor in ("cctv_1", "cctv_2", "cctv_3")
+                  if mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_CAMERA, sensor) >= 0)
+    for sensor in fixed + ((ROBOT_CAMERA,) if robot_camera else ()) + tuple(live_moving_cameras):
         cid = m.camera(CAMERAS[sensor][0]).id
         cams[sensor] = {"moving": sensor == ROBOT_CAMERA or sensor in live_moving_cameras,"pos": d.cam_xpos[cid].tolist(), "mat": d.cam_xmat[cid].tolist(),
                         "fovy": float(m.cam_fovy[cid]), "width": 640, "height": 480,
