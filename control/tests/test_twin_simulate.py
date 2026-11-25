@@ -244,7 +244,8 @@ def test_margin_grows_with_prediction_time_and_is_capped():
     assert list(motion.margin_by_geom().values())[0] == ts.WORKER_MARGIN_MAX_M
 
 
-@pytest.mark.parametrize("velocity", [(3.0, 0.0, 0.0), (float("nan"), 0.0, 0.0), (1.0, 0.0)])
+@pytest.mark.parametrize("velocity", [(3.0, 0.0, 0.0), (0.0, 0.0, 3.0), (0.0, 0.0, 0.1),
+                                      (float("nan"), 0.0, 0.0), (1.0, 0.0)])
 def test_invalid_worker_velocity_is_error(velocity):
     res = ts.simulate(_with_velocity(req(), velocity))
     assert res["result"] == "ERROR"

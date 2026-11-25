@@ -280,7 +280,7 @@ python mujoco/twin_simulate.py --request req.json          # 서버 없이 요�
 
 - 예측 시간 τ = (`snapshot_at` − `observed_at`) + 시뮬레이션 시각. 관측 뒤 흐른 시간만큼 이미 이동한 위치에서 시작합니다.
 - 등속 외삽은 방향 전환·정지를 모르므로 여유 반경을 `0.20 + 0.10·τ` m(상한 1.0 m)로 키웁니다. 접촉(`COLLISION`)에는 커진 반경을, `min_worker_distance_m`·`UNSAFE_DISTANCE`에는 예측 위치의 몸 표면 거리를 씁니다.
-- `velocity`가 없는 작업자는 지금처럼 정지·고정 여유 반경입니다(하위 호환). 속도가 2.0 m/s를 넘거나 값이 3개가 아니거나 유한하지 않으면 `ERROR`입니다.
+- `velocity`가 없는 작업자는 지금처럼 정지·고정 여유 반경입니다(하위 호환). 평면 속도가 2.0 m/s를 넘거나, `vz`가 0이 아니거나, 성분이 3개가 아니거나 유한하지 않으면 `ERROR`입니다.
 - 속도 출처(CV가 보고 vs Backend가 스냅샷 연속값으로 추정)는 CV·ONT 협의 대상이며, 계약 13.1절 반영은 Backend·ONT 승인이 필요합니다. MuJoCo ① 정답 경로로 예측 오차를 재는 평가는 아직 없습니다.
 
 한계: 로봇 원기둥과 등속 또는 정지한 작업자로 만든 단순화 모델의 검사입니다. 결과를 안전 보장으로 해석하지 않고, Safety Gate의 `SAFETY_DISTANCE` 판정을 대신하지 않습니다. Backend 호출·`snapshot_id` 계산·`ExecutionLog` 기록은 Backend 작업입니다.

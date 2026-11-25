@@ -132,8 +132,12 @@ class WorkerMotion:
             geom_id = int(model.body_geomadr[body_id])
             velocity = item.get("velocity")
             if velocity is not None:
-                velocity = _vec3(velocity, f"worker {item.get('worker_id')!r}.velocity")[:2]
-                if math.hypot(*velocity) > WORKER_MAX_SPEED_MPS:
+                worker_id = item.get("worker_id")
+                vx, vy, vz = _vec3(velocity, f"worker {worker_id!r}.velocity")
+                if vz != 0.0:
+                    raise SimulationError(f"worker {worker_id!r} velocity must have vz = 0")
+                velocity = (vx, vy)
+                if math.hypot(vx, vy) > WORKER_MAX_SPEED_MPS:
                     raise SimulationError(f"worker {item.get('worker_id')!r} speed exceeds "
                                           f"{WORKER_MAX_SPEED_MPS} m/s")
             self.workers.append({
