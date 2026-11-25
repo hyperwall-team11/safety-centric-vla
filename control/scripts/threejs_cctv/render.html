@@ -21,11 +21,13 @@ import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import { warehouseFloorJoints, warehouseMaterial } from './warehouse_materials.js';
 import { buildProp, floorTexture, backdrop, applyAssets, pbr, M, MODELS } from './props.js';
 
 const W = 640, H = 480;
 const ROS = new URLSearchParams(location.search).has('ros');   // 브리지 실시간 렌더 (#55): 프레임을 /ros/frame에서 받는다
 const meta = await (await fetch('/data/scene.json')).json();
+const presentation = meta.scene === 'warehouse_demo';
 let frames = ROS ? new Float32Array(0) : new Float32Array(await (await fetch('/data/frames.bin')).arrayBuffer());
 const assets = await (await fetch('/assets/manifest.json')).json();
 // prop_* 대신 쓸 저장소 내 glTF 모델 (models/, 출처·라이선스는 README)
@@ -56,9 +58,10 @@ const hdr = await new RGBELoader().loadAsync('/assets/' + assets.hdri);
 hdr.mapping = THREE.EquirectangularReflectionMapping;
 scene.background = hdr; scene.environment = hdr;
 if (!location.search.includes("norot")) { scene.backgroundRotation.set(-Math.PI / 2, 0, 0); scene.environmentRotation.set(-Math.PI / 2, 0, 0); }
-if (location.search.includes("nofog")) scene.fog = null;
+
 scene.backgroundIntensity = 1.0; scene.environmentIntensity = 1.1;
-scene.fog = new THREE.Fog(0xc4c9cc, 30, 70);
+scene.fog = presentation || location.search.includes('nofog') ? null : new THREE.Fog(0xc4c9cc, 30, 70);
+if (presentation) { scene.background = new THREE.Color(0x30363a); scene.environmentIntensity = 0.64; }
 
 await applyAssets(assets, '/assets/');
 
@@ -108,7 +111,7 @@ for (const g of meta.geoms) {
       let mat;
       if (g.type === 0) {
         floorSize = [sx, sy];
-        mat = pbr('floor', sx / 2, sy / 2, { color: new THREE.Color(2.6, 2.55, 2.45) });   // 텍스처가 어두워 밝기를 올린다
+        mat = (presentation && warehouseMaterial(g.name, g.size)) || pbr('floor', sx / 2, sy / 2, { color: new THREE.Color(2.6, 2.55, 2.45) });   // 텍스처가 어두워 밝기를 올린다
         obj = new THREE.Group();
         if (bakeTex) mat = new THREE.MeshBasicMaterial({ map: bakeTex });
         const base = new THREE.Mesh(geo, mat); base.receiveShadow = !bakeTex; obj.add(base);
@@ -117,13 +120,15 @@ for (const g of meta.geoms) {
           sh.position.z = 0.004; sh.receiveShadow = true; obj.add(sh);
         }
         const paintMat = new THREE.MeshStandardMaterial({
-          map: floorTexture(sx, sy, meta.zone_rects), transparent: true, roughness: 0.75,
+          map: presentation ? warehouseFloorJoints(sx, sy) : floorTexture(sx, sy, meta.zone_rects), transparent: true, roughness: 0.75,
           polygonOffset: true, polygonOffsetFactor: -2 });
         paintMat.name = 'floor_paint'; window.floorPaint = paintMat.map;
         const paint = new THREE.Mesh(geo, paintMat);
         paint.position.z = 0.002; paint.receiveShadow = true; paint.visible = !bakeTex; obj.add(paint);
       } else {
-        if (g.name.startsWith('table_')) mat = g.name.endsWith('top') ? M.galv : M.darkSteel;   // 철제 작업대
+        const material = presentation && warehouseMaterial(g.name, g.size);
+        if (material) mat = material;
+        else if (g.name.startsWith('table_')) mat = g.name.endsWith('top') ? M.galv : M.darkSteel;   // 철제 작업대
         else mat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(...g.rgba.slice(0, 3), THREE.SRGBColorSpace), roughness: 0.4, metalness: 0.15 });
         obj = new THREE.Mesh(geo, mat); obj.castShadow = true; obj.receiveShadow = true;
       }
@@ -135,8 +140,10 @@ for (const g of meta.geoms) {
   geomObjs.push(obj);
 }
 
-const bd = backdrop(...floorSize); scene.add(bd); addMaskable(bd);
-if (bakeTex) bd.traverse(o => { if (o.isMesh) o.castShadow = false; });
+if (!presentation) {
+  const bd = backdrop(...floorSize); scene.add(bd); addMaskable(bd);
+  if (bakeTex) bd.traverse(o => { if (o.isMesh) o.castShadow = false; });
+}
 
 // glTF 소품 (작업자 이동 범위 밖 가장자리에만 둔다: MuJoCo에 없는 물체가 작업자를 가리면 안 되므로)
 const gltf = new GLTFLoader();
@@ -162,7 +169,7 @@ const WAREHOUSE_DECOR = [
   ['korean_fire_extinguisher_01', [[2.2, 8.6, 0]]],
   ['metal_trash_can', [[13.0, -8.5, 0]]],
 ];
-const DECOR = { 'warehouse_scene.xml': WAREHOUSE_DECOR }[meta.scene] ?? PLANT_DECOR;
+const DECOR = presentation ? [] : { 'warehouse_scene.xml': WAREHOUSE_DECOR }[meta.scene] ?? PLANT_DECOR;
 for (const [name, places] of DECOR) {
   if (!assets.models[name]) continue;
   const src = (await gltf.loadAsync('/assets/' + assets.models[name])).scene;
@@ -213,24 +220,37 @@ sun.position.set(-9, -12, 18); sun.target.position.set(1, 0, 0);
 sun.castShadow = true; sun.shadow.mapSize.set(4096, 4096);
 Object.assign(sun.shadow.camera, { left: -20, right: 20, top: 20, bottom: -20, near: 1, far: 50 });
 sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.02; sun.shadow.radius = 2;
+if (presentation) {
+  sun.color.setHex(0xf1f5ff);
+  sun.intensity = 1.7;
+  sun.position.set(-2, -3.7, 4.30);
+  sun.target.position.set(-0.5, -4.1, 0);
+  Object.assign(sun.shadow.camera, { left: -8, right: 8, top: 6, bottom: -6, near: 0.12, far: 15 });
+  sun.shadow.camera.updateProjectionMatrix();
+  for (const x of [-5, -2.5, 0, 2.5, 5]) {
+    const fill = new THREE.PointLight(0xfff5df, 12, 8);
+    fill.position.set(x, -4.0, 4.32);
+    scene.add(fill);
+  }
+}
 scene.add(sun, sun.target);
 
 // 후처리: GTAO(구석 그림자) → 톤매핑 → CCTV 효과(노이즈·비네팅·약한 색 바램). 이후 JPEG 압축을 한 번 거친다.
 const CCTV = {
-  uniforms: { tDiffuse: { value: null }, seed: { value: 0 }, res: { value: new THREE.Vector2(W, H) } },
+  uniforms: { tDiffuse: { value: null }, seed: { value: 0 }, res: { value: new THREE.Vector2(W, H) }, clarity: { value: presentation ? 1 : 0 } },
   vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
-  fragmentShader: `uniform sampler2D tDiffuse; uniform float seed; uniform vec2 res; varying vec2 vUv;
+  fragmentShader: `uniform sampler2D tDiffuse; uniform float seed; uniform vec2 res; uniform float clarity; varying vec2 vUv;
     float h(vec2 p){ return fract(sin(dot(p, vec2(12.9898,78.233)) + seed) * 43758.5453); }
     void main(){
       vec2 px = 1.0 / res;
       vec3 c = texture2D(tDiffuse, vUv).rgb;
       vec3 b = (texture2D(tDiffuse, vUv + vec2(px.x,0.)).rgb + texture2D(tDiffuse, vUv - vec2(px.x,0.)).rgb
               + texture2D(tDiffuse, vUv + vec2(0.,px.y)).rgb + texture2D(tDiffuse, vUv - vec2(0.,px.y)).rgb) * 0.25;
-      c = mix(c, b, 0.35);                                        // 저가 렌즈의 약한 흐림
+      c = mix(c, b, mix(0.35, 0.06, clarity));                                        // 저가 렌즈의 약한 흐림
       float l = dot(c, vec3(0.299,0.587,0.114));
       c = mix(vec3(l), c, 0.85) * vec3(1.0, 1.0, 1.03);           // 채도 감소·약한 푸른 기
-      vec2 d = vUv - 0.5; c *= 1.0 - 0.35 * dot(d, d) * 2.0;      // 비네팅
-      c += (h(vUv * res) - 0.5) * 0.045;                          // 센서 노이즈
+      vec2 d = vUv - 0.5; c *= 1.0 - mix(0.35, 0.15, clarity) * dot(d, d) * 2.0;      // 비네팅
+      c += (h(vUv * res) - 0.5) * mix(0.045, 0.010, clarity);                          // 센서 노이즈
       gl_FragColor = vec4(c, 1.0);
     }`,
 };
@@ -408,7 +428,7 @@ async function rosLoop() {
       for (const c of camNames) {
         cctvPasses[c].uniforms.seed.value = (Number(simTime) * 70.1 + c.length) % 100;
         composers[c].render();
-        blobs.push(jpegBlob(renderer.domElement, 0.72));
+        blobs.push(jpegBlob(renderer.domElement, presentation ? 0.9 : 0.72));
       }
       lap('render');
       const jpegs = await Promise.all(blobs);

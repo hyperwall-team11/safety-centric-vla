@@ -106,7 +106,7 @@ def add_warehouse(spec):
     box("warehouse_shutter_header", [6.10, -4.0, 2.98], [0.12, 1.55, 0.11], STEEL, False)
 
     for name, pos, target, fovy in (
-        ("cctv_1", (-6.2, -5.55, 3.45), (0.25, -3.93, 0.82), 67),
+        ("cctv_1", (-6.45, -5.45, 3.65), (0.05, -3.93, 0.70), 69),
         ("cctv_2", (4.4, -3.2, 3.9), (1.0, -4.2, 0.65), 68),
     ):
         target_body = world.add_body(name=f"{name}_target", pos=target)
