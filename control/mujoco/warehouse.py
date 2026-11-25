@@ -103,6 +103,32 @@ def add_warehouse(spec):
                 box(f"{prefix}_box_{tier}_{slot}", [x+dx, y, z+0.105+dz], [width, depth, dz],
                     [0.68 + 0.04 * (slot % 2), 0.49, 0.31, 1])
 
+    # 후방 랙 사이 지름길은 쏟아진 적재물로 막혀 있다.
+    for index, (x, y, z, hx, hy, hz, yaw) in enumerate((
+        (0.50, 6.94, 0.24, 0.35, 0.31, 0.24, 0.21),
+        (1.10, 7.03, 0.22, 0.38, 0.27, 0.22, -0.28),
+        (1.76, 6.92, 0.25, 0.34, 0.31, 0.25, 0.30),
+        (0.79, 6.97, 0.63, 0.27, 0.24, 0.18, -0.58),
+        (1.43, 6.90, 0.62, 0.24, 0.24, 0.18, 0.43),
+        (1.63, 7.55, 0.15, 0.18, 0.25, 0.15, -0.48),
+        (0.73, 7.56, 0.13, 0.23, 0.18, 0.13, 0.62),
+    )):
+        box(f"spill_box_{index}", [x, y, z], [hx, hy, hz], [0.68, 0.49, 0.31, 1],
+            quat=[math.cos(yaw / 2), 0, 0, math.sin(yaw / 2)])
+    # 비스듬히 남은 빈 팔레트. 포크가 들어갈 틈이 드러나도록 판재와 받침목을 분리한다.
+    pallet_yaw = -0.36
+    pallet_quat = [math.cos(pallet_yaw / 2), 0, 0, math.sin(pallet_yaw / 2)]
+    for index, offset in enumerate((-0.27, -0.09, 0.09, 0.27)):
+        x = 1.0 - offset * math.sin(pallet_yaw)
+        y = 7.95 + offset * math.cos(pallet_yaw)
+        box(f"spill_pallet_slat_{index}", [x, y, 0.10], [0.40, 0.065, 0.022],
+            [0.45, 0.30, 0.17, 1], quat=pallet_quat)
+    for index, offset in enumerate((-0.27, 0.27)):
+        x = 1.0 + offset * math.cos(pallet_yaw)
+        y = 7.95 + offset * math.sin(pallet_yaw)
+        box(f"spill_pallet_block_{index}", [x, y, 0.039], [0.07, 0.33, 0.039],
+            [0.36, 0.22, 0.12, 1], quat=pallet_quat)
+
     for y in (-2.8, -5.2):
         box(f"lane_{y}", [0, y, 0.006], [5.0, 0.033, 0.005], YELLOW, False)
     for stripe in range(7):
