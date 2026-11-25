@@ -213,7 +213,6 @@ def test_missing_or_mismatched_effort_is_reported_as_unknown(arm):
     assert joints["velocities"] is None and joints["efforts"] is None
 
 
-
 def test_mismatched_position_count_clears_previous_measurements(arm):
     arm.update_joints([0.2, -0.1], [0.5, -0.25], [12.0, -3.0])
 
@@ -223,3 +222,15 @@ def test_mismatched_position_count_clears_previous_measurements(arm):
     assert arm.q_measured is None
     assert joints["velocities"] is None
     assert joints["efforts"] is None
+
+
+
+def test_joint_telemetry_recovers_after_invalid_position_count(arm):
+    arm.update_joints([0.2, -0.1], [0.5, -0.25], [12.0, -3.0])
+    arm.update_joints([])
+    arm.update_joints([0.3, -0.2], [0.6, -0.35], [13.0, -4.0])
+
+    joints = arm.state(0.0)["joints"]
+    assert joints["positions"] == [0.3, -0.2]
+    assert joints["velocities"] == [0.6, -0.35]
+    assert joints["efforts"] == [13.0, -4.0]
