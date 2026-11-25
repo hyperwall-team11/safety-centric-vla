@@ -18,7 +18,7 @@
 - 시간은 UTC ISO 8601 문자열로 반환한다.
 - 거리 단위는 m, 속도 단위는 m/s이다.
 - ID는 문자열이다. 서버 생성 ID는 `task-`, `proposal-`, `hazard-`, `log-` 접두사와 UUID를 사용한다.
-- 기본 개발 모드에서는 인증이 비활성화된다. `BACKEND_API_TOKEN_CONFIG`를 설정하면 역할별 Bearer API 토큰 인증을 적용한다. 역할별 행동 허용 규칙은 아직 구현하지 않았다.
+- 기본 개발 모드에서는 인증이 비활성화된다. `BACKEND_API_TOKEN_CONFIG`를 설정하면 역할별 Bearer API 토큰 인증을 적용한다. CV 안전 확인은 `SENSOR|CV`, 관리자 위험 해제와 RESUME 제안 생성은 `OPERATOR|ADMIN` 역할만 허용한다.
 - `/api/v1` 접두사는 통합 객체 조회 API에만 적용되어 있다.
 - 기본 저장소는 인메모리이다. `BACKEND_STORE=redis`를 지정하면 Redis에 상태를 영속 저장한다.
 - Redis 모드에서 연결, 분산 잠금, 스냅샷 읽기·쓰기가 실패하면 fail-closed로 `503`을 반환한다. 저장은 Lua 스크립트로 잠금 토큰 비교와 스냅샷 교체를 원자적으로 수행하므로 만료되거나 재획득된 잠금은 저장에 사용할 수 없다. 일반적인 읽기 실패나 잠금 경합은 E-Stop을 발행하지 않으며, 실행 명령 발행 후 상태 커밋이 실패한 경우에만 물리 상태와 Backend 상태 불일치를 막기 위해 E-Stop을 발행한다.
@@ -80,7 +80,7 @@
 
 `WS /ws/state`는 비브라우저 클라이언트의 `Authorization` 헤더 또는 브라우저의 WebSocket subprotocol `bearer.<base64url(token)>`을 받는다. 브라우저는 함께 `state.v1`을 요청하고 서버는 인증 성공 시 `state.v1`만 선택한다. 토큰 query parameter는 URL·로그 노출을 막기 위해 지원하지 않는다. 인증 실패 시 연결 전 WebSocket code `4401`로 닫는다.
 
-현재 인증 계층은 검증된 요청자의 `subject`와 `role`을 HTTP `request.state.auth_principal` 또는 WebSocket `state.auth_principal`에 전달한다. CRITICAL 해제·RESUME 같은 행동별 허용 역할과 감사 로그 요청자 기록은 #71의 ONT 권한 규칙에서 적용한다. 운영 콘솔의 토큰 입력 UI와 역할별 버튼 제어도 해당 규칙 확정 뒤 연결하며, 현재 인증 활성화 시험은 Swagger UI 또는 별도 API 클라이언트를 사용한다.
+인증 계층은 검증된 요청자의 `subject`와 `role`을 HTTP `request.state.auth_principal` 또는 WebSocket `state.auth_principal`에 전달한다. CV 안전 확인은 `SENSOR|CV`, 관리자 위험 해제와 RESUME 제안 생성은 `OPERATOR|ADMIN`만 호출할 수 있다. 개발 모드에서는 호환성을 위해 역할 검사를 생략한다. React 운영 콘솔은 토큰을 sessionStorage에만 저장해 HTTP와 WebSocket에 전달하고 역할에 따라 관리자 버튼을 제어한다.
 
 ### 2.2 통합 객체 조회
 
@@ -368,7 +368,7 @@ TaskOrder 기반 생성기와 외부 VLA 직접 등록은 현재 `MOVE_TO`와 `M
 - TaskOrder가 `RUNNING`, Robot이 `MOVING`인 일관된 실행 상태에서만 결과를 반영한다. E-Stop 등으로 상태가 바뀐 뒤 도착한 지연 결과는 `409`로 거절해 안전 상태를 덮어쓰지 않는다.
 - 성공 본문은 `{"status":"SUCCEEDED","detail":"목적지 도착"}`이며 `reason_code`를 허용하지 않는다.
 - 실패 본문은 `{"status":"FAILED","reason_code":"UNSUPPORTED|TIMEOUT|HW_ERROR","detail":"선택 설명"}`이며 `reason_code`가 필수다.
-- 성공 시 Proposal `SUCCEEDED`, TaskOrder `COMPLETED`, Robot `IDLE`, `COMPLETE` 로그로 전이한다.
+- 일반 행동 성공 시 Proposal `SUCCEEDED`, TaskOrder `COMPLETED`, Robot `IDLE`, `COMPLETE` 로그로 전이한다. `RESUME` 성공은 Robot `IDLE`, TaskOrder `PLANNING`으로 전이해 중단된 작업의 다음 Proposal을 다시 생성하게 한다.
 - `UNSUPPORTED`는 Proposal `FAILED`, TaskOrder `PLANNING`, Robot `HOLD`로 바꿔 새 Proposal 재계획을 허용한다.
 - `TIMEOUT`은 Proposal·TaskOrder `FAILED`, Robot `HOLD`로 전이한다.
 - `HW_ERROR`는 Proposal·TaskOrder `FAILED`, Robot `ERROR`로 전이한다.
@@ -467,11 +467,11 @@ ActionProposal: PROPOSED ── evaluate 통과 ──> APPROVED
                 EXECUTING ── 실패 보고 ──> FAILED
 ```
 
-대상 물체가 있는 운반 TaskOrder는 여러 ActionProposal을 순차 실행한다. Task Executor는 등록된 PhysicalObject와 성공한 Proposal 이력을 보고 다음 `MOVE_TO` 또는 `MANIPULATE`를 하나씩 자동 생성한다. OpenVLA 조작 Proposal과 Navigation Planner의 `MOVE_TO` Proposal을 같은 `task_id`로 직접 등록하는 방식도 지원하지만, 활성 상태(`PROPOSED`, `APPROVED`, `EXECUTING`, `HELD`)의 Proposal은 TaskOrder당 하나만 허용한다. 물체 접근, `PICK`, 목적지 `MOVE_TO` 성공은 개별 Proposal만 `SUCCEEDED`로 끝내고 TaskOrder를 `PLANNING`으로 돌린다. 최종 `MANIPULATE/PLACE` 성공이 전체 TaskOrder를 `COMPLETED`로 만든다.
+대상 물체가 있는 운반 TaskOrder는 여러 ActionProposal을 순차 실행한다. Task Executor는 등록된 PhysicalObject와 성공한 Proposal 이력을 보고 다음 `MOVE_TO` 또는 `MANIPULATE`를 하나씩 자동 생성한다. OpenVLA 조작 Proposal과 Navigation Planner의 `MOVE_TO` Proposal을 같은 `task_id`로 직접 등록하는 방식도 지원하지만, 처리 중 상태(`PROPOSED`, `APPROVED`, `EXECUTING`)의 Proposal은 TaskOrder당 하나만 허용한다. `HELD`는 정지 이력으로 남되 RESUME 성공 뒤 다음 단계 생성을 막지 않는다. 물체 접근, `PICK`, 목적지 `MOVE_TO` 성공은 개별 Proposal만 `SUCCEEDED`로 끝내고 TaskOrder를 `PLANNING`으로 돌린다. 최종 `MANIPULATE/PLACE` 성공이 전체 TaskOrder를 `COMPLETED`로 만든다.
 
-ResumeTask 전이는 안전 해제 후 `RESUME` Proposal의 평가·실행·성공 보고로 구현했다. 실제 ROS 2
-어댑터 결과 토픽 연결은 아직 구현하지 않았으며, 현재 결과 API는 Mock adapter 및 연동 시험용
-HTTP 경계다.
+ResumeTask 전이는 안전 해제 후 `RESUME` Proposal의 평가·실행·성공 보고로 구현했다. ROS 2
+모드에서는 기존 dispatcher와 CTL 결과 이벤트 경계를 그대로 사용하며, Mock 연동 시험에서는
+HTTP 결과 API로 같은 상태 전이를 검증한다.
 
 ## 5. 기준 문서와 현재 구현의 차이
 
@@ -504,4 +504,4 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q app tests
 ```
 
-OpenAPI 경로 수는 22개, operation 수는 27개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.
+OpenAPI 경로 수는 25개, operation 수는 31개여야 한다. 코드 변경으로 이 명세와 OpenAPI가 달라지면 같은 PR에서 문서를 함께 수정한다.

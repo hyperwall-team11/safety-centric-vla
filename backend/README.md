@@ -49,7 +49,9 @@ HTTP 요청은 `Authorization: Bearer <평문 토큰>` 헤더를 사용합니다
 
 브라우저 WebSocket은 임의의 `Authorization` 헤더를 지정할 수 없으므로 `state.v1`과 `bearer.<base64url(평문 토큰)>` 두 subprotocol을 보냅니다. 서버는 토큰을 검증한 뒤 `state.v1`만 선택합니다. 토큰이 URL·접속 로그에 남을 수 있는 query parameter 인증은 지원하지 않습니다.
 
-인증이 활성화되어도 운영 콘솔 정적 화면은 열리지만, 현재 콘솔에는 토큰 입력 UI가 없으므로 보호 API 호출은 Swagger UI의 **Authorize** 또는 별도 API 클라이언트로 시험합니다. 콘솔 로그인 UI와 역할별 버튼 제어는 #71의 인가 규칙 확정 뒤 연결합니다.
+인증이 활성화되면 React 운영 콘솔 상단의 **관리자 인증 필요**에서 토큰을 입력할 수 있습니다. 토큰은 브라우저 sessionStorage에만 저장되며 HTTP `Authorization`과 WebSocket subprotocol에 전달됩니다. CV 안전 확인은 `SENSOR` 또는 `CV`, 관리자 위험 해제와 RESUME 제안은 `OPERATOR` 또는 `ADMIN` 역할만 허용합니다.
+
+CRITICAL 작업자 침입 복귀는 `CV 2초 안전 확인 → ACKNOWLEDGED → 관리자 해제 → RESUME 제안 평가·실행 → CTL 결과 → Task 재계획` 순서입니다. 위험 해제만으로 로봇이 움직이지 않으며, RESUME도 기존 규칙 게이트를 통과해야 ROS 2로 전달됩니다.
 
 운영 콘솔에서는 별도 프론트엔드 빌드 없이 다음 흐름을 확인할 수 있습니다.
 
