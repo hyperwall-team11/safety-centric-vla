@@ -36,6 +36,11 @@ button:not(.camera){border:1px solid #48636a;border-radius:5px;padding:8px 12px;
   </div>
   <div class="card">
     <div class="heading"><h2>안전 이벤트</h2><button id="resolve" disabled>운영자 확인 및 위험 해제</button></div>
+    <p>
+      <button id="inspect-fall" type="button">CCTV 04 낙상자 점검</button>
+      <a id="fall-preview" href="/fall-preview.jpg" target="_blank" rel="noopener" hidden>검출 프레임</a>
+    </p>
+    <p id="fall-status" role="status" class="muted"></p>
     <p id="odom" class="muted">AMR 위치 수신 대기 중</p>
     <ol id="events"></ol>
   </div>
@@ -47,6 +52,7 @@ const cameras = [...document.querySelectorAll('.camera')];
 const video = 'http://127.0.0.1:8081';
 let currentDetection = '', busy = false, ready = false;
 const eventLog = new Map();
+let inspectingFall = false;
 
 for (const camera of cameras) {
   camera.querySelector('img').src = video + '/stream/' + camera.dataset.camera;
@@ -95,8 +101,13 @@ async function refresh() {
       cameras[1].querySelector('img').src = '/detection.jpg?t=' + encodeURIComponent(currentDetection);
     }
     if (state.first_detection_at) addEvent('detection', '작업자 검출 · CCTV 02', state.first_detection_at);
+    if (!inspectingFall && state.fall) showFall(state.fall);
     for (const hazard of hazards) {
-      addEvent(hazard.hazard_id, '위험 판정 · 작업자 진입', hazard.detected_at);
+      if (hazard.hazard_type === 'UNKNOWN') {
+        addEvent(hazard.hazard_id, '위험 발견 · 후방 통로 작업자 낙상 · 경고', hazard.detected_at);
+      } else if (hazard.hazard_type === 'WORKER_INTRUSION') {
+        addEvent(hazard.hazard_id, '위험 판정 · 작업자 진입', hazard.detected_at);
+      }
     }
     for (const event of events) {
       if (event.kind === 'estop') addEvent(event.at, '정지 명령 · ROS E-Stop', event.at);
@@ -104,7 +115,7 @@ async function refresh() {
       if (event.kind === 'release') addEvent(event.at, '운영자 확인 · 위험 신호 해제', event.at);
     }
     if (odom) $('odom').textContent = `${state.adapter ?? '대기'}  ·  ${odom.speed.toFixed(3)} m/s  ·  x=${odom.x.toFixed(2)} m`;
-    $('resolve').disabled = busy || !state.worker_clear || !hazards.some(h => h.status === 'OPEN');
+    $('resolve').disabled = busy || !state.worker_clear || !hazards.some(h => h.status === 'OPEN' && h.hazard_type === 'WORKER_INTRUSION');
     showEvents();
   } catch {
     ready = false;
@@ -127,6 +138,30 @@ document.querySelector('form').onsubmit = async (event) => {
     $('result').textContent = `해석된 작업 ${parsed.action_type} · ${parsed.target_robot_id}\n목적지 ${parsed.destination.zone_id}\n사전 검증 ${evaluated.status}${executed ? ' · 출발 명령 전달' : ''}` + relevant.map(rule => '\n' + rule.reason).join('');
   } catch (error) { $('result').textContent = error.message; }
   finally { busy = false; }
+};
+
+function showFall(result) {
+  const ratio = `${result.positive_frames}/${result.frame_count} 프레임`;
+  const found = result.positive_frames > 0;
+  $('fall-status').textContent = result.hazard_id ? `통로 차단 경고 등록 · ${ratio}에서 낙상자 발견` :
+    found ? `낙상자 관측 · ${ratio} · 위험 등록 기준 미달` : '낙상자 검출 없음';
+  $('fall-preview').hidden = false;
+  if (found) addEvent('fall-' + result.detected_at, '낙상자 발견 · CCTV 04', result.detected_at);
+}
+
+$('inspect-fall').onclick = async () => {
+  inspectingFall = true;
+  $('inspect-fall').disabled = true;
+  cameras.find(camera => camera.dataset.camera === 'cctv_4').click();
+  $('fall-status').textContent = 'CCTV 04 영상 5장을 Florence-2로 점검하는 중';
+  try {
+    showFall(await api('/inspect-fall', {}));
+    showEvents();
+  } catch (error) { $('fall-status').textContent = error.message; }
+  finally {
+    inspectingFall = false;
+    $('inspect-fall').disabled = false;
+  }
 };
 
 $('resolve').onclick = async () => {

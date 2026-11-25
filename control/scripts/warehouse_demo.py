@@ -19,6 +19,7 @@ from std_msgs.msg import String
 from safety_control.interfaces import ESTOP_QOS, ESTOP_TOPIC, state_topic
 
 from warehouse import AMR, CROSSING_ENTRY, WALK_END_Y
+from warehouse_fall import FALL_ZONE, FALL_ZONE_ID, FallInspection
 
 CROSSING = "횡단진입구역"
 DESTINATION = "검사스테이션"
@@ -55,6 +56,7 @@ def register(base):
                      "velocity": {"x": 0, "y": 0, "z": 0},
                      "motion_limits": {"max_speed": 0.4, "max_acceleration": 0.5}}),
         ("/zones", zone(CROSSING, "KEEP_OUT", CROSSING_ENTRY)),
+        ("/zones", zone(FALL_ZONE_ID, "TRANSIT", FALL_ZONE)),
         ("/zones", zone("자재공급구역", "WORK", [(-4.8, -4.7), (-3.2, -4.7), (-3.2, -3.3), (-4.8, -3.3)])),
         ("/zones", zone(DESTINATION, "WORK", [(3.2, -4.7), (4.8, -4.7), (4.8, -3.3), (3.2, -3.3)],
                         (*AMR.cell_dock[:2], 0.0))),
@@ -174,6 +176,8 @@ def fresh_detection(records):
 
 def make_handler(args, telemetry):
     command_lock = threading.Lock()
+    fall_lock = threading.Lock()
+    fall = FallInspection(args.directory, args.backend, args.video)
     first_detection_at = None
 
     class Handler(BaseHTTPRequestHandler):
@@ -198,6 +202,8 @@ def make_handler(args, telemetry):
                     return self.send_content((args.directory / "detection.jpg").read_bytes(), "image/jpeg")
                 except FileNotFoundError:
                     return self.send_json({"error": "검출 영상 준비 중"}, 404)
+            if path == "/fall-preview.jpg" and fall.latest:
+                return self.send_content(fall.latest[1].read_bytes(), "image/jpeg")
             if path != "/status":
                 return self.send_json({"error": "경로 없음"}, 404)
             try:
@@ -221,6 +227,7 @@ def make_handler(args, telemetry):
                     first_detection_at = next((r["processed_at_utc"] for r in records if r.get("people")), None)
                 state["first_detection_at"] = first_detection_at
                 state["detection"] = records[-1] if records else None
+                state["fall"] = fall.latest[0] if fall.latest else None
                 state["hazards"] = request(args.backend, "/hazards")
                 return self.send_json(state)
             except (ValueError, OSError) as exc:
@@ -231,13 +238,16 @@ def make_handler(args, telemetry):
             if (self.headers.get("Origin") not in local_origins | {None}
                     or self.headers.get_content_type() != "application/json"):
                 return self.send_json({"error": "발표 화면에서 JSON 요청을 보내세요."}, 403)
-            if not command_lock.acquire(blocking=False):
+            lock = fall_lock if self.path == "/inspect-fall" else command_lock
+            if not lock.acquire(blocking=False):
                 return self.send_json({"error": "이전 요청 처리 중"}, 409)
             try:
                 size = int(self.headers.get("Content-Length", "0"))
                 if not 0 < size <= 4096:
                     raise ValueError("요청 크기가 올바르지 않습니다.")
                 payload = json.loads(self.rfile.read(size))
+                if self.path == "/inspect-fall":
+                    return self.send_json(fall.run())
                 if self.path == "/command":
                     if telemetry.snapshot()["adapter"] != "IDLE" or not fresh_detection(detection_records(args.directory / "detections.jsonl")):
                         raise ValueError("어댑터 또는 검출기가 준비되지 않았습니다.")
@@ -267,7 +277,7 @@ def make_handler(args, telemetry):
             except (ValueError, OSError, KeyError) as exc:
                 return self.send_json({"error": str(exc)}, 422)
             finally:
-                command_lock.release()
+                lock.release()
 
     return Handler
 
