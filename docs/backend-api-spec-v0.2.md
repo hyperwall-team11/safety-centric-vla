@@ -390,6 +390,8 @@ TaskOrder 기반 생성기와 외부 VLA 직접 등록은 현재 `MOVE_TO`와 `M
 
 `POST /hazards/{hazard_id}/resolve` 요청은 `{"resolved_by":"SENSOR_AUTO|OPERATOR"}`이다. `WARNING`은 두 주체 모두 해제할 수 있지만 `CRITICAL`은 `OPERATOR`만 허용한다. 성공 시 `status=RESOLVED`, `resolved_at`, `resolved_by`를 기록하며, 이미 해제된 이벤트나 허용되지 않은 자동 해제는 `409`를 반환한다. 인증 계층은 아직 없으므로 이 값은 호출자가 명시하는 감사 필드다.
 
+발표용 창고는 CCTV 04에서 발견한 낙상자를 `UNKNOWN / WARNING` 위험으로 등록합니다. `zone_id`는 `후방작업통로`이며, ROS 시각에 연결된 관측 ID를 보냅니다. 관련 로봇 ID를 비워 별도 보행 구역 경고로 표시합니다. [시연 절차](warehouse-presentation.md)
+
 실행 중 로봇 즉시 정지: `OPEN` `CRITICAL` HazardEvent와 연결된(`related_robot_ids`에 있거나 Task 목적지 Zone이 `zone_id`와 같은) 로봇 중 `EXECUTING` Proposal을 가진 로봇이 있으면, 등록 직후 `/safety/estop`에 `{"active":true,"triggered_by":"RULE_ENGINE","issued_at":...}`를 발행한다. 상태 전이(Robot `ESTOP`, Proposal·Task `HELD`)는 CTL이 보내는 `ESTOP` 이벤트로 반영한다. 정지를 발행하게 한 HazardEvent가 모두 해제되면 `{"active":false}`를 발행하지만, 이는 정지 신호만 풀며 로봇 복귀는 승인된 `RESUME`으로만 한다. 발행은 저장소 잠금 밖에서 하되 전용 잠금으로 직렬화하고 발행 직전 저장소 상태를 다시 읽어 마지막 발행이 항상 마지막 상태와 같으며, 발행에 실패해도 등록은 성공하고 이후 평가·실행 직전 재검증 차단은 그대로 적용된다. `/safety/estop`은 전역 토픽이므로 연결된 어댑터가 모두 정지한다.
 
 ### 3.7 SafetyRule과 ExecutionLog
@@ -465,7 +467,7 @@ ResumeTask 전이와 실제 ROS 2 어댑터 결과 토픽 연결은 아직 구�
 | 영속 저장 | Redis 또는 ROS 2 상태 연동 | 인메모리 기본, Redis 스냅샷·분산 잠금 선택 가능 |
 | 판정 시간 | `evaluated_in_ms` 기록 | 평가·실행 직전 재평가 로그에 구현 |
 | Observation 등록 | CV가 Observation을 제출하고 ONT가 병합해 HazardEvent 생성 | 미구현. CV가 `PUT /sensors/{sensor_id}`, `PUT /workers/snapshot`, `POST /hazards`로 직접 갱신 |
-| HazardEvent 즉시 정지 | `CRITICAL` 등록 시 실행 중 로봇 `TriggerEStop` | 미구현. 이후 평가와 실행 직전 재검증만 차단 |
+| HazardEvent 즉시 정지 | `CRITICAL` 등록 시 실행 중 로봇 `TriggerEStop` | 실행 중인 관련 로봇이 있으면 ROS `/safety/estop` 발행(3.6절) |
 | 사전 시뮬레이션(`COLLISION`) | 규칙 통과 후보를 MuJoCo ② 서비스로 검증, 시간 초과·미가동 시 거부 | `BACKEND_TWIN_SIMULATION_ENABLED=1`일 때 `MOVE_TO` 호출·Fail-Closed·`snapshot_id` 재검증 구현(3.9절). 기본 비활성화, 시간 제한은 #50 확정 전 잠정값, `MANIPULATE`는 계약 확정 전까지 차단 |
 | 토크·관절 속도 검사 | 스키마 미결 | 미구현 |
 | 스키마 v1.1 선택 필드 | 모델에서 선택적으로 허용 | Robot, Sensor, Observation, Worker, Zone, SafetyRule, HazardEvent, ExecutionLog에 반영 |
