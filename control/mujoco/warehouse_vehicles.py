@@ -11,6 +11,8 @@ TUG_CENTER = (-7.35, 5.2)
 TUG_RADIUS = 2.2
 TUG_PERIOD = 36.0
 HITCH_OFFSET = 0.43
+FORK_MIN_HEIGHT, FORK_MAX_HEIGHT = 0.03, 0.28
+FORK_LIFT_RATE = 0.125  # m/s, 시연용 포크 승강 속도
 SUPPLY_STOPS = (0.0, 18.0)
 SUPPLY_TABLES = ((-4.62, 4.07), (-10.08, 6.33))
 
@@ -134,7 +136,15 @@ def add_warehouse_vehicles(spec):
 
 
 class WarehouseVehicles:
-    def __init__(self, model, data):
+    def __init__(self, model, data, autoplay=True):
+        self.running = {"forklift": autoplay, "tug": autoplay}
+        self.elapsed = dict.fromkeys(self.running, 0.0)
+        self.estop_active = False
+        self.fork_height = FORK_MIN_HEIGHT
+        self.fork_target = FORK_MIN_HEIGHT
+        self.last_time = float(data.time)
+        self.odometry = {}
+        self.previous_pose = {}
         names = ("warehouse_forklift", "warehouse_forks", "pallet:forklift",
                  "warehouse_tug", *(f"warehouse_cart_{i}" for i in range(1, 4)))
         self.ids = [model.body_mocapid[model.body(name).id] for name in names]
@@ -142,21 +152,73 @@ class WarehouseVehicles:
         self.parcels = [model.body_mocapid[model.body(f"tug_parcel_{i}").id] for i in range(2)]
         self.update(data)
 
+    def set_running(self, vehicle, enabled):
+        if enabled and self.estop_active:
+            return False
+        self.running[vehicle] = enabled
+        if vehicle == "forklift" and not enabled:
+            self.fork_target = self.fork_height
+        return True
+
+    def set_estop(self, active):
+        self.estop_active = active
+        if active:
+            for vehicle in self.running:
+                self.set_running(vehicle, False)
+
+    def set_fork_height(self, height):
+        if self.estop_active or self.running["forklift"] or not math.isfinite(height):
+            return False
+        if not FORK_MIN_HEIGHT <= height <= FORK_MAX_HEIGHT:
+            return False
+        self.fork_target = height
+        return True
+
+    def _record_odometry(self, name, pose, dt):
+        x, y, yaw = pose
+        vx = wz = 0.0
+        if dt > 0 and name in self.previous_pose:
+            x0, y0, yaw0 = self.previous_pose[name]
+            vx = ((x - x0) * math.cos(yaw) + (y - y0) * math.sin(yaw)) / dt
+            wz = math.remainder(yaw - yaw0, math.tau) / dt
+        self.previous_pose[name] = pose
+        self.odometry[name] = (*pose, vx, wz)
+
     def update(self, data):
         def set_pose(mocap, x, y, z, yaw):
             data.mocap_pos[mocap] = [x, y, z]
             data.mocap_quat[mocap] = [math.cos(yaw / 2), 0, 0, math.sin(yaw / 2)]
 
-        y, height, load_y = forklift_pose(data.time)
+        dt = max(0.0, float(data.time) - self.last_time)
+        self.last_time = float(data.time)
+        if self.running["tug"]:
+            self.elapsed["tug"] += dt
+        tug_time = self.elapsed["tug"]
+
+        fork_time = self.elapsed["forklift"]
+        y, nominal_height, load_y = forklift_pose(fork_time)
+        if self.running["forklift"] and math.isclose(self.fork_height, nominal_height, abs_tol=1e-9):
+            fork_time += dt
+            self.elapsed["forklift"] = fork_time
+            y, self.fork_height, load_y = forklift_pose(fork_time)
+            self.fork_target = self.fork_height
+        else:
+            target = nominal_height if self.running["forklift"] else self.fork_target
+            error = target - self.fork_height
+            self.fork_height += math.copysign(min(abs(error), FORK_LIFT_RATE * dt), error)
+        height = self.fork_height
+        load_z = max(0.0, height - FORK_MIN_HEIGHT) if abs(load_y - y - 0.96) < 0.08 else 0.0
+        self._record_odometry("forklift", (FORK_X, y, math.pi / 2), dt)
+        self._record_odometry("tug", tug_pose(tug_time), dt)
         set_pose(self.ids[0], FORK_X, y, 0, math.pi / 2)
         set_pose(self.ids[1], FORK_X, y, height, math.pi / 2)
-        set_pose(self.ids[2], FORK_X, load_y, max(0.0, height - 0.03), math.pi / 2)
+        set_pose(self.ids[2], FORK_X, load_y, load_z, math.pi / 2)
         for cart, mocap in enumerate(self.ids[3:]):
-            x, y, yaw = tug_pose(data.time, cart)
+            x, y, yaw = tug_pose(tug_time, cart)
             set_pose(mocap, x, y, 0, yaw)
         for cart, mocap in enumerate(self.hitches, start=1):
-            x, y, yaw, _ = hitch_pose(data.time, cart)
+            x, y, yaw, _ = hitch_pose(tug_time, cart)
             set_pose(mocap, x, y, 0.14, yaw)
         for station, mocap in enumerate(self.parcels):
-            x, y, z = supply_parcel_pose(data.time, station)
+            x, y, z = supply_parcel_pose(tug_time, station)
             set_pose(mocap, x, y, z, 0)
