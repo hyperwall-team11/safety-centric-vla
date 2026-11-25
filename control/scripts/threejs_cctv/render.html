@@ -21,6 +21,7 @@ import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import { loadWarehouseVehicles } from './warehouse_vehicle_models.js';
 import { warehouseFloorJoints, warehouseMaterial } from './warehouse_materials.js';
 import { buildProp, floorTexture, backdrop, applyAssets, pbr, M, MODELS } from './props.js';
 
@@ -80,12 +81,16 @@ const addMaskable = obj => obj.traverse(o => { if (o.isMesh) { o.userData.normal
 
 const zonesAt = new Set(['keep_out_zone', 'zone_a_marking', 'zone_b_marking']);
 const geomObjs = [];
+const vehicles = presentation && meta.geoms.some(g => g.name === 'forklift_chassis')
+  ? await loadWarehouseVehicles(renderer, meta.geoms) : null;
 const meshCache = {};
 let propIndex = 0, floorSize = [6, 6];
 for (const g of meta.geoms) {
   const [sx, sy, sz] = g.size;
   let obj = null;
-  if (g.name.startsWith('prop_')) {
+  if (vehicles?.replaces(g.name)) {
+    obj = vehicles.anchors[g.name] ?? null;
+  } else if (g.name.startsWith('prop_')) {
     obj = buildProp(g.name, g.size, propIndex++);
   } else if (!zonesAt.has(g.name)) {
     let geo;
@@ -284,6 +289,7 @@ function setFrame(f, simTime) {
     o.matrixWorldNeedsUpdate = true;
     if (o.userData.update) o.userData.update(t);
   });
+  vehicles?.update(frames, base);
   workers.forEach((w, k) => {
     const wb = base + nGeom * 12 + k * workerLen;
     for (const o of w.parts) {
