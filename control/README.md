@@ -386,6 +386,7 @@ pixi run arm-cycle-demo   # 데모: 4대가 상자를 계속 옮김 (검증 서�
 }
 ```
 
+- `joint_positions`를 보내면 모델의 관절 순서에 맞는 유한한 값이어야 합니다. 관절 한계를 벗어난 초기 상태는 `ERROR`로 처리합니다.
 - `parameters`는 계약 4.3절 `MANIPULATE`와 같습니다(`manipulation`, `object_id`, `target_pose`).
 - `robots[].robot_model`: `ARM_MODELS` 키. 이 값이 있는 로봇은 원기둥 대신 실제 팔 모델로 붙입니다. `position`은 베이스(받침대 윗면) 위치입니다.
 - `joint_positions`: 생략하거나 `null`이면 모델의 `home` 자세. `holding_object_id`: 들고 있는 물체(`PLACE`에 필요).

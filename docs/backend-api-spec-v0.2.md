@@ -23,6 +23,7 @@
 - 기본 저장소는 인메모리이다. `BACKEND_STORE=redis`를 지정하면 Redis에 상태를 영속 저장한다.
 - Redis 모드에서 연결, 분산 잠금, 스냅샷 읽기·쓰기가 실패하면 fail-closed로 `503`을 반환한다. 저장은 Lua 스크립트로 잠금 토큰 비교와 스냅샷 교체를 원자적으로 수행하므로 만료되거나 재획득된 잠금은 저장에 사용할 수 없다. 일반적인 읽기 실패나 잠금 경합은 E-Stop을 발행하지 않으며, 실행 명령 발행 후 상태 커밋이 실패한 경우에만 물리 상태와 Backend 상태 불일치를 막기 위해 E-Stop을 발행한다.
 - 다중 Backend의 E-Stop 발행은 Redis 분산 잠금으로 직렬화하며 시작 시 저장된 정지 상태를 CTL에 다시 발행한다. Redis Pub/Sub 변경 알림은 다른 인스턴스의 `/ws/state` 구독자 갱신에 사용한다.
+- `BACKEND_CLOSED_LOOP_ENABLED=1`이면 Backend Worker가 기본 0.5초마다 TaskOrder의 다음 Proposal 생성, 안전 평가, 승인 실행과 결과 대기를 자동 진행한다. 비활성화하면 기존 수동 API 흐름을 유지한다.
 
 ### 공통 오류
 
@@ -374,6 +375,10 @@ TaskOrder 기반 생성기와 외부 VLA 직접 등록은 현재 `MOVE_TO`와 `M
 - `HW_ERROR`는 Proposal·TaskOrder `FAILED`, Robot `ERROR`로 전이한다.
 - 동일한 결과 재전송은 저장 상태만 반환하고 로그를 중복 생성하지 않는다. 이미 기록된 결과와 다른 재전송은 `409`다.
 
+Closed-Loop Worker가 활성화된 경우 `UNSUPPORTED`는 성공한 직전 단계 이후의 실패 횟수를 기준으로 같은 단계를 다시 계획한다. 실행 직전 경로 시작점 불일치로 `REJECTED`된 경우도 새 Robot 위치에서 경로를 다시 만든다. 기본 최대 시도는 단계당 3회이며 환경변수 `BACKEND_CLOSED_LOOP_MAX_ATTEMPTS_PER_STEP`으로 변경할 수 있다. 최대 시도에 도달하면 TaskOrder는 `FAILED`, Robot은 `HOLD`에 머문다. 일반 안전 평가 `REJECTED`는 TaskOrder `HELD`·Robot `HOLD`, `HW_ERROR`는 TaskOrder `FAILED`·Robot `ERROR`로 중단한다.
+
+`EXECUTING` Proposal의 RESULT가 기본 120초 안에 도착하지 않으면 Worker가 `TIMEOUT` 결과를 기록한다. TIMEOUT은 실제 동작 결과를 확정할 수 없으므로 자동 재시도하지 않고 TaskOrder `HELD`·Robot `HOLD`로 정지한다. 이 시간은 `BACKEND_CLOSED_LOOP_RESULT_TIMEOUT_SECONDS`, 주기는 `BACKEND_CLOSED_LOOP_POLL_INTERVAL_SECONDS`로 설정한다. 일시적인 Provider·전송 서비스 `503`은 현재 Proposal 상태를 유지하고 다음 주기에 다시 시도한다.
+
 ### 3.6 HazardEvent
 
 `GET /hazards`는 저장된 HazardEvent를 등록 순서로 반환한다. `status`, `severity`, `robot_id`를 단독 또는 함께 필터링할 수 있다. `robot_id`는 `related_robot_ids`에 해당 ID가 포함된 이벤트만 반환한다. 필터와 일치하는 이벤트가 없으면 빈 배열을 반환한다.
@@ -469,9 +474,7 @@ ActionProposal: PROPOSED ── evaluate 통과 ──> APPROVED
 
 대상 물체가 있는 운반 TaskOrder는 여러 ActionProposal을 순차 실행한다. Task Executor는 등록된 PhysicalObject와 성공한 Proposal 이력을 보고 다음 `MOVE_TO` 또는 `MANIPULATE`를 하나씩 자동 생성한다. OpenVLA 조작 Proposal과 Navigation Planner의 `MOVE_TO` Proposal을 같은 `task_id`로 직접 등록하는 방식도 지원하지만, 처리 중 상태(`PROPOSED`, `APPROVED`, `EXECUTING`)의 Proposal은 TaskOrder당 하나만 허용한다. `HELD`는 정지 이력으로 남되 RESUME 성공 뒤 다음 단계 생성을 막지 않는다. 물체 접근, `PICK`, 목적지 `MOVE_TO` 성공은 개별 Proposal만 `SUCCEEDED`로 끝내고 TaskOrder를 `PLANNING`으로 돌린다. 최종 `MANIPULATE/PLACE` 성공이 전체 TaskOrder를 `COMPLETED`로 만든다.
 
-ResumeTask 전이는 안전 해제 후 `RESUME` Proposal의 평가·실행·성공 보고로 구현했다. ROS 2
-모드에서는 기존 dispatcher와 CTL 결과 이벤트 경계를 그대로 사용하며, Mock 연동 시험에서는
-HTTP 결과 API로 같은 상태 전이를 검증한다.
+Closed-Loop Worker는 활성화 시 위 단계를 `생성 → 평가 → 실행 → RESULT 대기` 순서로 진행한다. 안전 평가를 우회하지 않으며 실행 중인 Proposal이 있으면 새 Proposal을 만들지 않는다. ResumeTask는 안전 해제 후 관리자가 생성한 `RESUME` Proposal의 평가·실행·성공 보고로 구현하며, 성공 뒤 `PLANNING`으로 돌아온 Task는 다음 Worker 주기에 이어서 처리한다. 결과는 Mock 연동 시험에서는 HTTP API로, ROS 2 모드에서는 CTL 결과 이벤트 경계를 통해 같은 상태 전이를 반영한다.
 
 ## 5. 기준 문서와 현재 구현의 차이
 
@@ -484,12 +487,12 @@ HTTP 결과 API로 같은 상태 전이를 검증한다.
 | 인증·권한 | CRITICAL 해제와 Resume는 관리자 전용 | 선택형 역할별 API 토큰 인증 구현. CV 안전 해제는 `SENSOR|CV`, CRITICAL 해제와 Resume는 `OPERATOR|ADMIN`으로 분리 |
 | 규칙 SR-01~06 | 속도·구역·거리·위험·상태·센서 공백 | SR-01 기본 0.4m/s·Robot·Zone 상한, 로봇 상태·adapter·관련 CRITICAL 위험 구현. KEEP_OUT 경로 검사를 구현하고 거리·센서 공백은 관측 안전 검사 활성화 시 적용 |
 | E-Stop | ROS 2 latched 전용 경로 | 실행 재검증 실패 시 Robot ESTOP·Task HELD·감사 로그 구현. `CRITICAL` HazardEvent가 실행 중 로봇과 연결되면 `/safety/estop` 발행(3.6절). 운영자 E-Stop API와 로봇별 정지는 미구현 |
-| 어댑터 실행 결과 | ROS 2 result 토픽으로 완료·실패 보고 | HTTP 결과 보고, 상태 전이, 멱등 감사 로그 구현. ROS 2 토픽 연결은 미구현 |
+| 어댑터 실행 결과 | ROS 2 result 토픽으로 완료·실패 보고 | HTTP 결과 경계와 ROS 2 CTL 결과 이벤트 처리, 상태 전이, 멱등 감사 로그 구현 |
 | 상태 구독 | WebSocket `/ws/state` | 전체 상태 스냅샷 구독과 15초 heartbeat 구현, delta 복구는 미구현 |
 | 영속 저장 | Redis 또는 ROS 2 상태 연동 | 인메모리 기본, Redis 스냅샷·분산 잠금 선택 가능 |
 | 판정 시간 | `evaluated_in_ms` 기록 | 평가·실행 직전 재평가 로그에 구현 |
 | Observation 등록 | CV가 Observation을 제출하고 ONT가 병합해 HazardEvent 생성 | 미구현. CV가 `PUT /sensors/{sensor_id}`, `PUT /workers/snapshot`, `POST /hazards`로 직접 갱신 |
-| HazardEvent 즉시 정지 | `CRITICAL` 등록 시 실행 중 로봇 `TriggerEStop` | 미구현. 이후 평가와 실행 직전 재검증만 차단 |
+| HazardEvent 즉시 정지 | `CRITICAL` 등록 시 실행 중 로봇 `TriggerEStop` | 관련 실행 중 로봇에 latched E-Stop 발행, CTL 이벤트로 Robot ESTOP·Task/Proposal HELD 반영 |
 | 사전 시뮬레이션(`COLLISION`) | 규칙 통과 후보를 MuJoCo ② 서비스로 검증, 시간 초과·미가동 시 거부 | `BACKEND_TWIN_SIMULATION_ENABLED=1`일 때 `MOVE_TO` 호출·Fail-Closed·`snapshot_id` 재검증 구현(3.9절). 기본 비활성화, 시간 제한은 #50 확정 전 잠정값, `MANIPULATE`는 계약 확정 전까지 차단 |
 | 토크·관절 속도 검사 | 스키마 미결 | 미구현 |
 | 스키마 v1.1 선택 필드 | 모델에서 선택적으로 허용 | Robot, Sensor, Observation, Worker, Zone, SafetyRule, HazardEvent, ExecutionLog에 반영 |

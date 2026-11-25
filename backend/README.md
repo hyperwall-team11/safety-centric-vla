@@ -86,6 +86,10 @@ python3 -m uvicorn app.main:app --reload
 | `BACKEND_STORE` | `memory` | `redis`로 설정할 때만 Redis 사용 |
 | `BACKEND_REDIS_URL` | `redis://127.0.0.1:6379/0` | Redis 접속 URL |
 | `BACKEND_REDIS_KEY` | `safety-centric-vla:state:v1` | 공유 스냅샷 키. 환경별 분리 가능 |
+| `BACKEND_CLOSED_LOOP_ENABLED` | `0` | `1`이면 Task 자동 실행 Worker 활성화 |
+| `BACKEND_CLOSED_LOOP_POLL_INTERVAL_SECONDS` | `0.5` | 자동 실행 상태 확인 주기(초) |
+| `BACKEND_CLOSED_LOOP_MAX_ATTEMPTS_PER_STEP` | `3` | 단계별 최대 시도 횟수(최초 시도 포함) |
+| `BACKEND_CLOSED_LOOP_RESULT_TIMEOUT_SECONDS` | `120` | 실행 결과 미수신을 TIMEOUT으로 처리하는 시간(초) |
 
 백업 파일을 즉시 생성하려면 다음을 실행합니다.
 
@@ -271,7 +275,13 @@ curl -X POST http://127.0.0.1:8000/task-orders/{task_id}/action-proposals \
 
 성공하면 TaskOrder가 `CREATED`에서 `PLANNING`으로 바뀌며 Proposal은 `PROPOSED`로 저장됩니다. 같은 TaskOrder에 활성 Proposal을 중복 생성하면 `409`를 반환합니다. 선택적인 `Idempotency-Key`를 보낸 경우, 동일한 키와 동일한 본문을 재전송하면 기존 Proposal을 `200`으로 반환하고 새 Proposal을 만들지 않습니다. 같은 키에 다른 본문을 보내면 `409`입니다.
 
-대상 물체가 있는 운반 TaskOrder는 여러 ActionProposal을 순차 실행합니다. 0.5초 주기 실행기는 `POST /task-orders/{task_id}/action-proposals`에 `{}`을 반복 전송하면 됩니다. 활성 Proposal이 남아 있을 때는 `409`가 반환되며, 실행 결과가 반영된 다음 호출에서 Task Executor가 다음 단계를 생성합니다. 각 자동 단계는 기존과 동일하게 안전 평가와 실행 승인을 통과해야 합니다. 단계별 재시도는 서로 다른 `Idempotency-Key`를 사용합니다. OpenVLA 또는 Navigation Planner가 만든 구조화 Proposal을 `POST /action-proposals`로 직접 등록하는 경로도 유지됩니다.
+대상 물체가 있는 운반 TaskOrder는 여러 ActionProposal을 순차 실행합니다. 수동 연동에서는 0.5초 주기 실행기가 `POST /task-orders/{task_id}/action-proposals`에 `{}`을 반복 전송할 수 있습니다. Backend가 생성·평가·실행까지 자동 진행하게 하려면 다음처럼 Closed-Loop Worker를 활성화합니다.
+
+```bash
+BACKEND_CLOSED_LOOP_ENABLED=1 python3 -m uvicorn app.main:app
+```
+
+Worker는 기본 0.5초마다 `CREATED`, `PLANNING`, `RUNNING` 작업을 확인하고 `ActionProposal 생성 → 안전 평가 → 승인 Proposal 실행 → RESULT 대기`를 반복합니다. 활성 Proposal은 기존처럼 하나만 허용되며 모든 자동 단계도 같은 안전 평가와 실행 직전 재검증을 통과해야 합니다. OpenVLA 또는 Navigation Planner가 만든 구조화 Proposal을 `POST /action-proposals`로 직접 등록하는 경로도 유지됩니다.
 
 자동 다단계 회귀 테스트 한 건만 실행하려면 다음 명령을 사용합니다.
 
@@ -288,7 +298,18 @@ python -m pytest -q tests/test_execution_result_api.py \
 
 열린 CRITICAL 위험은 `related_robot_ids`에 대상 Robot이 있거나 Hazard의 Zone과 TaskOrder 목적지 Zone이 같을 때 차단합니다. 빈 `related_robot_ids` 자체는 전역 위험을 뜻하지 않습니다. CRITICAL 위험 해제는 `{"resolved_by":"OPERATOR"}` 요청만 허용하고, WARNING은 `SENSOR_AUTO`도 허용합니다.
 
-실행 중인 Proposal은 `POST /action-proposals/{proposal_id}/result`로 어댑터 결과를 보고합니다. 일반 이동 Task의 `SUCCEEDED`는 TaskOrder를 `COMPLETED`, Robot을 `IDLE`로 돌립니다. 물체 운반 Task에서는 `PICK`과 Navigation `MOVE_TO` 성공 후 TaskOrder를 `PLANNING`으로 되돌려 다음 Proposal을 받고, 최종 `PLACE` 성공 때만 `COMPLETED`로 전이합니다. `UNSUPPORTED`는 TaskOrder를 `PLANNING`으로 되돌려 재계획할 수 있고, `TIMEOUT`은 TaskOrder `FAILED`·Robot `HOLD`, `HW_ERROR`는 TaskOrder `FAILED`·Robot `ERROR`로 전이합니다. 같은 결과 재전송은 멱등 처리되어 감사 로그가 중복되지 않습니다.
+실행 중인 Proposal은 `POST /action-proposals/{proposal_id}/result`로 어댑터 결과를 보고합니다. 일반 이동 Task의 `SUCCEEDED`는 TaskOrder를 `COMPLETED`, Robot을 `IDLE`로 돌립니다. 물체 운반 Task에서는 `PICK`과 Navigation `MOVE_TO` 성공 후 TaskOrder를 `PLANNING`으로 되돌려 다음 Proposal을 받고, 최종 `PLACE` 성공 때만 `COMPLETED`로 전이합니다. 같은 결과 재전송은 멱등 처리되어 감사 로그가 중복되지 않습니다.
+
+Closed-Loop Worker의 기본 실패 정책은 다음과 같습니다.
+
+- 안전 평가 `REJECTED`: TaskOrder `HELD`, Robot `HOLD`로 자동 실행 중단. 실행 직전 Robot 위치가 예상 경로 시작점과 달라진 경우만 새 경로로 재계획
+- `UNSUPPORTED`: 같은 단계를 다시 계획
+- `TIMEOUT`: CTL이 보고하거나 120초 동안 RESULT가 없으면 실제 동작 결과를 확정할 수 없으므로 TaskOrder `HELD`, Robot `HOLD`로 즉시 중단
+- `UNSUPPORTED`와 경로 재계획은 단계당 최초 시도를 포함해 최대 3회. 모두 실패하면 TaskOrder `FAILED`, Robot `HOLD`
+- `HW_ERROR`: 재시도 없이 TaskOrder `FAILED`, Robot `ERROR`
+- 물체 미등록처럼 안전한 Proposal을 만들 수 없는 `404`·`422`: TaskOrder `HELD`, Robot `HOLD`
+
+Worker가 비활성화된 수동 API 모드의 기존 전이는 유지됩니다. `UNSUPPORTED`는 TaskOrder `PLANNING`·Robot `HOLD`, `TIMEOUT`은 TaskOrder `FAILED`·Robot `HOLD`, `HW_ERROR`는 TaskOrder `FAILED`·Robot `ERROR`입니다.
 
 ## 구현된 최소 API
 

@@ -34,6 +34,7 @@ from .action_planner import (
     RuleBasedActionPlanner,
 )
 from .auth import TokenAuthenticator, websocket_bearer_token
+from .closed_loop_executor import ClosedLoopConfig, ClosedLoopExecutor
 from .ctl_bridge import (
     CommandSerializationError,
     DispatchError,
@@ -674,10 +675,12 @@ def start_action_dispatcher() -> None:
     store.start_change_notifications(state_broadcaster.publish)
     # Redis 재시작 복구 시 latched E-Stop 상태도 CTL에 다시 전달한다.
     sync_estop("Backend 시작 상태 복구")
+    closed_loop_executor.start()
 
 
 @app.on_event("shutdown")
 def stop_action_dispatcher() -> None:
+    closed_loop_executor.stop()
     store.stop_change_notifications()
     action_dispatcher.stop()
 
@@ -1767,6 +1770,290 @@ def report_action_result(
         return proposal
 
 
+def _closed_loop_step_attempts(proposals: list[ActionProposal]) -> int:
+    """마지막 성공 이후 현재 단계에서 소비한 실패 시도 수를 센다."""
+    last_success = -1
+    for index, proposal in enumerate(proposals):
+        if proposal.status == ProposalStatus.SUCCEEDED:
+            last_success = index
+    return sum(
+        proposal.status in {ProposalStatus.REJECTED, ProposalStatus.FAILED}
+        for proposal in proposals[last_success + 1 :]
+    )
+
+
+def _is_stale_trajectory_rejection(proposal_id: str) -> bool:
+    log = next(
+        (
+            item
+            for item in reversed(store.logs)
+            if item.proposal_id == proposal_id and item.decision == Decision.REJECT
+        ),
+        None,
+    )
+    if log is None:
+        return False
+    failed_rule_ids = {result.rule_id for result in log.rule_results if not result.passed}
+    return failed_rule_ids == {TRAJECTORY_START_RULE_ID}
+
+
+def _apply_closed_loop_failure_policy(
+    task_id: str,
+    max_attempts_per_step: int,
+) -> tuple[bool, bool]:
+    """다음 제안을 만들 수 있는지와 상태 변경 여부를 반환한다."""
+    with store.lock:
+        task = store.tasks.get(task_id)
+        if task is None:
+            return False, False
+        robot = store.robots.get(task.target_robot_id)
+        proposals = [
+            proposal
+            for proposal in store.proposals.values()
+            if proposal.task_id == task_id
+        ]
+        if not proposals:
+            return task.status in PLANNABLE_TASK_STATUSES, False
+
+        latest = proposals[-1]
+        attempts = _closed_loop_step_attempts(proposals)
+        retry_exhausted = attempts >= max_attempts_per_step
+
+        if latest.status == ProposalStatus.REJECTED:
+            if _is_stale_trajectory_rejection(latest.proposal_id):
+                if not retry_exhausted:
+                    changed = task.status != TaskStatus.PLANNING
+                    task.status = TaskStatus.PLANNING
+                    return True, changed
+                changed = task.status != TaskStatus.FAILED
+                task.status = TaskStatus.FAILED
+                store.task_received_at.pop(task_id, None)
+                if robot is not None and robot.status not in {
+                    RobotStatus.ESTOP,
+                    RobotStatus.ERROR,
+                }:
+                    changed = changed or robot.status != RobotStatus.HOLD
+                    robot.status = RobotStatus.HOLD
+                    robot.updated_at = utc_now()
+                return False, changed
+            changed = task.status != TaskStatus.HELD
+            task.status = TaskStatus.HELD
+            if robot is not None and robot.status not in {RobotStatus.ESTOP, RobotStatus.ERROR}:
+                changed = changed or robot.status != RobotStatus.HOLD
+                robot.status = RobotStatus.HOLD
+                robot.updated_at = utc_now()
+            return False, changed
+
+        if latest.status == ProposalStatus.FAILED:
+            report = store.proposal_results.get(latest.proposal_id)
+            if report is not None and report.reason_code == AdapterFailureCode.TIMEOUT:
+                changed = task.status != TaskStatus.HELD
+                task.status = TaskStatus.HELD
+                if robot is not None and robot.status not in {
+                    RobotStatus.ESTOP,
+                    RobotStatus.ERROR,
+                }:
+                    changed = changed or robot.status != RobotStatus.HOLD
+                    robot.status = RobotStatus.HOLD
+                    robot.updated_at = utc_now()
+                return False, changed
+            retryable = (
+                report is not None
+                and report.reason_code == AdapterFailureCode.UNSUPPORTED
+            )
+            if retryable and not retry_exhausted:
+                changed = task.status != TaskStatus.PLANNING
+                task.status = TaskStatus.PLANNING
+                store.task_received_at.setdefault(task_id, utc_now())
+                if robot is not None and robot.status not in {
+                    RobotStatus.ESTOP,
+                    RobotStatus.ERROR,
+                }:
+                    changed = changed or robot.status != RobotStatus.HOLD
+                    robot.status = RobotStatus.HOLD
+                    robot.updated_at = utc_now()
+                return True, changed
+            if retryable and retry_exhausted:
+                changed = task.status != TaskStatus.FAILED
+                task.status = TaskStatus.FAILED
+                store.task_received_at.pop(task_id, None)
+                if robot is not None and robot.status not in {
+                    RobotStatus.ESTOP,
+                    RobotStatus.ERROR,
+                }:
+                    changed = changed or robot.status != RobotStatus.HOLD
+                    robot.status = RobotStatus.HOLD
+                    robot.updated_at = utc_now()
+                return False, changed
+            return False, False
+
+        return task.status in PLANNABLE_TASK_STATUSES, False
+
+
+def _hold_task_after_planning_error(task_id: str) -> bool:
+    with store.lock:
+        task = store.tasks.get(task_id)
+        if task is None:
+            return False
+        robot = store.robots.get(task.target_robot_id)
+        changed = task.status != TaskStatus.HELD
+        task.status = TaskStatus.HELD
+        if robot is not None and robot.status not in {RobotStatus.ESTOP, RobotStatus.ERROR}:
+            changed = changed or robot.status != RobotStatus.HOLD
+            robot.status = RobotStatus.HOLD
+            robot.updated_at = utc_now()
+        return changed
+
+
+def _expire_closed_loop_execution(
+    proposal: ActionProposal,
+    *,
+    result_timeout_seconds: float,
+) -> bool:
+    with store.lock:
+        record = store.proposal_acks.get(proposal.proposal_id)
+        if record is None:
+            return False
+        deadline = record.dispatched_at + timedelta(seconds=result_timeout_seconds)
+        if utc_now() <= deadline:
+            return False
+    report_action_result(
+        proposal.proposal_id,
+        AdapterResultReport(
+            status=AdapterResultStatus.FAILED,
+            reason_code=AdapterFailureCode.TIMEOUT,
+            detail=f"{result_timeout_seconds:g}초 안에 실행 결과를 받지 못했습니다.",
+        ),
+    )
+    return True
+
+
+def _internal_execution_request(proposal_id: str) -> Request:
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": f"/action-proposals/{proposal_id}/execute",
+            "headers": [],
+            "query_string": b"",
+            "server": ("closed-loop-executor", 0),
+            "client": None,
+            "scheme": "http",
+        }
+    )
+    request.state.auth_principal = None
+    return request
+
+
+def advance_closed_loop_task(
+    task_id: str,
+    config: ClosedLoopConfig,
+) -> bool:
+    """한 Task를 실행 대기 상태까지 진행하고 상태 변경 여부를 반환한다."""
+    changed = False
+    for _ in range(4):
+        with store.lock:
+            task = store.tasks.get(task_id)
+            if task is None or task.status in {TaskStatus.COMPLETED, TaskStatus.HELD}:
+                return changed
+            proposals = [
+                proposal
+                for proposal in store.proposals.values()
+                if proposal.task_id == task_id
+            ]
+            active = next(
+                (
+                    proposal.model_copy(deep=True)
+                    for proposal in reversed(proposals)
+                    if proposal.status in ACTIVE_PROPOSAL_STATUSES
+                ),
+                None,
+            )
+
+        if active is not None and active.status == ProposalStatus.EXECUTING:
+            if not _expire_closed_loop_execution(
+                active,
+                result_timeout_seconds=config.result_timeout_seconds,
+            ):
+                return changed
+            changed = True
+            continue
+
+        if active is not None and active.status == ProposalStatus.PROPOSED:
+            try:
+                evaluated = evaluate_action(active.proposal_id)
+            except HTTPException:
+                return changed
+            changed = True
+            if evaluated.status == ProposalStatus.REJECTED:
+                can_continue, policy_changed = _apply_closed_loop_failure_policy(
+                    task_id,
+                    config.max_attempts_per_step,
+                )
+                changed = changed or policy_changed
+                if not can_continue:
+                    return changed
+            continue
+
+        if active is not None and active.status == ProposalStatus.APPROVED:
+            request = _internal_execution_request(active.proposal_id)
+            try:
+                execute_action(active.proposal_id, request)
+            except StoreUnavailableError as exc:
+                if getattr(request.state, "estop_on_store_failure", False):
+                    with ESTOP_PUBLISH_LOCK:
+                        _publish_estop(True, f"Redis 실행 상태 커밋 실패: {exc}")
+                raise
+            except HTTPException:
+                return True
+            return True
+
+        if active is not None:
+            return changed
+
+        can_continue, policy_changed = _apply_closed_loop_failure_policy(
+            task_id,
+            config.max_attempts_per_step,
+        )
+        changed = changed or policy_changed
+        if not can_continue:
+            return changed
+
+        try:
+            generate_action_proposal(
+                task_id,
+                ProposalGenerationRequest(),
+                Response(),
+            )
+        except HTTPException as exc:
+            if exc.status_code in {404, 422}:
+                changed = _hold_task_after_planning_error(task_id) or changed
+            return changed
+        changed = True
+
+    return changed
+
+
+def run_closed_loop_cycle(config: ClosedLoopConfig) -> None:
+    with store.lock:
+        task_ids = [
+            task.task_id
+            for task in store.tasks.values()
+            if task.status
+            in {
+                TaskStatus.CREATED,
+                TaskStatus.PLANNING,
+                TaskStatus.RUNNING,
+                TaskStatus.FAILED,
+            }
+        ]
+    changed = False
+    for task_id in task_ids:
+        changed = advance_closed_loop_task(task_id, config) or changed
+    if changed:
+        state_broadcaster.publish()
+
+
 
 @app.get("/hazards", response_model=list[HazardEvent])
 def list_hazards(
@@ -2045,3 +2332,10 @@ def list_safety_rules() -> list[SafetyRule]:
 def list_execution_logs() -> list[ExecutionLog]:
     with store.lock:
         return list(store.logs)
+
+
+closed_loop_config = ClosedLoopConfig.from_environment()
+closed_loop_executor = ClosedLoopExecutor(
+    closed_loop_config,
+    lambda: run_closed_loop_cycle(closed_loop_config),
+)
