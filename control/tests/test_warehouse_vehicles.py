@@ -41,3 +41,13 @@ def test_tug_stops_twice_without_detaching_the_three_carts():
         x, y, _, length = hitch_pose(data.time, cart)
         np.testing.assert_allclose(data.mocap_pos[mocap], (x, y, 0.14))
         assert length == pytest.approx(hitch_pose(1, cart)[3])
+
+
+def test_tug_delivers_to_each_supply_table_and_recovers_parcels_next_round():
+    from warehouse_vehicles import SUPPLY_TABLES, supply_parcel_pose
+
+    assert supply_parcel_pose(4, 0)[:2] == pytest.approx(SUPPLY_TABLES[0])
+    assert supply_parcel_pose(4, 1)[:2] != pytest.approx(SUPPLY_TABLES[1])
+    assert supply_parcel_pose(22, 1)[:2] == pytest.approx(SUPPLY_TABLES[1])
+    assert supply_parcel_pose(40, 0)[:2] != pytest.approx(SUPPLY_TABLES[0])
+    assert supply_parcel_pose(58, 1)[:2] != pytest.approx(SUPPLY_TABLES[1])
