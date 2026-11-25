@@ -9,8 +9,8 @@ from scenario import WorkerScript
 AMR = PlantAmr("amr-01", "pallet:amr-01", (-4.0, -4.0, 0.0), (4.0, -4.0, 0.0))
 WAREHOUSE_AMRS = (
     AMR,
-    PlantAmr("amr-02", "pallet:amr-02", (8.3, -8.8, 0.0), (10.35, -8.8, 0.0)),
-    PlantAmr("amr-03", "pallet:amr-03", (8.3, -2.4, 0.0), (10.35, -2.4, 0.0)),
+    PlantAmr("amr-02", "pallet:amr-02", (7.55, -8.35, 0.0), (10.35, -8.35, 0.0)),
+    PlantAmr("amr-03", "pallet:amr-03", (7.55, -2.75, 0.0), (10.35, -2.75, 0.0)),
 )
 CROSS_X = 1.0
 TRIGGER_X = -2.4
