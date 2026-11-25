@@ -249,7 +249,7 @@ ROS 2 로봇 정지
 ResumeTask 승인
 ```
 
-**현재 상태:** HazardEvent가 등록되면 이후 평가와 실행 직전 재검증만 차단한다. **실행 중인 로봇을 즉시 정지시키는 경로는 미구현**이며 백엔드·CTL 후속 작업이다.
+**실행 상태:** 실행 중 로봇과 연결된 OPEN·CRITICAL HazardEvent가 등록되면 Backend가 ROS `/safety/estop`을 발행한다.
 
 **신속 정지 경로:** 긴급 정지는 CV → 온톨로지 → 사전 시뮬레이션으로 이어지는 경로에만 의존하지 않는다. 예를 들어 검증 서버 heartbeat가 1초 동안 끊기면 CTL 어댑터가 스스로 HOLD에 들어간다([`backend-ctl-contract-v0.1.md`](backend-ctl-contract-v0.1.md)).
 
@@ -304,7 +304,7 @@ VLA가 생성한 행동을 즉시 실행하지 않고, 온톨로지 규칙과 Mu
 2. Three.js CCTV 영상 생성 (계획, 현재는 MuJoCo 렌더링)
 3. CV가 작업자 탐지 및 위치 추정
 4. CV가 금지구역 침입 HazardEvent 등록
-5. `TriggerEStop` 또는 `Hold State` 실행 (HazardEvent 등록 시 실행 중 로봇 즉시 정지는 미구현)
+5. 실행 중인 관련 로봇에 대해 Backend가 ROS E-Stop을 발행한다.
 6. ROS 2 제어 노드를 통해 가상 로봇 정지 (미구현, 현재는 이후 평가와 실행 직전 재검증만 차단)
 
 **검증 목표:** 위험 탐지부터 로봇 정지까지의 전체 안전 개입
@@ -417,3 +417,8 @@ CV가 CCTV 영상 속 작업자를 인식해 온톨로지 현장 상태에 반�
 | 토크·관절 속도 검사 기준 | 검사 범위·안전 한계·스키마·CTL 제공값 | ONT(임성현), CTL |
 | 사전 시뮬레이션 규칙 스키마 | 규칙 종류·판정 기준·시간 제한 | ONT, 백엔드 |
 | 논문(UCWIT 2026, 11/12 마감)과의 관계 | 프로젝트명과 논문 제목 통일 여부. 논문은 현재 구현 범위로 쓰고 Three.js·MuJoCo ②는 향후 과제로 넣는 안 | 전체 |
+
+
+## 발표용 창고의 낙상 위험 발견 (2026-11-25)
+
+발표자가 점검을 시작하면 CCTV 04의 후방 통로 영상 5장을 Florence-2로 분석합니다. 통로 바닥에서 쓰러진 작업자 검출이 2장 이상 확인되면 기존 `POST /hazards`에 `UNKNOWN / WARNING`으로 등록합니다. 스키마에 전용 낙상 열거값이 없어 발표 화면에서 구역과 관측으로 낙상 위험을 구분합니다. CCTV 02의 `CRITICAL WORKER_INTRUSION`은 기존 자동 정지 경로를 실행합니다. [시연 절차](warehouse-presentation.md)

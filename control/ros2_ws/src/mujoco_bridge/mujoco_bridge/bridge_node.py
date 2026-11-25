@@ -121,7 +121,24 @@ class MujocoBridge(Node):
 
         self.plant_arms = None
         self.plant_amrs = None
-        if use_arms or use_amrs:
+        warehouse_demo = self.declare_parameter("warehouse_demo", False).value
+        self.crossing_amr_id = None
+        self.warehouse_vehicles = None
+        if warehouse_demo:
+            amr = load_amr(mujoco_dir)
+            import warehouse
+            from warehouse_vehicles import WarehouseVehicles
+
+            model, data = warehouse.build_warehouse()
+            self.sim = simulation.MujocoSim(model, data)
+            self.plant_amrs = amr.PlantAmrs(
+                model, data, warehouse.WAREHOUSE_AMRS, self.cmd_timeout, preloaded=True,
+            )
+            self.crossing_amr_id = warehouse.AMR.robot_id
+            autoplay = self.declare_parameter("warehouse_vehicles_autoplay", True).value
+            self.warehouse_vehicles = WarehouseVehicles(model, data, autoplay=autoplay)
+            model_path = "warehouse_demo"
+        elif use_arms or use_amrs:
             arms = load_arms(mujoco_dir)
             amr = load_amr(mujoco_dir) if use_amrs else None
             model, data, kins = arms.build_plant_with_arms(arms.PLANT_ARMS if use_arms else [],
@@ -143,12 +160,13 @@ class MujocoBridge(Node):
         names = {m.joint(i).name for i in range(m.njnt)}
         self.joint_names = [n for n in self.scn.JOINT_STATE_NAMES if n in names]
         self.joint_adr = [(m.joint(n).qposadr[0], m.joint(n).dofadr[0]) for n in self.joint_names]
-        self.base_body = m.joint(self.sim.spec.base_joint).bodyid[0]  # freejoint가 달린 로봇 베이스
+        if not warehouse_demo:
+            self.base_body = m.joint(self.sim.spec.base_joint).bodyid[0]
 
         self.worker = None
         bodies = {m.body(i).name for i in range(m.nbody)}
         if use_worker and "worker" in bodies and m.body_mocapid[m.body("worker").id] >= 0:
-            self.worker = self.scn.WorkerScript()
+            self.worker = warehouse.CrossingWorker() if warehouse_demo else self.scn.WorkerScript()
             self.has_keep_out = "keep_out_zone" in {m.geom(i).name for i in range(m.ngeom)}
             self.worker_pub = self.create_publisher(PoseStamped, "/sim/worker_pose", 10)
             self.worker_zone_pub = self.create_publisher(Bool, "/sim/worker_in_keep_out", 10)
@@ -156,8 +174,12 @@ class MujocoBridge(Node):
 
         cams = {m.camera(i).name for i in range(m.ncam)}
         self.sensors = [s for s, (cam, _, _) in self.scn.CAMERAS.items() if cam in cams] if use_cameras else []
+        if warehouse_demo:
+            self.sensors = [s for s in self.sensors if s != "head_camera"]
+            if cctv_renderer != "threejs":
+                raise ValueError("warehouse_demo requires cctv_renderer:=threejs")
         # Three.js 모드: 고정 CCTV는 Three.js가, 로봇 카메라는 그대로 MuJoCo가 렌더한다
-        self.threejs_sensors = ([s for s in self.sensors if self.scn.CAMERAS[s][2] == "world"]
+        self.threejs_sensors = ([s for s in self.sensors if self.scn.CAMERAS[s][2] == "world" or s == "amr_camera"]
                                 if cctv_renderer == "threejs" else [])
         self.rig_sensors = [s for s in self.sensors if s not in self.threejs_sensors]
         self.rig = None
@@ -216,9 +238,12 @@ class MujocoBridge(Node):
                 self.amr_odom_pubs[rid] = self.create_publisher(Odometry, f"/{seg}/odom", 10)
                 self.amr_result_pubs[rid] = self.create_publisher(String, f"/{seg}/amr/load_result", 10)
 
-        self.create_subscription(Twist, "/cmd_vel", self._on_cmd_vel, 10)
-        self.odom_pub = self.create_publisher(Odometry, "/odom", 10)
-        self.joint_pub = self.create_publisher(JointState, "/joint_states", 10)
+        if warehouse_demo:
+            self._connect_warehouse_vehicles()
+        else:
+            self.create_subscription(Twist, "/cmd_vel", self._on_cmd_vel, 10)
+            self.odom_pub = self.create_publisher(Odometry, "/odom", 10)
+            self.joint_pub = self.create_publisher(JointState, "/joint_states", 10)
         self.tf_pub = TransformBroadcaster(self)
         self.static_tf_pub = StaticTransformBroadcaster(self)
         self._publish_static_tf()
@@ -228,7 +253,7 @@ class MujocoBridge(Node):
         # 실시간 기준점은 초기화(렌더러·Three.js 장면 준비)가 끝난 뒤로 잡는다. 아니면 시작하자마자 시뮬 시각이 한꺼번에 뛴다
         self.wall_start = self.last_rtf_log = time.monotonic()
         self.sim_start = self.sim.time
-        max_linear = self.sim.max_wheel_speed * self.sim.wheel_radius
+        max_linear = amr.MAX_SPEED if warehouse_demo else self.sim.max_wheel_speed * self.sim.wheel_radius
         self.get_logger().info(
             f"MuJoCo bridge ready: {robot} ({model_path or self.sim.spec.model_path.name}), "
             f"max linear {max_linear:.2f} m/s, joints {len(self.joint_names)}, "
@@ -268,6 +293,55 @@ class MujocoBridge(Node):
         for rid, result in self.plant_amrs.pop_results():
             self.amr_result_pubs[rid].publish(String(data=json.dumps(result, ensure_ascii=False)))
 
+    def _connect_warehouse_vehicles(self):
+        from safety_control.interfaces import ESTOP_QOS, ESTOP_TOPIC
+        from std_msgs.msg import Float64
+        from std_srvs.srv import SetBool
+
+        self.vehicle_odometry = {}
+        for vehicle in self.warehouse_vehicles.running:
+            prefix = f"/warehouse/{vehicle}"
+            self.vehicle_odometry[vehicle] = self.create_publisher(Odometry, f"{prefix}/odom", 10)
+            self.create_service(SetBool, f"{prefix}/set_running",
+                                lambda req, resp, v=vehicle: self._set_warehouse_running(v, req, resp))
+        self.fork_height_pub = self.create_publisher(Float64, "/warehouse/forklift/fork_height", 10)
+        self.create_subscription(Float64, "/warehouse/forklift/fork_height_command", self._on_fork_height, 10)
+        self.create_subscription(String, ESTOP_TOPIC, self._on_warehouse_estop, ESTOP_QOS)
+
+    def _set_warehouse_running(self, vehicle, request, response):
+        response.success = self.warehouse_vehicles.set_running(vehicle, request.data)
+        response.message = ("운행" if request.data else "정지") if response.success else "E-Stop 활성 상태"
+        return response
+
+    def _on_fork_height(self, msg):
+        if not self.warehouse_vehicles.set_fork_height(msg.data):
+            self.get_logger().warn("정지 상태의 포크에 0.03~0.28 m 명령만 허용합니다.",
+                                   throttle_duration_sec=2.0)
+
+    def _on_warehouse_estop(self, msg):
+        try:
+            command = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+        if isinstance(command, dict) and isinstance(command.get("active"), bool):
+            self.warehouse_vehicles.set_estop(command["active"])
+
+    def _publish_warehouse_vehicles(self, stamp):
+        from std_msgs.msg import Float64
+
+        for vehicle, pub in self.vehicle_odometry.items():
+            x, y, yaw, speed, angular = self.warehouse_vehicles.odometry[vehicle]
+            odom = Odometry()
+            odom.header.stamp = stamp
+            odom.header.frame_id = self.world_frame
+            odom.child_frame_id = f"warehouse/{vehicle}/base_link"
+            odom.pose.pose.position.x, odom.pose.pose.position.y = x, y
+            odom.pose.pose.orientation.z, odom.pose.pose.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
+            odom.twist.twist.linear.x = speed
+            odom.twist.twist.angular.z = angular
+            pub.publish(odom)
+        self.fork_height_pub.publish(Float64(data=self.warehouse_vehicles.fork_height))
+
     # ---- 물리 ----
     def _physics(self):
         now = time.monotonic()
@@ -278,9 +352,14 @@ class MujocoBridge(Node):
         lag = (self.sim_start + (now - self.wall_start)) - self.sim.time
         if lag > 0:
             if self.worker:
+                if self.crossing_amr_id is not None:
+                    x, _, _, speed, _ = self.plant_amrs.odom(self.crossing_amr_id)
+                    self.worker.observe_amr(x, speed, self.sim.time)
                 self.worker.apply(self.sim.model, self.sim.data)
             before = self.sim.time
             self.sim.step(min(lag, MAX_CATCHUP_S))
+            if self.warehouse_vehicles:
+                self.warehouse_vehicles.update(self.sim.data)
             if self.plant_arms:
                 self.plant_arms.after_step(self.sim.data)
             if self.plant_amrs:
@@ -304,8 +383,7 @@ class MujocoBridge(Node):
         self.viewer.sync()
 
     # ---- 상태 발행 ----
-    def _publish_state(self):
-        stamp = self.get_clock().now().to_msg()
+    def _publish_base_state(self, stamp, d):
         x, y, _ = self.sim.pose()
         quat = self.sim.orientation()
         v, w = self.sim.twist()
@@ -325,12 +403,19 @@ class MujocoBridge(Node):
         js = JointState()
         js.header.stamp = stamp
         js.name = self.joint_names
-        d = self.sim.data
         js.position = [float(d.qpos[q]) for q, _ in self.joint_adr]
         js.velocity = [float(d.qvel[v_]) for _, v_ in self.joint_adr]
         # 액추에이터가 낸 힘(직선 관절, N) 또는 토크(회전 관절, N·m). 액추에이터가 없는 관절은 0 (#96)
         js.effort = [float(d.qfrc_actuator[v_]) for _, v_ in self.joint_adr]
         self.joint_pub.publish(js)
+
+    def _publish_state(self):
+        stamp = self.get_clock().now().to_msg()
+        d = self.sim.data
+        if self.warehouse_vehicles:
+            self._publish_warehouse_vehicles(stamp)
+        else:
+            self._publish_base_state(stamp, d)
 
         for rid, pub in self.arm_joint_pubs.items():
             q, dq, tau = self.plant_arms.joint_state(d, rid)
@@ -430,8 +515,22 @@ class MujocoBridge(Node):
         if "worker_head" not in {m.body(i).name for i in range(m.nbody)}:
             raise RuntimeError("cctv_renderer:=threejs needs a scene with the worker model")
         # 렌더러가 읽을 정적 장면(scene.json·텍스처). 작업자 1은 브리지의 작업자 스크립트 위치 그대로 둔다
-        meta, self.packer = export_scene.prepare(m, d, Path(data_dir), self.worker or False)
+        workers_cfg = export_scene.WORKERS
+        worker_scripts = None
+        if self.crossing_amr_id is not None:
+            import warehouse
+
+            workers_cfg = warehouse.DEMO_WORKERS
+            i = warehouse.FALL_WORKER_INDEX
+            worker_scripts = {i: warehouse.FallenWorker(waypoints=workers_cfg[i]["waypoints"],
+                                                         speed=workers_cfg[i]["speed"])}
+        meta, self.packer = export_scene.prepare(
+            m, d, Path(data_dir), self.worker or False, workers_cfg=workers_cfg, worker_scripts=worker_scripts,
+            live_moving_cameras=[s for s in self.threejs_sensors if self.scn.CAMERAS[s][2] != "world"],
+        )
         meta.update({"frames": 1, "fps": self.camera_hz, "live": True})
+        if self.crossing_amr_id is not None:
+            meta["scene"] = "warehouse_demo"
         (Path(data_dir) / "scene.json").write_text(__import__("json").dumps(meta))
 
         def publish(sensor, sim_time, rgb):
@@ -446,7 +545,7 @@ class MujocoBridge(Node):
     def _pack_threejs_frame(self):
         frame, states = self.packer.pack(self.sim.model, self.sim.data, self.sim.time)
         self.live.set_frame(frame, self.sim.time)
-        # 추가 작업자(worker_2, worker_3 mocap) 실제 위치. 작업자 1의 /sim/worker_pose와 같은 형식
+        # 추가 작업자(worker_2 이후 mocap) 실제 위치. 작업자 1의 /sim/worker_pose와 같은 형식
         if not hasattr(self, "extra_worker_pubs"):
             self.extra_worker_pubs = {i: self.create_publisher(PoseStamped, f"/sim/worker_pose_{i + 1}", 10)
                                       for i, _ in self.packer.extra}

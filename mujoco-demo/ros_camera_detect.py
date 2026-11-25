@@ -62,6 +62,31 @@ def fixed_cameras(topics, calibration_path=None, scene_path=DEFAULT_SCENE):
     return {topic: cameras[topic] for topic in topics}
 
 
+def write_detection_preview(path, image, record):
+    """실제로 검출한 원본 프레임 위에 같은 프레임의 검출 상자를 표시한다."""
+    from PIL import ImageDraw
+
+    preview = image.copy()
+    draw = ImageDraw.Draw(preview)
+    stamp = record["stamp"]
+    sim_time = stamp["sec"] + stamp["nanosec"] / 1e9
+    draw.rectangle((8, 8, 158, 29), fill="#10252c")
+    draw.text((14, 12), f"CCTV 02  T+{sim_time:07.2f}s", fill="white")
+    danger = (record.get("hazard") or {}).get("in_keep_out", False)
+    color = "#ff674d" if danger else "#63e7b5"
+    for person in record["people"]:
+        x, y, _, _ = person["bbox_xyxy"]
+        draw.rectangle(person["bbox_xyxy"], outline=color, width=3)
+        confidence = person["confidence"]
+        label = "WORKER" if confidence is None else f"WORKER {confidence:.0%}"
+        draw.text((x + 3, max(31, y - 15)), label, fill=color, stroke_width=2, stroke_fill="#10252c")
+    temp = path.with_suffix(".tmp")
+    preview.save(temp, format="JPEG", quality=85)
+    temp.replace(path)
+    if hazard_id := (record.get("hazard") or {}).get("hazard_id"):
+        path.with_name(f"{hazard_id}.jpg").write_bytes(path.read_bytes())
+
+
 class TopicStats:
     def __init__(self, topic):
         self.topic = topic
@@ -291,6 +316,8 @@ class CameraDetector(Node):
                                              self.backend["cameras"][stats.topic], None)[0])
                 self.fusion.update(stats.topic.strip("/").split("/")[0],
                                    parse_utc(frame.received_at_utc), positions)
+            if self.args.preview_jpeg is not None:
+                write_detection_preview(self.args.preview_jpeg, image, record)
             self.file.write(json.dumps(record, ensure_ascii=False) + "\n")
             for target in (stats, self):
                 target.processing_ms.append(processing_ms)
@@ -320,7 +347,8 @@ class CameraDetector(Node):
         elapsed = now - min(firsts) if firsts else 0.0
         summary = {
             "topics": [stats.topic for stats in self.topics], "detector": self.detector.name,
-            "model": self.args.model, "gpu": torch.cuda.get_device_name(0),
+            "model": self.args.model, "device": self.args.device,
+            "gpu": torch.cuda.get_device_name(0) if self.args.device == "cuda" else None,
             "stop_reason": self.stop_reason, "processed": self.processed,
             "received_callbacks": sum(t["received_callbacks"] for t in per_topic.values()),
             "replaced_pending": sum(t["replaced_pending"] for t in per_topic.values()),
@@ -354,6 +382,8 @@ def main():
     parser.add_argument("--topic", action="append",
                         help=f"camera image topic; repeat for several cameras (default {DEFAULT_TOPIC})")
     parser.add_argument("--detector", choices=sorted(DETECTORS), default="florence2")
+    parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
+    parser.add_argument("--preview-jpeg", type=Path, help="atomically replace a preview of the processed frame")
     parser.add_argument("--model", help="model id or local path (default depends on --detector)")
     parser.add_argument("--output", type=Path, default=Path("vlm_results/ros_camera.jsonl"))
     stop = parser.add_mutually_exclusive_group()
@@ -415,13 +445,19 @@ def main():
     if args.hazard_zone_id:
         args.hazard = {"client": client, "zone_id": args.hazard_zone_id, "robot_ids": args.robot_id,
                        "ring": keep_out_ring(client.zone(args.hazard_zone_id))}
-    if not torch.cuda.is_available():
+    if args.preview_jpeg is not None and len(args.topic) != 1:
+        parser.error("--preview-jpeg requires one camera topic")
+    if args.device == "cpu" and args.detector != "rtdetr":
+        parser.error("CPU mode is supported by RT-DETR")
+    if args.device == "cuda" and not torch.cuda.is_available():
         raise SystemExit("CUDA is unavailable. Run with ROS 2 and CUDA PyTorch in the same Python environment.")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     if args.save_misses_dir is not None:
         args.save_misses_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Loading {args.detector} {args.model} on {torch.cuda.get_device_name(0)}...", flush=True)
-    options = {"num_beams": args.num_beams} if args.detector == "florence2" else {}
+    if args.preview_jpeg is not None:
+        args.preview_jpeg.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Loading {args.detector} {args.model} on {args.device}...", flush=True)
+    options = {"num_beams": args.num_beams} if args.detector == "florence2" else {"device": args.device}
     detector = DETECTORS[args.detector](args.model, **options)
 
     rclpy.init()

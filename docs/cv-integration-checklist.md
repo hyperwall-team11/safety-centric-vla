@@ -55,3 +55,10 @@
 - #11 (`develop` → `main`): 정상·위험 개입 전체 시나리오 실행 확인이 없어 승인·병합하지 않았습니다.
 
 작업 중 최신 CTL 기반을 받아 기존 CTL 테스트 36개도 통과했습니다. `control/mujoco/scenario.py --snapshot control/outputs/snapshots`로 실제 팀 장면의 `cctv_1.png`, `cctv_2.png`, `head_camera.png`를 생성했습니다. 이 정지 이미지 생성은 ROS 2 발행 또는 GPU 추론 시험을 대신하지 않습니다.
+
+## 발표용 창고 낙상 확인
+
+1. [시연 안내](warehouse-presentation.md)에 따라 실행하고 CCTV 04에서 후방 통로 작업자가 바닥에 쓰러지는 장면을 확인합니다.
+2. **CCTV 04 낙상자 점검**을 실행해 검출 표시와 낙상 위험 경고를 확인합니다.
+3. `fall/*/report.json`의 CCTV 04 ROS stamp와 관측 ID를 Backend `GET /hazards`의 `source_observation_ids`에서 확인합니다.
+4. CCTV 02 작업자 횡단 명령을 실행해 이 경고와 별개로 기존 E-Stop이 동작하는지 확인합니다.

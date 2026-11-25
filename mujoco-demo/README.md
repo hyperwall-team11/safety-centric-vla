@@ -212,3 +212,9 @@ python3 -m unittest discover -s mujoco-demo/tests -v
 ```
 
 검증 범위는 알려진 카메라 위치·회전에서의 바닥 투영, 이미지 해시 불일치 거부, 시간대 검사, 신뢰도 없는 탐지 보류 및 잘못된 신뢰도 거부입니다. 테스트의 점수는 출력 계약을 확인하는 인공 값이며 실제 탐지 신뢰도나 재현율의 근거가 아닙니다. MuJoCo 캡처와 CPU 검증 기록은 [2026-10-30 검토](../docs/cv-review-2026-10-30.md)를 참고하세요.
+
+## 창고 시연의 CCTV 04 낙상자 점검
+
+`fall_vlm.py`는 서로 다른 ROS stamp의 CCTV 04 프레임에서, 카메라 보정값으로 잘라낸 후방 작업 통로를 Florence-2에 입력합니다. 바닥에 누운 작업자를 대상으로 구문 접지를 수행하고, CCTV 04에서 가로로 누운 검출과 해당 바닥 구역 안의 위치를 확인합니다. 5장 중 2장 이상에서 확인되면 기존 Backend 위험 API를 사용해 작업자 낙상 경고를 등록합니다.
+
+기본 모델은 `florence-community/Florence-2-base`이며, `WAREHOUSE_FALL_MODEL`에 캐시된 로컬 폴더를 지정할 수 있습니다. 제품 구역과 카메라에 맞춘 발표용 검증입니다. 화면 조작과 증거 기록은 [창고 시연](../docs/warehouse-presentation.md)에 있습니다.
