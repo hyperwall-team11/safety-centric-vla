@@ -2,7 +2,7 @@ import numpy as np
 
 from amr import DECK_TOP, PlantAmrs
 from arms import build_plant_with_arms
-from warehouse import AMR, CROSS_X, TRIGGER_X, WALK_END_Y, WALK_START_Y, CrossingWorker, add_warehouse
+from warehouse import AMR, CROSS_X, TRIGGER_X, WALK_END_Y, WALK_START_Y, WAREHOUSE_AMRS, CrossingWorker, add_warehouse
 
 
 def test_worker_crosses_once_after_amr_reaches_trigger_while_moving():
@@ -84,3 +84,18 @@ def test_approved_resume_and_new_move_deliver_loaded_pallet_in_control_core():
     assert abs(x - target[0]) <= ARRIVAL_TOLERANCE_M
     assert y == target[1] and speed == 0.0
     np.testing.assert_allclose(data.mocap_pos[amrs.pallets[AMR.pallet_id]], (x, y, DECK_TOP))
+
+
+def test_warehouse_has_two_loaded_amrs_parked_outside_the_demo_lane():
+    model, data, _ = build_plant_with_arms([], extras=(add_warehouse,))
+    amrs = PlantAmrs(model, data, WAREHOUSE_AMRS, preloaded=True)
+    amrs.set_velocity(AMR.robot_id, 0.4, 0)
+    amrs.step(data, 0.2)
+
+    assert len(amrs.pose) == 3
+    for parked in WAREHOUSE_AMRS[1:]:
+        x, y, yaw = parked.warehouse_dock
+        assert x > AMR.cell_dock[0]
+        assert amrs.odom(parked.robot_id) == (x, y, yaw, 0.0, 0.0)
+        pallet = amrs.pallets[parked.pallet_id]
+        np.testing.assert_allclose(data.mocap_pos[pallet], (x, y, DECK_TOP))

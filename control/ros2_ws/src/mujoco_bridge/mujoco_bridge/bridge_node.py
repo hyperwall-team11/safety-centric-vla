@@ -130,7 +130,9 @@ class MujocoBridge(Node):
 
             model, data, _ = arms.build_plant_with_arms([], extras=(warehouse.add_warehouse,))
             self.sim = simulation.DiffDriveSim(robot, model=model, data=data)
-            self.plant_amrs = amr.PlantAmrs(model, data, (warehouse.AMR,), self.cmd_timeout, preloaded=True)
+            self.plant_amrs = amr.PlantAmrs(
+                model, data, warehouse.WAREHOUSE_AMRS, self.cmd_timeout, preloaded=True,
+            )
             self.crossing_amr_id = warehouse.AMR.robot_id
             model_path = "warehouse_demo"
         elif use_arms or use_amrs:

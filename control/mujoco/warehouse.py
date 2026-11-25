@@ -7,6 +7,11 @@ from amr import PlantAmr, add_plant_amrs
 from scenario import WorkerScript
 
 AMR = PlantAmr("amr-01", "pallet:amr-01", (-4.0, -4.0, 0.0), (4.0, -4.0, 0.0))
+WAREHOUSE_AMRS = (
+    AMR,
+    PlantAmr("amr-02", "pallet:amr-02", (8.3, -8.8, 0.0), (10.35, -8.8, 0.0)),
+    PlantAmr("amr-03", "pallet:amr-03", (8.3, -2.4, 0.0), (10.35, -2.4, 0.0)),
+)
 CROSS_X = 1.0
 TRIGGER_X = -2.4
 WALK_START_Y, WALK_END_Y = -1.5, -6.6
@@ -129,7 +134,9 @@ def add_warehouse(spec):
             camera = spec.camera(name)
             camera.pos, camera.targetbody, camera.fovy = pos, target_body.name, fovy
 
-    add_plant_amrs(spec, (AMR,))
+    add_plant_amrs(spec, WAREHOUSE_AMRS)
+    spec.geom("amr:amr-02/chassis").rgba = [0.12, 0.52, 0.72, 1]
+    spec.geom("amr:amr-03/chassis").rgba = [0.91, 0.44, 0.10, 1]
     chassis = spec.body(f"amr:{AMR.robot_id}")
     chassis.add_camera(name="amr_camera", pos=[0.62, 0, 0.50],
                        xyaxes=[0, -1, 0, 0.15, 0, 0.989], fovy=57)
