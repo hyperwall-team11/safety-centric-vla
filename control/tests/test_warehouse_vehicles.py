@@ -51,3 +51,32 @@ def test_tug_delivers_to_each_supply_table_and_recovers_parcels_next_round():
     assert supply_parcel_pose(22, 1)[:2] == pytest.approx(SUPPLY_TABLES[1])
     assert supply_parcel_pose(40, 0)[:2] != pytest.approx(SUPPLY_TABLES[0])
     assert supply_parcel_pose(58, 1)[:2] != pytest.approx(SUPPLY_TABLES[1])
+
+
+def test_ros_controlled_route_holds_pose_until_explicitly_resumed_after_estop():
+    model, data = build_warehouse()
+    vehicles = WarehouseVehicles(model, data)
+    data.time = 5
+    vehicles.update(data)
+    vehicles.set_estop(True)
+    before = data.mocap_pos.copy()
+    data.time = 8
+    vehicles.update(data)
+    np.testing.assert_allclose(data.mocap_pos, before)
+    assert not vehicles.set_running("tug", True)
+    assert not vehicles.set_fork_height(0.08)
+
+    vehicles.set_estop(False)
+    data.time = 9
+    vehicles.update(data)
+    np.testing.assert_allclose(data.mocap_pos, before)
+    assert not vehicles.set_fork_height(float("nan"))
+    assert vehicles.set_fork_height(0.08)
+    data.time = 11
+    vehicles.update(data)
+    assert vehicles.fork_height == pytest.approx(0.08)
+    np.testing.assert_allclose(data.mocap_pos[vehicles.ids[0]], before[vehicles.ids[0]])
+    assert vehicles.set_running("tug", True)
+    data.time = 12
+    vehicles.update(data)
+    assert abs(vehicles.odometry["tug"][3]) > 0
