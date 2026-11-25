@@ -72,7 +72,7 @@ export function warehouseMaterial(name, size) {
       return new THREE.MeshStandardMaterial({map, roughness: 0.58});
     });
   }
-  if ((rack && name.includes('_box_')) || /pallet:.*\/cargo_/.test(name)) {
+  if ((rack && name.includes('_box_')) || /pallet:.*\/cargo_/.test(name) || name.startsWith('spill_box_')) {
     const endings = name.match(/\d+/g).map(Number);
     const face = endings.reduce((sum, n) => sum + n, 0) % 4;
     const side = carton(face, false);
