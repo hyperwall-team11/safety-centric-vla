@@ -87,3 +87,20 @@ PYTHONPATH="$PWD/outputs/warehouse-deps${PYTHONPATH:+:$PYTHONPATH}" pixi run war
 - **CCTV 03 · 출하 도크**에서 무인 지게차가 팔레트 밑으로 포크를 넣고, 들어 올린 뒤 도크까지 운반해 내리는 모습을 볼 수 있습니다.
 - **CCTV 05 · 부품 공급 구역**에서 견인형 AGV가 부품 카트 3대를 연결해 원형 동선을 따라 움직입니다. 첫 순회에서 공급대 두 곳에 정차해 차례대로 상자를 내리고, 다음 순회 때 회수합니다.
 - 두 장비는 별도 구역에서 시뮬레이션 시각에 따라 반복 구동합니다. 자연어 승인·CCTV 감지·ROS E-Stop 시연은 기존 `amr-01`에 연결되어 있습니다.
+
+### ROS 2에서 물류 장비 조작
+
+시연과 같은 ROS 도메인(기본 `73`)에서 실행합니다. 서비스의 `data: false`로 장비를 멈추고 `data: true`로 지정 경로 운행을 재개합니다. 포크 높이는 지게차가 정지한 상태에서 0.03~0.28 m 범위 내로 지시합니다.
+
+```bash
+export ROS_DOMAIN_ID=73 ROS_LOCALHOST_ONLY=1
+ros2 service call /warehouse/forklift/set_running std_srvs/srv/SetBool '{data: false}'
+ros2 topic pub --once /warehouse/forklift/fork_height_command std_msgs/msg/Float64 '{data: 0.28}'
+ros2 topic echo --once /warehouse/forklift/fork_height
+ros2 service call /warehouse/forklift/set_running std_srvs/srv/SetBool '{data: true}'
+ros2 service call /warehouse/tug/set_running std_srvs/srv/SetBool '{data: false}'
+ros2 service call /warehouse/tug/set_running std_srvs/srv/SetBool '{data: true}'
+ros2 topic echo --once /warehouse/tug/odom
+```
+
+두 장비 모두 `/warehouse/<장비>/odom`에 실제 시뮬레이터 자세와 속도를 발행합니다. E-Stop에 정지하며, 해제 이후 명시적으로 운행 서비스를 호출해야 움직입니다. 이동은 정의된 시연 경로를 이용합니다. 지게차와 견인차의 외형에는 tevy의 CC0 3D 모델을 사용합니다.

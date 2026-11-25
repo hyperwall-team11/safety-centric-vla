@@ -110,3 +110,8 @@ python cctv_post.py --dir ../../outputs/threejs_cctv   # raw_*.png → CCTV 효�
 ## 에셋 라이선스
 
 `fetch_assets.py`가 받는 텍스처·HDRI·모델은 모두 [Poly Haven](https://polyhaven.com/license) CC0이다. 작업자 모델은 MakeHuman CC0 에셋(PR #43)이다.
+
+### 창고 시연의 외부 물류 차량 모델
+
+- `models/warehouse-forklift.glb`는 [Forklift v1 LOD2](https://tevy.dev/models/forklift)의 CC0 모델입니다. MuJoCo 포크 높이를 모델의 캐리지에 반영합니다.
+- `models/warehouse-tug.glb`는 [Aircraft Pushback Tug v1 LOD2](https://tevy.dev/models/pushback-tug)의 CC0 모델입니다. 원본 토우바를 숨기고 창고 카트 연결봉을 렌더합니다.
