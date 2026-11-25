@@ -26,7 +26,7 @@
 
 ## 시연
 
-- [최종 발표용 물류창고 시연](warehouse-presentation.md)
+- [최종 발표용 물류창고 시연](warehouse-presentation.md) · AMR 자동 정지, 낙상자 VLM 발견, 작업자 위험 경고
 
 ## 진행 기록
 
