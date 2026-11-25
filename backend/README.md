@@ -265,11 +265,20 @@ curl -X POST http://127.0.0.1:8000/task-orders/{task_id}/action-proposals \
 
 요청 본문은 JSON 객체이며 `speed_limit`은 선택값입니다. 생략하면 명세 기본값인 `0.4 m/s`와 로봇 최대 속도 중 작은 값을 사용합니다. 좌표 목적지는 TaskOrder의 좌표 frame을, 구역 목적지는 로봇 pose frame을 사용합니다. 좌표 변환 없이 frame 이름만 덮어쓰는 실수를 막기 위해 생성 요청에서는 frame을 변경할 수 없습니다.
 
-`MOVE_TO` 제안은 `parameters.target_pose`와 `parameters.speed_limit`를 생성합니다. 물체 TaskOrder는 해석만으로 집기와 놓기를 임의로 결정하지 않으며, 요청 본문에 `"manipulation": "PICK"` 또는 `"PLACE"`를 명시해야 합니다. `MANIPULATE` 제안은 스키마 v1.1에 맞춰 `manipulation`, `object_id`, `target_pose`를 생성합니다. `target_pose`는 TaskOrder의 `COORDINATE` 또는 `ZONE` 목적지 표현을 그대로 유지합니다. 외부 VLA가 직접 제안을 등록할 때 선택적인 `parameters.priority`는 `NORMAL` 또는 `SAFETY`를 받으며, `SAFETY`는 시스템이 발행하는 `STOP`·`RESUME`에만 허용합니다.
+`MOVE_TO` 제안은 `parameters.target_pose`와 `parameters.speed_limit`를 생성합니다. 대상 물체가 없는 이동 작업은 기존처럼 목적지 `MOVE_TO` 하나를 생성합니다. 대상 물체가 있는 작업은 먼저 `POST /physical-objects`로 물체의 현재 pose를 등록한 뒤 빈 요청 `{}`을 보내면, 성공한 Proposal 이력을 기준으로 `물체 접근 MOVE_TO → PICK → 목적지 MOVE_TO → PLACE` 중 다음 단계 하나를 자동 생성합니다. `"manipulation": "PICK"` 또는 `"PLACE"`를 명시하면 기존 수동 단계 생성도 사용할 수 있습니다. `MANIPULATE` 제안은 스키마 v1.1에 맞춰 `manipulation`, `object_id`, `target_pose`를 생성합니다. 외부 VLA가 직접 제안을 등록할 때 선택적인 `parameters.priority`는 `NORMAL` 또는 `SAFETY`를 받으며, `SAFETY`는 시스템이 발행하는 `STOP`·`RESUME`에만 허용합니다.
 
 성공하면 TaskOrder가 `CREATED`에서 `PLANNING`으로 바뀌며 Proposal은 `PROPOSED`로 저장됩니다. 같은 TaskOrder에 활성 Proposal을 중복 생성하면 `409`를 반환합니다. 선택적인 `Idempotency-Key`를 보낸 경우, 동일한 키와 동일한 본문을 재전송하면 기존 Proposal을 `200`으로 반환하고 새 Proposal을 만들지 않습니다. 같은 키에 다른 본문을 보내면 `409`입니다.
 
-대상 물체가 있는 운반 TaskOrder는 여러 ActionProposal을 순차 실행할 수 있습니다. OpenVLA는 `MANIPULATE/PICK`·`MANIPULATE/PLACE`를, Navigation Planner는 같은 TaskOrder의 목적지로 가는 `MOVE_TO`를 `POST /action-proposals`에 제출합니다. 한 번에 활성 Proposal은 하나만 허용하므로 0.5초 주기 실행기는 현재 Proposal의 결과가 반영된 뒤 다음 제안을 제출해야 합니다. 단계별 재시도는 서로 다른 `Idempotency-Key`를 사용합니다.
+대상 물체가 있는 운반 TaskOrder는 여러 ActionProposal을 순차 실행합니다. 0.5초 주기 실행기는 `POST /task-orders/{task_id}/action-proposals`에 `{}`을 반복 전송하면 됩니다. 활성 Proposal이 남아 있을 때는 `409`가 반환되며, 실행 결과가 반영된 다음 호출에서 Task Executor가 다음 단계를 생성합니다. 각 자동 단계는 기존과 동일하게 안전 평가와 실행 승인을 통과해야 합니다. 단계별 재시도는 서로 다른 `Idempotency-Key`를 사용합니다. OpenVLA 또는 Navigation Planner가 만든 구조화 Proposal을 `POST /action-proposals`로 직접 등록하는 경로도 유지됩니다.
+
+자동 다단계 회귀 테스트 한 건만 실행하려면 다음 명령을 사용합니다.
+
+```bash
+python -m pytest -q tests/test_execution_result_api.py \
+  -k object_transport_runs_multiple_proposals_before_task_completion
+```
+
+이 테스트는 같은 생성 API의 빈 요청으로 `MOVE_TO → PICK → MOVE_TO → PLACE`가 순서대로 생성되고, 앞의 세 단계에서는 TaskOrder가 `PLANNING`, 마지막 `PLACE` 성공 뒤에는 `COMPLETED`가 되는지 확인합니다.
 
 `HELD` 작업은 일반 생성 API로 재개하지 않습니다. 관련 위험 해제까지 확인하는 별도 Resume 흐름이 팀 계약으로 추가되기 전에는 `409`를 반환합니다.
 
@@ -283,6 +292,8 @@ curl -X POST http://127.0.0.1:8000/task-orders/{task_id}/action-proposals \
 
 - `POST /robots`
 - `GET /robots`
+- `POST /physical-objects`
+- `GET /physical-objects`
 - `POST /zones`
 - `GET /zones`
 - `GET /task-orders`

@@ -4,7 +4,7 @@
 - 기준 코드: `backend/app/main.py`, `backend/app/models.py`
 - 기준 버전: FastAPI application `0.2.0`
 - 작성일: 2026-10-30
-- 수정일: 2026-11-21
+- 수정일: 2026-11-25
 - 기본 URL(로컬): `http://127.0.0.1:8000`
 - 대화형 문서: `/docs`
 - OpenAPI JSON: `/openapi.json`
@@ -36,7 +36,7 @@
 
 ## 2. 구현 엔드포인트
 
-현재 구현은 20개 path, 25개 HTTP operation으로 구성된다.
+현재 구현은 23개 path, 29개 HTTP operation으로 구성된다.
 
 | Method | Path | 성공 | 용도 |
 |---|---|---:|---|
@@ -45,6 +45,8 @@
 | `GET` | `/api/v1/objects/{type}` | `200` | 저장된 온톨로지 객체를 타입별로 통합 조회 |
 | `POST` | `/robots` | `201` | Robot 등록 |
 | `GET` | `/robots` | `200` | Robot 전체 조회 |
+| `POST` | `/physical-objects` | `201` | PhysicalObject 등록 |
+| `GET` | `/physical-objects` | `200` | PhysicalObject 전체 조회 |
 | `POST` | `/zones` | `201` | Zone 등록 |
 | `GET` | `/zones` | `200` | Zone 전체 조회 |
 | `PUT` | `/sensors/{sensor_id}` | `200` | Sensor 등록·갱신 |
@@ -85,6 +87,7 @@
 - `Robot`
 - `Sensor`
 - `Worker`
+- `PhysicalObject`
 - `Zone`
 - `TaskOrder`
 - `ActionProposal`
@@ -92,13 +95,13 @@
 - `SafetyRule`
 - `ExecutionLog`
 
-`offset`(기본 0)과 `limit`(기본 50, 최대 100)으로 조회 범위를 제한하며, 응답의 `X-Total-Count`는 페이지네이션 전 전체 건수다. Worker를 제외한 타입은 저장된 객체가 없으면 `200`과 빈 배열 `[]`을 반환한다. Worker 관측 스냅샷이 한 번도 들어오지 않았으면 `404`를 반환하고, 관측 결과 작업자가 없으면 `200`, `[]`, 관측 시각 `X-Observed-At`을 반환한다. 지원하지 않는 타입이나 대소문자가 다른 값은 `422`를 반환한다. `SafetyRule`은 저장소가 빈 경우 기본 규칙을 생성한 뒤 반환한다. `Observation`과 `PhysicalObject`는 현재 저장 계층이 없어 조회 대상에서 제외한다.
+`offset`(기본 0)과 `limit`(기본 50, 최대 100)으로 조회 범위를 제한하며, 응답의 `X-Total-Count`는 페이지네이션 전 전체 건수다. Worker를 제외한 타입은 저장된 객체가 없으면 `200`과 빈 배열 `[]`을 반환한다. Worker 관측 스냅샷이 한 번도 들어오지 않았으면 `404`를 반환하고, 관측 결과 작업자가 없으면 `200`, `[]`, 관측 시각 `X-Observed-At`을 반환한다. 지원하지 않는 타입이나 대소문자가 다른 값은 `422`를 반환한다. `SafetyRule`은 저장소가 빈 경우 기본 규칙을 생성한 뒤 반환한다. `Observation`은 현재 저장 계층이 없어 조회 대상에서 제외한다.
 
 이 API는 저장소에 보관된 조회 시점의 스냅샷을 제공할 뿐 현재 안전 상태나 관측 최신성을 보장하지 않는다. 안전 판단에 사용할 때는 Robot의 `updated_at`·`last_heartbeat_at`, Sensor의 `last_frame_at`, Worker의 `X-Observed-At`과 각 Worker의 `last_seen_at`을 기존 최신성 정책과 비교해야 하며, Action 실행 승인에는 반드시 Backend의 평가·실행 API를 사용한다.
 
 WebSocket `WS /ws/state`는 연결 직후와 상태 변경 시 전체 상태 스냅샷을 전송한다. 연속 변경은 200ms 전송 간격 안에서 최신 전체 상태 하나로 합치며, 상태 변경이 없어도 15초마다 같은 형식의 스냅샷을 heartbeat로 전송한다. 이 heartbeat는 상태 구독 연결 유지용이며 ROS 2 안전 heartbeat나 Sensor·Worker 관측 최신성을 대신하지 않는다. WebSocket 경로는 HTTP OpenAPI path·operation 수에 포함하지 않는다.
 
-스냅샷은 `type=STATE_SNAPSHOT`, 단조 증가하는 `revision`, 서버 전송 시각 `observed_at`과 함께 Robot, Sensor, Worker, Zone, TaskOrder, ActionProposal, HazardEvent, SafetyRule 및 최근 ExecutionLog 100건을 포함한다. Worker 관측이 한 번도 없으면 `workers=null`, 관측 결과 작업자가 없으면 `workers=[]`이며, `workers_observed_at`으로 관측 시각을 제공한다. 관측 유효성은 WebSocket 연결 여부가 아니라 기존 `last_frame_at`, `workers_observed_at` 기준으로 판단한다. 전체 ExecutionLog는 `GET /execution-logs`로 조회한다. 현재는 재연결 시 delta 복구 없이 항상 전체 스냅샷을 보낸다.
+스냅샷은 `type=STATE_SNAPSHOT`, 단조 증가하는 `revision`, 서버 전송 시각 `observed_at`과 함께 Robot, Sensor, Worker, PhysicalObject, Zone, TaskOrder, ActionProposal, HazardEvent, SafetyRule 및 최근 ExecutionLog 100건을 포함한다. Worker 관측이 한 번도 없으면 `workers=null`, 관측 결과 작업자가 없으면 `workers=[]`이며, `workers_observed_at`으로 관측 시각을 제공한다. 관측 유효성은 WebSocket 연결 여부가 아니라 기존 `last_frame_at`, `workers_observed_at` 기준으로 판단한다. 전체 ExecutionLog는 `GET /execution-logs`로 조회한다. 현재는 재연결 시 delta 복구 없이 항상 전체 스냅샷을 보낸다.
 
 ## 3. 데이터 계약
 
@@ -223,7 +226,7 @@ WebSocket `WS /ws/state`는 연결 직후와 상태 변경 시 전체 상태 스
 | 필드 | 타입 | 필수 | 규칙 |
 |---|---|---:|---|
 | `speed_limit` | number | X | 양수. 생략 시 `min(0.4, robot.motion_limits.max_speed)` |
-| `manipulation` | enum | 물체 작업만 O | `PICK`, `PLACE`. MOVE_TO에는 지정 불가 |
+| `manipulation` | enum | X | `PICK`, `PLACE`. 물체 작업의 수동 단계 생성에 사용하며, 생략하면 다음 단계를 자동 선택 |
 
 MOVE_TO 예:
 
@@ -237,12 +240,15 @@ MANIPULATE 예:
 {"manipulation":"PLACE","speed_limit":0.3}
 ```
 
+대상 물체가 없는 작업은 목적지 `MOVE_TO`를 생성한다. 대상 물체가 있는 작업은 등록된 PhysicalObject pose와 같은 TaskOrder의 성공 이력을 사용해 `물체 접근 MOVE_TO → PICK → 목적지 MOVE_TO → PLACE` 중 아직 완료되지 않은 다음 단계 하나를 생성한다. 클라이언트는 각 단계의 결과가 반영된 뒤 같은 API에 빈 JSON 객체 `{}`을 다시 보내면 된다. `manipulation`을 지정하면 자동 선택 대신 해당 조작 단계를 생성한다.
+
 성공 시 Proposal을 `PROPOSED`로 저장하고 TaskOrder를 `CREATED`에서 `PLANNING`으로 변경한다. 다음 상태에서는 생성하지 않는다.
 
 - TaskOrder가 `CREATED` 또는 `PLANNING`이 아님
 - Robot이 없거나 `ERROR`
 - 같은 TaskOrder에 `PROPOSED`, `APPROVED`, `EXECUTING`, `HELD` Proposal이 이미 존재
-- MANIPULATE에 물체 ID 또는 명시적인 PICK/PLACE가 없음
+- 자동 물체 작업인데 대상 PhysicalObject가 등록되지 않았거나 이동 불가
+- 수동 MANIPULATE에 물체 ID 또는 명시적인 PICK/PLACE가 없음
 - MOVE_TO에 물체 또는 manipulation이 지정됨
 - TaskOrder v1.1로 안전하게 표현할 수 없는 STOP/RESUME 명령
 
@@ -439,7 +445,7 @@ ActionProposal: PROPOSED ── evaluate 통과 ──> APPROVED
                 EXECUTING ── 실패 보고 ──> FAILED
 ```
 
-대상 물체가 있는 운반 TaskOrder는 여러 ActionProposal을 순차 실행한다. OpenVLA 조작 Proposal과 Navigation Planner의 `MOVE_TO` Proposal을 같은 `task_id`로 등록할 수 있지만, 활성 상태(`PROPOSED`, `APPROVED`, `EXECUTING`, `HELD`)의 Proposal은 TaskOrder당 하나만 허용한다. `PICK`과 Navigation `MOVE_TO` 성공은 개별 Proposal만 `SUCCEEDED`로 끝내고 TaskOrder를 `PLANNING`으로 돌린다. 최종 `MANIPULATE/PLACE` 성공이 전체 TaskOrder를 `COMPLETED`로 만든다.
+대상 물체가 있는 운반 TaskOrder는 여러 ActionProposal을 순차 실행한다. Task Executor는 등록된 PhysicalObject와 성공한 Proposal 이력을 보고 다음 `MOVE_TO` 또는 `MANIPULATE`를 하나씩 자동 생성한다. OpenVLA 조작 Proposal과 Navigation Planner의 `MOVE_TO` Proposal을 같은 `task_id`로 직접 등록하는 방식도 지원하지만, 활성 상태(`PROPOSED`, `APPROVED`, `EXECUTING`, `HELD`)의 Proposal은 TaskOrder당 하나만 허용한다. 물체 접근, `PICK`, 목적지 `MOVE_TO` 성공은 개별 Proposal만 `SUCCEEDED`로 끝내고 TaskOrder를 `PLANNING`으로 돌린다. 최종 `MANIPULATE/PLACE` 성공이 전체 TaskOrder를 `COMPLETED`로 만든다.
 
 ResumeTask 전이와 실제 ROS 2 어댑터 결과 토픽 연결은 아직 구현하지 않았다. 현재 결과 API는 Mock adapter 및 연동 시험용 HTTP 경계다.
 
@@ -449,7 +455,7 @@ ResumeTask 전이와 실제 ROS 2 어댑터 결과 토픽 연결은 아직 구�
 |---|---|---|
 | API prefix | `/api/v1` | 통합 객체 조회에 적용, 나머지 경로는 prefix 없음 |
 | Proposal 제출·평가 | 한 경계에서 판정 결과 반환 | 등록, 평가, 실행 API 분리 |
-| 객체 조회 | `GET /api/v1/objects/{type}` | 저장 계층이 있는 9개 객체 타입의 통합 조회 구현 |
+| 객체 조회 | `GET /api/v1/objects/{type}` | 저장 계층이 있는 10개 객체 타입의 통합 조회 구현 |
 | ResumeTask | 관리자 승인 2단계 복귀 | 미구현, HELD 생성 요청은 `409` |
 | 인증·권한 | CRITICAL 해제와 Resume는 관리자 전용 | 선택형 역할별 API 토큰 인증과 요청자 전달 구현. CRITICAL 해제 요청의 `resolved_by=OPERATOR` 검사만 있고 역할별 인가는 미구현 |
 | 규칙 SR-01~06 | 속도·구역·거리·위험·상태·센서 공백 | SR-01 기본 0.4m/s·Robot·Zone 상한, 로봇 상태·adapter·관련 CRITICAL 위험 구현. KEEP_OUT 경로 검사를 구현하고 거리·센서 공백은 관측 안전 검사 활성화 시 적용 |

@@ -85,6 +85,21 @@ class ExecutionResultApiTest(unittest.TestCase):
         self.assertNotIn(task["task_id"], store.task_received_at)
 
     def test_object_transport_runs_multiple_proposals_before_task_completion(self) -> None:
+        physical_object = self.client.post(
+            "/physical-objects",
+            json={
+                "object_id": "상자3",
+                "object_type": "BOX",
+                "pose": {
+                    "frame_id": "map",
+                    "position": {"x": 0.5, "y": 0.3, "z": 0.02},
+                    "orientation": {"x": 0, "y": 0, "z": 0, "w": 1},
+                },
+                "current_zone_id": "A구역",
+                "movable": True,
+            },
+        )
+        self.assertEqual(physical_object.status_code, 201, physical_object.text)
         task_response = self.client.post(
             "/task-orders/from-natural-language",
             json={
@@ -94,11 +109,32 @@ class ExecutionResultApiTest(unittest.TestCase):
         self.assertEqual(task_response.status_code, 201, task_response.text)
         task = task_response.json()
 
+        approach = self.client.post(
+            f"/task-orders/{task['task_id']}/action-proposals",
+            json={},
+        )
+        self.assertEqual(approach.status_code, 201, approach.text)
+        self.assertEqual(approach.json()["action_type"], "MOVE_TO")
+        self.assertEqual(
+            approach.json()["parameters"]["target_pose"]["position"],
+            {"x": 0.5, "y": 0.3, "z": 0.0},
+        )
+        approach_result = self.execute_successfully(
+            approach.json()["proposal_id"],
+            "상자 위치 접근",
+        )
+        self.assertEqual(approach_result.status_code, 200, approach_result.text)
+        self.assertEqual(store.tasks[task["task_id"]].status, "PLANNING")
+        self.assertEqual(store.robots["robot-01"].pose.position.x, 0.5)
+        self.assertEqual(store.robots["robot-01"].pose.position.y, 0.3)
+
         pick = self.client.post(
             f"/task-orders/{task['task_id']}/action-proposals",
-            json={"manipulation": "PICK"},
+            json={},
         )
         self.assertEqual(pick.status_code, 201, pick.text)
+        self.assertEqual(pick.json()["action_type"], "MANIPULATE")
+        self.assertEqual(pick.json()["parameters"]["manipulation"], "PICK")
         pick_result = self.execute_successfully(pick.json()["proposal_id"], "상자 파지")
         self.assertEqual(pick_result.status_code, 200, pick_result.text)
         self.assertEqual(store.tasks[task["task_id"]].status, "PLANNING")
@@ -106,37 +142,29 @@ class ExecutionResultApiTest(unittest.TestCase):
         self.assertIn(task["task_id"], store.task_received_at)
 
         move = self.client.post(
-            "/action-proposals",
-            json={
-                "task_id": task["task_id"],
-                "robot_id": "robot-01",
-                "action_type": "MOVE_TO",
-                "parameters": {
-                    "target_pose": task["destination"],
-                    "speed_limit": 0.3,
-                },
-                "trajectory": None,
-                "frame_id": "map",
-                "speed_limit": 0.3,
-                "model_name": "navigation-planner",
-                "model_version": "test-1",
-            },
+            f"/task-orders/{task['task_id']}/action-proposals",
+            json={},
         )
         self.assertEqual(move.status_code, 201, move.text)
+        self.assertEqual(move.json()["action_type"], "MOVE_TO")
+        self.assertEqual(move.json()["parameters"]["target_pose"], task["destination"])
         move_result = self.execute_successfully(move.json()["proposal_id"], "목적지 이동")
         self.assertEqual(move_result.status_code, 200, move_result.text)
         self.assertEqual(store.tasks[task["task_id"]].status, "PLANNING")
 
         place = self.client.post(
             f"/task-orders/{task['task_id']}/action-proposals",
-            json={"manipulation": "PLACE"},
+            json={},
         )
         self.assertEqual(place.status_code, 201, place.text)
+        self.assertEqual(place.json()["parameters"]["manipulation"], "PLACE")
         place_result = self.execute_successfully(place.json()["proposal_id"], "상자 배치")
         self.assertEqual(place_result.status_code, 200, place_result.text)
         self.assertEqual(store.tasks[task["task_id"]].status, "COMPLETED")
         self.assertEqual(store.robots["robot-01"].status, "IDLE")
         self.assertNotIn(task["task_id"], store.task_received_at)
+        self.assertEqual(store.objects["상자3"].pose.position.x, 1.0)
+        self.assertEqual(store.objects["상자3"].pose.position.y, 2.0)
 
         proposals = self.client.get(
             f"/task-orders/{task['task_id']}/action-proposals"
@@ -144,6 +172,7 @@ class ExecutionResultApiTest(unittest.TestCase):
         self.assertEqual(
             [(proposal["action_type"], proposal["status"]) for proposal in proposals],
             [
+                ("MOVE_TO", "SUCCEEDED"),
                 ("MANIPULATE", "SUCCEEDED"),
                 ("MOVE_TO", "SUCCEEDED"),
                 ("MANIPULATE", "SUCCEEDED"),

@@ -14,6 +14,7 @@ from .models import (
     AdapterResultReport,
     ExecutionLog,
     HazardEvent,
+    PhysicalObject,
     Robot,
     SafetyRule,
     Sensor,
@@ -80,6 +81,7 @@ def _initialize_empty_state(target: Any) -> None:
     target.workers: list[Worker] | None = None
     target.workers_observed_at: datetime | None = None
     target.zones: dict[str, Zone] = {}
+    target.objects: dict[str, PhysicalObject] = {}
     target.tasks: dict[str, TaskOrder] = {}
     target.task_received_at: dict[str, datetime] = {}
     target.task_idempotency: dict[str, tuple[str, str]] = {}
@@ -114,6 +116,7 @@ def _serialize_state(source: Any) -> dict[str, Any]:
             else None
         ),
         "zones": {key: _dump_model(value) for key, value in source.zones.items()},
+        "objects": {key: _dump_model(value) for key, value in source.objects.items()},
         "tasks": {key: _dump_model(value) for key, value in source.tasks.items()},
         "task_received_at": {
             key: value.isoformat() for key, value in source.task_received_at.items()
@@ -165,6 +168,10 @@ def _restore_state(target: Any, snapshot: dict[str, Any]) -> None:
     )
     target.zones = {
         key: Zone.model_validate(value) for key, value in snapshot["zones"].items()
+    }
+    target.objects = {
+        key: PhysicalObject.model_validate(value)
+        for key, value in snapshot.get("objects", {}).items()
     }
     target.tasks = {
         key: TaskOrder.model_validate(value) for key, value in snapshot["tasks"].items()

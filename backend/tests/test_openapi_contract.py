@@ -17,6 +17,8 @@ class OpenApiContractTest(unittest.TestCase):
             ("GET", "/api/v1/objects/{type}"),
             ("POST", "/robots"),
             ("GET", "/robots"),
+            ("POST", "/physical-objects"),
+            ("GET", "/physical-objects"),
             ("POST", "/zones"),
             ("GET", "/zones"),
             ("PUT", "/sensors/{sensor_id}"),
@@ -42,9 +44,9 @@ class OpenApiContractTest(unittest.TestCase):
         }
 
         self.assertEqual(schema["info"]["version"], "0.2.0")
-        self.assertEqual(len(schema["paths"]), 22)
+        self.assertEqual(len(schema["paths"]), 23)
         self.assertEqual(actual_operations, expected_operations)
-        self.assertEqual(len(actual_operations), 27)
+        self.assertEqual(len(actual_operations), 29)
         self.assertEqual(
             schema["components"]["securitySchemes"]["BearerAuth"]["scheme"],
             "bearer",
