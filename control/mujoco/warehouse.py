@@ -183,11 +183,12 @@ def add_warehouse(spec):
     for name, pos, target, fovy in (
         ("cctv_1", (-9.25, -5.8, 4.75), (2.15, -3.6, 1.05), 65),
         ("cctv_2", (4.4, -3.2, 3.9), (1.0, -4.2, 0.65), 68),
-        ("cctv_3", (10.6, -5.8, 4.65), (2.1, -3.7, 0.90), 70),
+        ("cctv_3", (11.15, -2.6, 4.75), (7.15, -6.0, 0.65), 70),
+        ("cctv_5", (-10.45, 8.35, 4.65), (-7.15, 5.0, 0.45), 72),
         ("cctv_4", (1.08, 9.55, 4.65), (1.15, 6.35, 0.45), 70),
     ):
         target_body = world.add_body(name=f"{name}_target", pos=target)
-        if name in {"cctv_3", "cctv_4"}:
+        if name in {"cctv_3", "cctv_4", "cctv_5"}:
             world.add_camera(name=name, pos=pos, targetbody=target_body.name, fovy=fovy,
                              mode=mujoco.mjtCamLight.mjCAMLIGHT_TARGETBODY)
         else:

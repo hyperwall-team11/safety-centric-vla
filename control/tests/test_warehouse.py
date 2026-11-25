@@ -131,12 +131,12 @@ def test_spilled_boxes_block_the_rack_gap_outside_the_transport_lane():
     assert sum(covered) >= 150
 
 
-def test_warehouse_model_has_only_amrs_and_no_tiago_workcell():
+def test_warehouse_model_has_no_tiago_workcell():
     import mujoco
 
     model, _ = build_warehouse()
     assert model.nu == 0 and model.njnt == 0
     body_names = {model.body(index).name for index in range(model.nbody)}
     assert {"base_link", "table_a", "table_b", "part_box"}.isdisjoint(body_names)
-    assert model.ncam == 5
+    assert model.ncam == 6
     assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "head_camera") == -1

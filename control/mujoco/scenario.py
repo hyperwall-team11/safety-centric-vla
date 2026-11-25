@@ -21,11 +21,12 @@ CAMERAS = {
     "cctv_2": ("cctv_2", "/cctv_2", "world"),
     "cctv_3": ("cctv_3", "/cctv_3", "world"),
     "cctv_4": ("cctv_4", "/cctv_4", "world"),
+    "cctv_5": ("cctv_5", "/cctv_5", "world"),
     "amr_camera": ("amr_camera", "/amr_camera", "amr_01/base_link"),
     "head_camera": ("head_camera", "/robot/head_camera", "base_link"),
 }
 
-DEFAULT_CAMERAS = tuple(sensor for sensor in CAMERAS if sensor not in {"cctv_3", "cctv_4", "amr_camera"})
+DEFAULT_CAMERAS = tuple(sensor for sensor in CAMERAS if sensor not in {"cctv_3", "cctv_4", "cctv_5", "amr_camera"})
 
 # /joint_states로 내보낼 TIAGo 관절 (팔·몸통·머리·그리퍼·바퀴). 보조바퀴(caster)는 수동 관절이라 제외.
 JOINT_STATE_NAMES = [
