@@ -83,6 +83,8 @@ def write_detection_preview(path, image, record):
     temp = path.with_suffix(".tmp")
     preview.save(temp, format="JPEG", quality=85)
     temp.replace(path)
+    if hazard_id := (record.get("hazard") or {}).get("hazard_id"):
+        path.with_name(f"{hazard_id}.jpg").write_bytes(path.read_bytes())
 
 
 class TopicStats:
@@ -345,7 +347,8 @@ class CameraDetector(Node):
         elapsed = now - min(firsts) if firsts else 0.0
         summary = {
             "topics": [stats.topic for stats in self.topics], "detector": self.detector.name,
-            "model": self.args.model, "gpu": torch.cuda.get_device_name(0),
+            "model": self.args.model, "device": self.args.device,
+            "gpu": torch.cuda.get_device_name(0) if self.args.device == "cuda" else None,
             "stop_reason": self.stop_reason, "processed": self.processed,
             "received_callbacks": sum(t["received_callbacks"] for t in per_topic.values()),
             "replaced_pending": sum(t["replaced_pending"] for t in per_topic.values()),

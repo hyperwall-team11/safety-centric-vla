@@ -60,6 +60,10 @@ test -f "$RENDER/assets/manifest.json" && test -d "$RENDER/node_modules" || {
   echo "먼저 Three.js README의 npm 설치와 에셋 준비를 실행하세요." >&2
   exit 1
 }
+if [[ -n "${CHROMIUM_PATH:-}" && ! -x "$CHROMIUM_PATH" ]]; then
+  echo "실행 가능한 Chromium이 없습니다. CHROMIUM_PATH를 확인하세요." >&2
+  exit 1
+fi
 "$PYTHON" -c 'import rclpy, mujoco, uvicorn, fastapi, redis'
 "$PYTHON" -c 'import rclpy, torch, transformers'
 "$PYTHON" - <<'PY'
@@ -91,7 +95,7 @@ spawn video "$PYTHON" -m mujoco_bridge.cctv_stream --ros-args -p show_sim_clock:
 spawn screen "$PYTHON" "$DEMO" serve --directory "$LOG"
 spawn detector "$PYTHON" "$ROOT/mujoco-demo/ros_camera_detect.py" \
   --topic /cctv_2/image_raw --detector rtdetr --device "${WAREHOUSE_CV_DEVICE:-cpu}" \
-  --model "${WAREHOUSE_CV_MODEL:-PekingU/rtdetr_r50vd}" --backend-url "$BACKEND" \
+  --model "${WAREHOUSE_CV_MODEL:-PekingU/rtdetr_r18vd}" --backend-url "$BACKEND" \
   --covered-zone-id 횡단진입구역 --covered-zone-id 검사스테이션 \
   --hazard-zone-id 횡단진입구역 --robot-id amr-01 --camera-calib "$LOG/calibration.json" \
   --output "$LOG/detections.jsonl" --preview-jpeg "$LOG/detection.jpg"

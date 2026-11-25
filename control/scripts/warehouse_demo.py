@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import String
 from safety_control.interfaces import ESTOP_QOS, ESTOP_TOPIC, state_topic
@@ -101,8 +102,10 @@ class Telemetry(Node):
     def on_estop(self, msg):
         data = json.loads(msg.data)
         with self.lock:
+            was_active = self.estop
             self.estop = data["active"]
-            self.record("estop" if self.estop else "release", {"command": data}, event=True)
+            if self.estop or was_active:
+                self.record("estop" if self.estop else "release", {"command": data}, event=True)
 
     def on_odom(self, msg):
         stamp = msg.header.stamp
@@ -201,7 +204,16 @@ def make_handler(args, telemetry):
                 records = detection_records(args.directory / "detections.jsonl")
                 state = telemetry.snapshot()
                 camera_state = request(args.video, "/cameras")
-                state["ready"] = (fresh_detection(records) and state["adapter"] == "IDLE" and
+                fresh_workers = False
+                if fresh_detection(records):
+                    try:
+                        worker_snapshot = request(args.backend, "/workers/snapshot")
+                        age = (datetime.now(timezone.utc) -
+                               datetime.fromisoformat(worker_snapshot["observed_at"])).total_seconds()
+                        fresh_workers = 0 <= age < 1.0
+                    except ValueError:
+                        pass
+                state["ready"] = (fresh_workers and state["adapter"] == "IDLE" and
                                   all(any(camera["sensor_id"] == sensor and camera["last_frame_at"] is not None
                                           and time.time() - camera["last_frame_at"] < 2 for camera in camera_state)
                                       for sensor in ("cctv_1", "cctv_2", "amr_camera")))
@@ -274,14 +286,22 @@ def main():
     else:
         rclpy.init()
         telemetry = Telemetry(args.directory)
-        thread = threading.Thread(target=rclpy.spin, args=(telemetry,), daemon=True)
+        def spin():
+            try:
+                rclpy.spin(telemetry)
+            except ExternalShutdownException:
+                pass
+
+        thread = threading.Thread(target=spin, daemon=True)
         thread.start()
         try:
             with ThreadingHTTPServer(("127.0.0.1", 5181), make_handler(args, telemetry)) as server:
                 server.daemon_threads = True
-                server.serve_forever()
+                server.timeout = 0.25
+                while rclpy.ok():
+                    server.handle_request()
         finally:
-            rclpy.shutdown()
+            rclpy.try_shutdown()
             thread.join()
             telemetry.destroy_node()
             telemetry.trace.close()
