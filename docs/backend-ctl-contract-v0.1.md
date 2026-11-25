@@ -420,7 +420,7 @@ Backend는 5 Hz로 발행한다. CTL이 마지막 정상 heartbeat 후 1초 동�
 | `robots[].joint_positions` | rad 배열 또는 `null` | 현재 관절각. 어댑터 상태 `joints.positions`를 그대로 쓴다. `null`이면 모델 기본 자세 |
 | `robots[].holding_object_id` | 문자열 또는 `null` | 들고 있는 물체. `PLACE`에 필요 |
 | `objects[]` | `object_id`, `frame_id`, `position`(중심, m), `size`(m) | 대상 물체·상자 장애물. `MOVE_TO`에서도 장애물로 쓴다 |
-| `workers.items[].velocity` | `[vx, vy, vz]` m/s 또는 생략 | 작업자 속도(#97). 있으면 `observed_at`부터 등속으로 외삽하고 예측 시간에 따라 여유 반경을 키운다. 출처(CV 보고 vs Backend 추정)는 CV·ONT 협의 |
+| `workers.items[].velocity` | `[vx, vy, vz]` m/s 또는 생략 | 평면 작업자 속도(#97, `vz = 0`). 있으면 `observed_at`부터 등속으로 외삽하고 예측 시간에 따라 여유 반경을 키운다. 출처(CV 보고 vs Backend 추정)는 CV·ONT 협의 |
 
 판정은 13.2절과 같다. `MANIPULATE`에서는 팔·공구(들고 있는 동안은 물체 포함)가 다른 물체·로봇·작업자와 닿으면 `COLLISION`(팔과 대상 물체의 접촉은 제외), 작업자와 몸 표면 거리가 기준 미만이면 `UNSAFE_DISTANCE`, 경유점 도달 오차가 0.02 m를 넘으면 `GOAL_NOT_REACHED`다.
 
@@ -442,8 +442,9 @@ Backend는 `joint_positions`·`holding_object_id`를 어댑터 상태 토픽(9�
 
 ### 13.3 오래된 PASS 재사용 방지
 
-- Backend는 요청을 만들 때 관련 상태(대상 로봇 상태, Worker 스냅샷 `observed_at`, 열린 HazardEvent, 관련 Zone)로 `snapshot_id`를 정한다.
+- Backend는 요청을 만들 때 관련 상태(대상 로봇 상태와 `robots[].robot_model`, `robots[].joint_positions`, `robots[].holding_object_id`, `objects`, Worker의 위치·`observed_at`·`workers.items[].velocity`, 열린 HazardEvent, 관련 Zone)를 입력에 포함해 `snapshot_id`를 정한다.
 - 실행 직전 재검증에서 관련 상태로 `snapshot_id`를 다시 계산해, 시뮬레이션한 값과 다르면 기존 `PASS`를 폐기하고 다시 시뮬레이션하거나 거부한다. 다른 `snapshot_id`의 `PASS`는 재사용하지 않는다.
+- 기존 요청 또는 실행 직전 요청에서 작업자 한 명이라도 `velocity`를 제공했다면, `snapshot_id`가 같아도 이전 `PASS`를 재사용하지 않는다. 관측 후 경과 시간이 예측 위치와 여유 반경을 바꾸므로 실행 직전의 새 `snapshot_at`으로 다시 시뮬레이션하고, 새 `PASS`를 받아야 실행한다.
 - Backend는 HTTP 응답을 기다리는 동안 저장소 잠금을 잡지 않는다. 잠금은 스냅샷을 만들 때와 결과를 반영할 때만 짧게 잡아, 대기 중에도 위험 이벤트 등록과 긴급 정지가 지연되지 않게 한다.
 
 | 항목 | Backend | ONT | CTL |
