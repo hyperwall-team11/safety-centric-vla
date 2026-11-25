@@ -5,6 +5,7 @@ import mujoco
 
 from amr import PlantAmr, add_plant_amrs
 from scenario import WorkerScript
+from warehouse_vehicles import add_warehouse_vehicles
 
 AMR = PlantAmr("amr-01", "pallet:amr-01", (-4.0, -4.0, 0.0), (4.0, -4.0, 0.0))
 WAREHOUSE_AMRS = (
@@ -193,6 +194,7 @@ def add_warehouse(spec):
             camera = spec.camera(name)
             camera.pos, camera.targetbody, camera.fovy = pos, target_body.name, fovy
 
+    add_warehouse_vehicles(spec)
     add_plant_amrs(spec, WAREHOUSE_AMRS)
     spec.geom("amr:amr-02/chassis").rgba = [0.12, 0.52, 0.72, 1]
     spec.geom("amr:amr-03/chassis").rgba = [0.91, 0.44, 0.10, 1]

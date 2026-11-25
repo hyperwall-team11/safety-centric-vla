@@ -123,9 +123,11 @@ class MujocoBridge(Node):
         self.plant_amrs = None
         warehouse_demo = self.declare_parameter("warehouse_demo", False).value
         self.crossing_amr_id = None
+        self.warehouse_vehicles = None
         if warehouse_demo:
             amr = load_amr(mujoco_dir)
             import warehouse
+            from warehouse_vehicles import WarehouseVehicles
 
             model, data = warehouse.build_warehouse()
             self.sim = simulation.MujocoSim(model, data)
@@ -133,6 +135,7 @@ class MujocoBridge(Node):
                 model, data, warehouse.WAREHOUSE_AMRS, self.cmd_timeout, preloaded=True,
             )
             self.crossing_amr_id = warehouse.AMR.robot_id
+            self.warehouse_vehicles = WarehouseVehicles(model, data)
             model_path = "warehouse_demo"
         elif use_arms or use_amrs:
             arms = load_arms(mujoco_dir)
@@ -303,6 +306,8 @@ class MujocoBridge(Node):
                 self.worker.apply(self.sim.model, self.sim.data)
             before = self.sim.time
             self.sim.step(min(lag, MAX_CATCHUP_S))
+            if self.warehouse_vehicles:
+                self.warehouse_vehicles.update(self.sim.data)
             if self.plant_arms:
                 self.plant_arms.after_step(self.sim.data)
             if self.plant_amrs:
