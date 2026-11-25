@@ -27,6 +27,7 @@ from .sim_scene import SceneState
 DEFAULT_CAMERAS = {
     "cctv_1": "/cctv_1/image_raw",
     "cctv_2": "/cctv_2/image_raw",
+    "amr_camera": "/amr_camera/image_raw",
     "head_camera": "/robot/head_camera/image_raw",
 }
 BOUNDARY = "frame"
@@ -35,7 +36,7 @@ MAX_STREAM_HZ = 15.0
 JPEG_QUALITY = 80
 
 
-def encode_jpeg(data: bytes, width: int, height: int, encoding: str, quality: int = JPEG_QUALITY) -> bytes:
+def encode_jpeg(data: bytes, width: int, height: int, encoding: str, quality: int = JPEG_QUALITY, label: str | None = None) -> bytes:
     """sensor_msgs/Image 원시 바이트 → JPEG. rgb8·bgr8·mono8만 지원한다."""
     if encoding == "rgb8":
         img = PILImage.frombuffer("RGB", (width, height), data, "raw", "RGB", 0, 1)
@@ -45,6 +46,13 @@ def encode_jpeg(data: bytes, width: int, height: int, encoding: str, quality: in
         img = PILImage.frombuffer("L", (width, height), data, "raw", "L", 0, 1)
     else:
         raise ValueError(f"지원하지 않는 encoding: {encoding}")
+    if label is not None:
+        from PIL import ImageDraw
+
+        img = img.convert("RGB")
+        draw = ImageDraw.Draw(img)
+        draw.rectangle((8, 8, 175, 29), fill="#10252c")
+        draw.text((14, 12), label, fill="white")
     out = io.BytesIO()
     img.save(out, format="JPEG", quality=quality)
     return out.getvalue()
@@ -182,11 +190,16 @@ def main():
     default_xml = os.path.join(os.environ.get("PIXI_PROJECT_ROOT", "."), "mujoco/models/scenario_scene.xml")
     scene_xml = str(node.declare_parameter("scene_xml", "", dyn).value) or default_xml
 
+    show_sim_clock = node.declare_parameter("show_sim_clock", False).value
     store = FrameStore(dict(DEFAULT_CAMERAS))
+    names = {"cctv_1": "CCTV 01", "cctv_2": "CCTV 02", "amr_camera": "AMR CAM"}
 
     def on_image(sensor_id: str, msg: Image) -> None:
         try:
-            jpeg = encode_jpeg(bytes(msg.data), msg.width, msg.height, msg.encoding)
+            stamp = msg.header.stamp
+            sim_time = stamp.sec + stamp.nanosec / 1e9
+            label = f"{names[sensor_id]}  T+{sim_time:07.2f}s" if show_sim_clock and sensor_id in names else None
+            jpeg = encode_jpeg(bytes(msg.data), msg.width, msg.height, msg.encoding, label=label)
         except ValueError as exc:
             node.get_logger().warn(f"{sensor_id}: {exc}", throttle_duration_sec=10.0)
             return
