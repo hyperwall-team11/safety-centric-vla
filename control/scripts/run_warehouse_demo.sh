@@ -7,13 +7,14 @@ RENDER="$CONTROL/scripts/threejs_cctv"
 mkdir -p "$CONTROL/outputs"
 LOG="$(mktemp -d "$CONTROL/outputs/warehouse.XXXXXX")"
 BACKEND=http://127.0.0.1:8017
-export ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID="${WAREHOUSE_ROS_DOMAIN_ID:-73}"
 export PIXI_PROJECT_ROOT="$CONTROL"
+WAREHOUSE_EXTRA_PYTHONPATH="${PYTHONPATH:-}"
 if [[ -n "${WAREHOUSE_ROS_PREFIX:-}" ]]; then
   export PATH="$WAREHOUSE_ROS_PREFIX/bin:$PATH"
   source "$WAREHOUSE_ROS_PREFIX/setup.bash"
 fi
-export PYTHONPATH="$CONTROL/mujoco:$ROOT/mujoco-demo:$CONTROL/ros2_ws/src/mujoco_bridge:$CONTROL/ros2_ws/src/robot_adapter:$CONTROL/ros2_ws/src/safety_control${PYTHONPATH:+:$PYTHONPATH}"
+export ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID="${WAREHOUSE_ROS_DOMAIN_ID:-73}"
+export PYTHONPATH="${WAREHOUSE_EXTRA_PYTHONPATH:+$WAREHOUSE_EXTRA_PYTHONPATH:}$CONTROL/mujoco:$ROOT/mujoco-demo:$CONTROL/ros2_ws/src/mujoco_bridge:$CONTROL/ros2_ws/src/robot_adapter:$CONTROL/ros2_ws/src/safety_control${PYTHONPATH:+:$PYTHONPATH}"
 PYTHON="${WAREHOUSE_PYTHON:-python}"
 DEMO="$CONTROL/scripts/warehouse_demo.py"
 PIDS=()
@@ -59,7 +60,8 @@ test -f "$RENDER/assets/manifest.json" && test -d "$RENDER/node_modules" || {
   echo "먼저 Three.js README의 npm 설치와 에셋 준비를 실행하세요." >&2
   exit 1
 }
-"$PYTHON" -c 'import rclpy, mujoco, uvicorn, fastapi, redis, torch, transformers'
+"$PYTHON" -c 'import rclpy, mujoco, uvicorn, fastapi, redis'
+"$PYTHON" -c 'import rclpy, torch, transformers'
 "$PYTHON" - <<'PY'
 import socket
 for port in (5181, 8017, 8081, 8100, 8765):

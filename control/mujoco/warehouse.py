@@ -83,7 +83,7 @@ def add_warehouse(spec):
     box("warehouse_end_wall", [6.3, -4.0, 2.6], [0.1, 4.5, 2.6], STEEL)
 
     for name, pos, target, fovy in (
-        ("cctv_1", (-5.5, -6.2, 4.2), (0.2, -3.9, 0.15), 62),
+        ("cctv_1", (-6.2, -6.2, 4.8), (-0.1, -3.9, 0.15), 66),
         ("cctv_2", (4.4, -3.2, 3.9), (1.0, -4.2, 0.65), 68),
     ):
         target_body = world.add_body(name=f"{name}_target", pos=target)

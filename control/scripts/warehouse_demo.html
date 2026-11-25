@@ -119,8 +119,9 @@ document.querySelector('form').onsubmit = async (event) => {
   $('send').disabled = true;
   $('result').textContent = '자연어 해석 및 사전 안전 검증 중';
   try {
-    const {parsed, evaluated, executed} = await api('/command', {instruction:$('instruction').value});
-    $('result').textContent = `해석된 작업 ${parsed.action_type} · ${parsed.target_robot_id}\n목적지 ${parsed.destination.zone_id}\n사전 검증 ${evaluated.status}${executed ? ' · 출발 명령 전달' : ''}`;
+    const {parsed, evaluated, executed, rules} = await api('/command', {instruction:$('instruction').value});
+    const relevant = rules.filter(rule => !rule.passed || rule.rule_id === 'rule-collision');
+    $('result').textContent = `해석된 작업 ${parsed.action_type} · ${parsed.target_robot_id}\n목적지 ${parsed.destination.zone_id}\n사전 검증 ${evaluated.status}${executed ? ' · 출발 명령 전달' : ''}` + relevant.map(rule => '\n' + rule.reason).join('');
   } catch (error) { $('result').textContent = error.message; }
   finally { busy = false; }
 };

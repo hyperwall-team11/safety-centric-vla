@@ -108,7 +108,7 @@ class Telemetry(Node):
         stamp = msg.header.stamp
         row = {"x": msg.pose.pose.position.x, "y": msg.pose.pose.position.y,
                "speed": msg.twist.twist.linear.x, "angular": msg.twist.twist.angular.z,
-               "sim_time": stamp.sec + stamp.nanosec / 1e9}
+               "ros_time": stamp.sec + stamp.nanosec / 1e9}
         with self.lock:
             self.odom = row
             self.record("odom", row)
@@ -134,12 +134,14 @@ class Telemetry(Node):
 
     def on_worker(self, msg):
         with self.lock:
-            self.worker = msg.pose.position.y
+            self.worker = (msg.pose.position.y, time.monotonic())
 
     def snapshot(self):
         with self.lock:
+            worker_clear = (self.worker is not None and time.monotonic() - self.worker[1] < 1.0
+                            and self.worker[0] <= WALK_END_Y + 0.05)
             return {"odom": self.odom, "adapter": self.adapter, "events": list(self.events),
-                    "worker_clear": self.worker is not None and self.worker <= WALK_END_Y + 0.05}
+                    "worker_clear": worker_clear}
 
 
 def detection_records(path):
@@ -161,6 +163,11 @@ def detection_records(path):
             continue
     return records
 
+
+
+def fresh_detection(records):
+    return bool(records and (datetime.now(timezone.utc) -
+                datetime.fromisoformat(records[-1]["received_at_utc"])).total_seconds() < 2.0)
 
 def make_handler(args, telemetry):
     command_lock = threading.Lock()
@@ -194,9 +201,7 @@ def make_handler(args, telemetry):
                 records = detection_records(args.directory / "detections.jsonl")
                 state = telemetry.snapshot()
                 camera_state = request(args.video, "/cameras")
-                fresh = bool(records and (datetime.now(timezone.utc) - datetime.fromisoformat(
-                    records[-1]["received_at_utc"])).total_seconds() < 2)
-                state["ready"] = (fresh and state["adapter"] == "IDLE" and
+                state["ready"] = (fresh_detection(records) and state["adapter"] == "IDLE" and
                                   all(any(camera["sensor_id"] == sensor and camera["last_frame_at"] is not None
                                           and time.time() - camera["last_frame_at"] < 2 for camera in camera_state)
                                       for sensor in ("cctv_1", "cctv_2", "amr_camera")))
@@ -210,6 +215,10 @@ def make_handler(args, telemetry):
                 return self.send_json({"error": str(exc)}, 503)
 
         def do_POST(self):
+            local_origins = {"http://127.0.0.1:5181", "http://localhost:5181"}
+            if (self.headers.get("Origin") not in local_origins | {None}
+                    or self.headers.get_content_type() != "application/json"):
+                return self.send_json({"error": "발표 화면에서 JSON 요청을 보내세요."}, 403)
             if not command_lock.acquire(blocking=False):
                 return self.send_json({"error": "이전 요청 처리 중"}, 409)
             try:
@@ -218,7 +227,7 @@ def make_handler(args, telemetry):
                     raise ValueError("요청 크기가 올바르지 않습니다.")
                 payload = json.loads(self.rfile.read(size))
                 if self.path == "/command":
-                    if telemetry.snapshot()["adapter"] != "IDLE" or not detection_records(args.directory / "detections.jsonl"):
+                    if telemetry.snapshot()["adapter"] != "IDLE" or not fresh_detection(detection_records(args.directory / "detections.jsonl")):
                         raise ValueError("어댑터 또는 검출기가 준비되지 않았습니다.")
                     data = {"instruction": payload["instruction"], "target_robot_id": AMR.robot_id, "frame_id": "world"}
                     parsed = request(args.backend, "/task-orders/preview", data)
@@ -230,7 +239,11 @@ def make_handler(args, telemetry):
                     action = f"/action-proposals/{proposal['proposal_id']}"
                     evaluated = request(args.backend, action + "/evaluate", {})
                     executed = request(args.backend, action + "/execute", {}) if evaluated["status"] == "APPROVED" else None
-                    return self.send_json({"parsed": parsed, "evaluated": evaluated, "executed": executed})
+                    logs = request(args.backend, "/execution-logs")
+                    rules = next((log["rule_results"] for log in reversed(logs)
+                                  if log["proposal_id"] == proposal["proposal_id"]), [])
+                    return self.send_json({"parsed": parsed, "evaluated": evaluated,
+                                           "executed": executed, "rules": rules})
                 if self.path == "/resolve":
                     if not telemetry.snapshot()["worker_clear"]:
                         raise ValueError("작업자가 횡단을 끝낼 때까지 기다리세요.")
