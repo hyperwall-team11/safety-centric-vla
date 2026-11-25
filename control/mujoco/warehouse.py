@@ -52,8 +52,9 @@ def add_warehouse(spec):
         world.add_geom(name=name, type=mujoco.mjtGeom.mjGEOM_BOX, pos=pos, size=size, rgba=color,
                        contype=int(collidable), conaffinity=int(collidable), **({"quat": quat} if quat else {}))
 
-    for index, (x, y) in enumerate(((-3.5, -1.5), (-0.9, -1.5), (3.1, -1.5),
-                                     (-3.3, -7.3), (-0.7, -7.3), (3.1, -7.3))):
+    for index, (x, y) in enumerate(((-3.5, -1.5), (-0.9, -1.5), (3.1, -1.5), (5.8, -1.5),
+                                     (-3.3, -7.3), (-0.7, -7.3), (3.1, -7.3), (5.8, -7.3),
+                                     (-3.5, 2.5), (-0.9, 2.5), (3.1, 2.5), (5.8, 2.5))):
         prefix = f"rack_{index}"
         for dx in (-1.08, 1.08):
             for dy in (-0.50, 0.50):
@@ -89,24 +90,34 @@ def add_warehouse(spec):
     for name, x, color in (("supply", -4.0, YELLOW), ("inspection", 4.0, [0.21, 0.70, 0.90, 1])):
         for side in (-1, 1):
             box(f"{name}_bay_{side}", [x, -4 + side * 0.72, 0.009], [0.85, 0.045, 0.006], color, False)
-    for x in (-5, -2.5, 0, 2.5, 5):
-        box(f"ceiling_beam_{x}", [x, -4.1, 4.82], [0.11, 4.6, 0.13], STEEL, False)
-        for y in (-2.2, -5.9):
-            box(f"ceiling_fixture_{x}_{y}", [x, y, 4.45], [0.59, 0.095, 0.033], WHITE, False)
-            for shift in (-0.46, 0.46):
-                box(f"ceiling_hanger_{x}_{y}_{shift}", [x + shift, y, 4.62],
-                    [0.009, 0.009, 0.15], STEEL, False)
-    box("ceiling_roof", [0, -4.1, 5.10], [7, 4.5, 0.08], [0.33, 0.32, 0.30, 1], False)
-    for side, y in (("back", -8.5), ("aisle", 0.25)):
-        box(f"warehouse_{side}_wall", [0, y, 2.6], [7, 0.09, 2.6], [0.65, 0.66, 0.64, 1])
-        box(f"warehouse_{side}_skirting", [0, y + (0.10 if side == "back" else -0.10), 0.41],
-            [7, 0.02, 0.41], STEEL, False)
-    box("warehouse_end_wall", [6.3, -4.0, 2.6], [0.1, 4.5, 2.6], [0.65, 0.66, 0.64, 1])
-    box("warehouse_shutter", [6.18, -4.0, 1.47], [0.025, 1.45, 1.47], STEEL, False)
-    box("warehouse_shutter_header", [6.10, -4.0, 2.98], [0.12, 1.55, 0.11], STEEL, False)
+    for x in (-7.5, -5, -2.5, 0, 2.5, 5, 7.5, 10):
+        box(f"ceiling_beam_{x}", [x, -3.1, 6.0], [0.11, 7.5, 0.13], STEEL, False)
+        for y in (-8.3, -5.3, -2.3, 1.0, 3.4):
+            box(f"ceiling_fixture_{x}_{y}", [x, y, 5.55], [0.65, 0.095, 0.033], WHITE, False)
+    box("ceiling_roof", [0.5, -3.1, 6.28], [11.5, 7.5, 0.08], [0.33, 0.32, 0.30, 1], False)
+    for side, y in (("back", -10.55), ("aisle", 4.35)):
+        box(f"warehouse_{side}_wall", [0.5, y, 3.1], [11.5, 0.09, 3.1], [0.65, 0.66, 0.64, 1])
+        box(f"warehouse_{side}_skirting", [0.5, y + (0.10 if side == "back" else -0.10), 0.41],
+            [11.5, 0.02, 0.41], STEEL, False)
+        for x in (-7.5, -2.5, 2.5, 7.5):
+            box(f"warehouse_column_{side}_{x}", [x, y + (0.22 if side == "back" else -0.22), 3.0],
+                [0.14, 0.15, 3.0], STEEL)
+    box("warehouse_end_wall", [11.7, -3.1, 3.1], [0.1, 7.5, 3.1], [0.65, 0.66, 0.64, 1])
+    for y in (-7.6, -4.0, 0.1):
+        box(f"warehouse_shutter_{y}", [11.58, y, 1.67], [0.025, 1.44, 1.67], STEEL, False)
+        box(f"warehouse_shutter_header_{y}", [11.50, y, 3.39], [0.12, 1.53, 0.10], STEEL, False)
+    # 도크 앞 대기 구획과 검수대는 AMR 통로와 횡단 동선 밖에 둔다.
+    for index, y in enumerate((-8.9, -6.7, -4.5, -2.3, -0.1, 2.1)):
+        box(f"dock_stripe_{index}", [9.5, y, 0.008], [1.65, 0.035, 0.005], YELLOW, False)
+    for index, y in enumerate((-6.2, -1.1)):
+        for dx in (-0.63, 0.63):
+            box(f"inspection_leg_{index}_{dx}", [7.9 + dx, y, 0.41],
+                [0.055, 0.27, 0.41], STEEL)
+        box(f"inspection_bench_{index}", [7.9, y, 0.84], [0.77, 0.34, 0.048], STEEL)
+        box(f"rack_{index}_box_inspection", [8.2, y, 1.04], [0.31, 0.23, 0.15], ORANGE)
 
     for name, pos, target, fovy in (
-        ("cctv_1", (-6.45, -5.45, 3.65), (0.05, -3.93, 0.70), 69),
+        ("cctv_1", (-9.25, -5.8, 4.75), (2.15, -3.6, 1.05), 65),
         ("cctv_2", (4.4, -3.2, 3.9), (1.0, -4.2, 0.65), 68),
     ):
         target_body = world.add_body(name=f"{name}_target", pos=target)

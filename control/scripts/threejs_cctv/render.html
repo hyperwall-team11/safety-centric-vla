@@ -223,13 +223,13 @@ sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.02; sun.shadow.radius = 2;
 if (presentation) {
   sun.color.setHex(0xf1f5ff);
   sun.intensity = 1.7;
-  sun.position.set(-2, -3.7, 4.30);
+  sun.position.set(-2, -3.7, 5.40);
   sun.target.position.set(-0.5, -4.1, 0);
-  Object.assign(sun.shadow.camera, { left: -8, right: 8, top: 6, bottom: -6, near: 0.12, far: 15 });
+  Object.assign(sun.shadow.camera, { left: -14, right: 14, top: 9, bottom: -9, near: 0.12, far: 24 });
   sun.shadow.camera.updateProjectionMatrix();
-  for (const x of [-5, -2.5, 0, 2.5, 5]) {
+  for (const x of [-7.5, -3.5, 0.5, 4.5, 8.5]) {
     const fill = new THREE.PointLight(0xfff5df, 12, 8);
-    fill.position.set(x, -4.0, 4.32);
+    fill.position.set(x, -3.6, 5.42);
     scene.add(fill);
   }
 }

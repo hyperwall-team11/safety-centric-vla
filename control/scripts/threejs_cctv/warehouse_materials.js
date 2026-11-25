@@ -86,7 +86,7 @@ export function warehouseMaterial(name, size) {
       color: 0xf7f6ee, emissive: 0xfff5de, emissiveIntensity: 1.65, roughness: 0.32,
     }));
   }
-  if (name === 'warehouse_shutter') {
+  if (/^warehouse_shutter_-?\d/.test(name)) {
     return variant('shutter', () => new THREE.MeshStandardMaterial({
       map: surface(512, 64, ctx => {
         for (let x = 0; x < 512; x += 16) {
