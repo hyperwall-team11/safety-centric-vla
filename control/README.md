@@ -171,7 +171,7 @@ pixi run amr-cycle-demo         # 터미널 4: 순환 데모 (검증 서버 대�
 |---|---|---|---|
 | `/cmd_vel` | 외부 → 브리지 | 기본 | `geometry_msgs/Twist` (linear.x m/s, angular.z rad/s) |
 | `/odom` | 브리지 → 외부 | 기본, 50Hz | `nav_msgs/Odometry` (`odom` → `base_link`, TF 함께 발행) |
-| `/joint_states` | 브리지 → 외부 | 기본, 50Hz | `sensor_msgs/JointState`: 팔 7, 몸통, 머리 2, 그리퍼 2, 바퀴 2 (위치·속도·토크. 토크 `effort`는 액추에이터가 관절에 낸 힘 N·m이며 액추에이터가 없는 관절은 0) |
+| `/joint_states` | 브리지 → 외부 | 기본, 50Hz | `sensor_msgs/JointState`: 팔 7, 몸통, 머리 2, 그리퍼 2, 바퀴 2 (위치·속도·힘/토크. `effort`는 액추에이터가 관절에 가한 힘 또는 토크로, 직선 관절은 N, 회전 관절은 N·m이며 액추에이터가 없는 관절은 0) |
 | `/cctv_1/image_raw`, `/cctv_2/image_raw` | 브리지 → 외부 | sensor data, 15Hz | `sensor_msgs/Image` rgb8 640×480, frame_id `camera_cctv_1`·`camera_cctv_2`. `cctv_renderer:=threejs`이면 Three.js 렌더 영상, stamp는 시뮬레이션 시각 |
 | `/robot/head_camera/image_raw` | 브리지 → 외부 | sensor data, 15Hz | 로봇 머리 카메라, frame_id `camera_head_camera` |
 | `.../camera_info` | 브리지 → 외부 | sensor data, 15Hz | 각 카메라의 `CameraInfo` (fovy로 계산한 K·P, 왜곡 없음) |

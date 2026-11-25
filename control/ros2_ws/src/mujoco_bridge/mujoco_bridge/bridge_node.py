@@ -328,7 +328,7 @@ class MujocoBridge(Node):
         d = self.sim.data
         js.position = [float(d.qpos[q]) for q, _ in self.joint_adr]
         js.velocity = [float(d.qvel[v_]) for _, v_ in self.joint_adr]
-        # 관절 토크(N·m): 액추에이터가 관절에 낸 힘. 액추에이터가 없는 관절은 0 (#96)
+        # 액추에이터가 낸 힘(직선 관절, N) 또는 토크(회전 관절, N·m). 액추에이터가 없는 관절은 0 (#96)
         js.effort = [float(d.qfrc_actuator[v_]) for _, v_ in self.joint_adr]
         self.joint_pub.publish(js)
 
