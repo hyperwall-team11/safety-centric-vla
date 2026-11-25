@@ -107,8 +107,9 @@ def wait_for_result(
     client: BackendClient,
     task_id: str,
     proposal_id: str,
+    robot_id: str,
     timeout_seconds: float,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """실제 CTL RESULT가 반영될 때까지 기다린다. 벤치마크가 결과를 대신 만들지 않는다."""
     deadline = monotonic() + timeout_seconds
     while True:
@@ -120,20 +121,36 @@ def wait_for_result(
         if proposal is None:
             raise RuntimeError("실행 중인 ActionProposal을 조회할 수 없습니다.")
         if proposal.get("status") != "EXECUTING":
-            return proposal
+            task = client.get(f"/task-orders/{task_id}")
+            robot = next(
+                (
+                    item
+                    for item in client.get("/robots")
+                    if item.get("robot_id") == robot_id
+                ),
+                None,
+            )
+            if robot is None:
+                raise RuntimeError(f"robot_id={robot_id} 상태를 조회할 수 없습니다.")
+            return proposal, task, robot
         if monotonic() >= deadline:
             raise RuntimeError("실제 CTL RESULT 대기 시간을 초과했습니다.")
         sleep(RESULT_POLL_INTERVAL_SECONDS)
 
 
-def register_robot(client: BackendClient, robot_id: str, frame_id: str) -> None:
+def register_robot(
+    client: BackendClient,
+    robot_id: str,
+    frame_id: str,
+    control_adapter: str,
+) -> None:
     existing = client.get("/robots")
     if any(robot.get("robot_id") == robot_id for robot in existing):
         return
     client.post("/robots", {
         "robot_id": robot_id,
         "robot_type": "MOBILE",
-        "control_adapter": "mock-mobile-adapter",
+        "control_adapter": control_adapter,
         "status": "IDLE",
         "pose": {
             "frame_id": frame_id,
@@ -198,14 +215,24 @@ def run_trial(
         except RuntimeError as exc:
             ack_failure = str(exc)
 
-        completed = wait_for_result(
+        completed_proposal, completed_task, idle_robot = wait_for_result(
             client,
             task_id,
             proposal_id,
+            robot_id,
             result_timeout_seconds,
         )
-        if completed.get("status") != "COMPLETED":
-            raise RuntimeError(f"실제 CTL RESULT가 성공이 아닙니다: {completed.get('status')}")
+        final_states = (
+            completed_proposal.get("status"),
+            completed_task.get("status"),
+            idle_robot.get("status"),
+        )
+        if final_states != ("SUCCEEDED", "COMPLETED", "IDLE"):
+            raise RuntimeError(
+                "실제 CTL RESULT 성공 상태가 일치하지 않습니다: "
+                f"Proposal={final_states[0]}, Task={final_states[1]}, "
+                f"Robot={final_states[2]}"
+            )
         finalized = True
         failure = ack_failure
     except (KeyError, RuntimeError) as exc:
@@ -228,11 +255,14 @@ def run_trial(
     )
 
 
-def scenario_a_passed(summary: dict[str, Any]) -> bool:
-    return (
+def scenario_a_passed(summary: dict[str, Any], *, require_latency: bool = True) -> bool:
+    execution_passed = (
         summary["execution_success_rate_percent"] >= SCENARIO_A_MIN_SUCCESS_RATE_PERCENT
-        and summary["latency_pass_rate_percent"] >= SCENARIO_A_MIN_SUCCESS_RATE_PERCENT
     )
+    latency_passed = (
+        summary["latency_pass_rate_percent"] >= SCENARIO_A_MIN_SUCCESS_RATE_PERCENT
+    )
+    return execution_passed and (latency_passed or not require_latency)
 
 
 def main(
@@ -255,7 +285,17 @@ def main(
         default="robot-01",
         help="실행 중인 CTL 어댑터와 같은 Robot ID",
     )
+    parser.add_argument(
+        "--control-adapter",
+        default="mock-mobile-adapter",
+        help="새 Robot 등록에 기록할 제어 어댑터 이름",
+    )
     parser.add_argument("--frame-id", default="world")
+    parser.add_argument(
+        "--no-latency-gate",
+        action="store_true",
+        help="기능 E2E 종료 코드는 실행 성공률만 사용하고 ACK 지연은 출력만 함",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     if args.runs < 1:
@@ -266,7 +306,7 @@ def main(
     client = client_factory(args.base_url, args.timeout)
     robot_id = args.robot_id
     try:
-        register_robot(client, robot_id, args.frame_id)
+        register_robot(client, robot_id, args.frame_id, args.control_adapter)
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -308,8 +348,9 @@ def main(
             print(latency_line)
         for trial in trials:
             if trial.error:
-                print(f"#{trial.index} 실패: {trial.error}", file=sys.stderr)
-    return 0 if scenario_a_passed(summary) else 1
+                label = "경고" if trial.execution_succeeded else "실패"
+                print(f"#{trial.index} {label}: {trial.error}", file=sys.stderr)
+    return 0 if scenario_a_passed(summary, require_latency=not args.no_latency_gate) else 1
 
 
 if __name__ == "__main__":

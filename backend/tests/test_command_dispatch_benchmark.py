@@ -33,14 +33,18 @@ class FakeBackendClient:
         self.get_calls: list[str] = []
         self.sequence = 0
         self.latest_proposal_id: str | None = None
+        self.registered_robot_id: str | None = None
+        self.latest_task_id: str | None = None
 
     def post(self, path, body, headers=None):
         self.calls.append((path, body))
         if path == "/robots":
+            self.registered_robot_id = body["robot_id"]
             return {"robot_id": "benchmark"}
         if path == "/task-orders/from-natural-language":
             self.sequence += 1
-            return {"task_id": f"task-{self.sequence}"}
+            self.latest_task_id = f"task-{self.sequence}"
+            return {"task_id": self.latest_task_id}
         if path.endswith("/action-proposals"):
             self.latest_proposal_id = f"proposal-{self.sequence}"
             return {"proposal_id": self.latest_proposal_id}
@@ -53,7 +57,11 @@ class FakeBackendClient:
     def get(self, path):
         self.get_calls.append(path)
         if path == "/robots":
-            return []
+            if self.registered_robot_id is None:
+                if self.sequence == 0:
+                    return []
+                return [{"robot_id": "robot-01", "status": "IDLE"}]
+            return [{"robot_id": self.registered_robot_id, "status": "IDLE"}]
         if path.endswith("/ack"):
             return {
                 "status": self.ack_status,
@@ -62,8 +70,10 @@ class FakeBackendClient:
         if path.endswith("/action-proposals"):
             return [{
                 "proposal_id": self.latest_proposal_id,
-                "status": "COMPLETED",
+                "status": "SUCCEEDED",
             }]
+        if path == f"/task-orders/{self.latest_task_id}":
+            return {"task_id": self.latest_task_id, "status": "COMPLETED"}
         raise AssertionError(f"unexpected path: {path}")
 
 
@@ -113,6 +123,16 @@ class CommandDispatchBenchmarkTest(unittest.TestCase):
             for path in client.get_calls
         ))
 
+    def test_function_e2e_can_report_latency_without_using_it_as_exit_gate(self):
+        client = FakeBackendClient(ack_status="TIMED_OUT")
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = main(
+                ["--runs", "1", "--no-latency-gate", "--json"],
+                lambda _base_url, _timeout: client,
+            )
+
+        self.assertEqual(code, 0)
+
     def test_trials_alternate_between_two_destinations(self):
         client = FakeBackendClient()
 
@@ -153,6 +173,23 @@ class CommandDispatchBenchmarkTest(unittest.TestCase):
             if path == "/task-orders/from-natural-language"
         )
         self.assertIn("tiago-ctl", task_call["instruction"])
+
+    def test_main_records_explicit_control_adapter(self):
+        client = FakeBackendClient()
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = main(
+                [
+                    "--runs",
+                    "1",
+                    "--control-adapter",
+                    "tiago-adapter",
+                    "--json",
+                ],
+                lambda _base_url, _timeout: client,
+            )
+        self.assertEqual(code, 0)
+        robot_call = next(body for path, body in client.calls if path == "/robots")
+        self.assertEqual(robot_call["control_adapter"], "tiago-adapter")
 
 
 if __name__ == "__main__":
