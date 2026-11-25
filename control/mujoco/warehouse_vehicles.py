@@ -11,6 +11,8 @@ TUG_CENTER = (-7.35, 5.2)
 TUG_RADIUS = 2.2
 TUG_PERIOD = 36.0
 HITCH_OFFSET = 0.43
+SUPPLY_STOPS = (0.0, 18.0)
+SUPPLY_TABLES = ((-4.62, 4.07), (-10.08, 6.33))
 
 YELLOW = [0.96, 0.69, 0.10, 1]
 STEEL = [0.23, 0.29, 0.32, 1]
@@ -65,6 +67,19 @@ def hitch_pose(seconds, cart):
     return ((front[0] + rear[0]) / 2, (front[1] + rear[1]) / 2,
             math.atan2(dy, dx), math.hypot(dx, dy))
 
+
+def supply_parcel_pose(seconds, station):
+    """첫 순회에서 상자를 내리고, 다음 순회 때 같은 정차 구간에서 회수한다."""
+    x, y, yaw = tug_pose(seconds, cart=1)
+    offset = 0.18 if station == 0 else -0.18
+    load = (x + offset * math.cos(yaw), y + offset * math.sin(yaw), 0.61)
+    table = (*SUPPLY_TABLES[station], 0.71)
+    elapsed = seconds % (2 * TUG_PERIOD) - SUPPLY_STOPS[station]
+    unload = min(1.0, max(0.0, elapsed / 3.0))
+    reload = min(1.0, max(0.0, (elapsed - TUG_PERIOD) / 3.0))
+    fraction = unload - reload
+    return tuple(a + fraction * (b - a) for a, b in zip(load, table))
+
 def add_warehouse_vehicles(spec):
     world = spec.worldbody
 
@@ -111,7 +126,9 @@ def add_warehouse_vehicles(spec):
             box(hitch, f"{name}_coupling", [0, 0, 0], [length / 2 + 0.015, 0.035, 0.032], STEEL)
             for side in (-1, 1):
                 box(body, f"{name}_bin_{side}", [0, side * 0.13, 0.41], [0.32, 0.12, 0.135], YELLOW)
-    for index, (x, y) in enumerate(((-4.73, 5.2), (-10.0, 5.2))):
+    for index, (x, y) in enumerate(SUPPLY_TABLES):
+        parcel = world.add_body(name=f"tug_parcel_{index}", mocap=True, pos=supply_parcel_pose(0, index))
+        box(parcel, f"pallet:tug/cargo_{index}", [0, 0, 0], [0.105, 0.10, 0.073], [0.68, 0.49, 0.31, 1])
         box(world, f"tug_station_post_{index}", [x, y, 0.30], [0.08, 0.22, 0.30], STEEL)
         box(world, f"tug_station_deck_{index}", [x, y, 0.60], [0.19, 0.38, 0.04], TEAL)
 
@@ -122,6 +139,7 @@ class WarehouseVehicles:
                  "warehouse_tug", *(f"warehouse_cart_{i}" for i in range(1, 4)))
         self.ids = [model.body_mocapid[model.body(name).id] for name in names]
         self.hitches = [model.body_mocapid[model.body(f"warehouse_hitch_{i}").id] for i in range(1, 4)]
+        self.parcels = [model.body_mocapid[model.body(f"tug_parcel_{i}").id] for i in range(2)]
         self.update(data)
 
     def update(self, data):
@@ -139,3 +157,6 @@ class WarehouseVehicles:
         for cart, mocap in enumerate(self.hitches, start=1):
             x, y, yaw, _ = hitch_pose(data.time, cart)
             set_pose(mocap, x, y, 0.14, yaw)
+        for station, mocap in enumerate(self.parcels):
+            x, y, z = supply_parcel_pose(data.time, station)
+            set_pose(mocap, x, y, z, 0)
