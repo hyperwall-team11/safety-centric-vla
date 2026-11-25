@@ -188,3 +188,73 @@ def test_twin_robot_yaw_is_radians():
     model, _ = build_twin(state)
     quat = model.body("robot:robot-01").quat
     assert 2 * math.atan2(quat[3], quat[0]) == pytest.approx(math.radians(49), abs=1e-6)
+
+
+def _with_velocity(request_body, velocity):
+    for item in request_body["state"]["workers"]["items"]:
+        item["velocity"] = list(velocity)
+    return request_body
+
+
+def test_static_worker_without_velocity_keeps_previous_result():
+    # velocity가 없으면 이동 예측 전과 같은 판정이다 (#97 하위 호환)
+    assert ts.simulate(req())["result"] == "PASS"
+
+
+def test_worker_walking_into_path_is_collision():
+    # 정지 가정이면 경로에서 1.5 m 옆이라 PASS지만, 경로 쪽으로 걸어오면 부딪힌다
+    still = req(target=(3.0, 0.0), workers=(("worker-01", 2.0, 1.5),))
+    assert ts.simulate(still)["result"] == "PASS"
+    res = ts.simulate(_with_velocity(req(target=(3.0, 0.0), workers=(("worker-01", 2.0, 1.5),)),
+                                     (0.0, -0.4, 0.0)))
+    assert res["result"] == "COLLISION"
+    assert res["first_contact_at_s"] > 0
+
+
+def test_worker_walking_away_from_path_passes():
+    # 경로 위에 있던 작업자가 빠르게 비켜나면 정지 가정의 COLLISION이 사라진다
+    on_path = req(target=(3.0, 0.0), workers=(("worker-01", 2.5, 0.0),))
+    assert ts.simulate(on_path)["result"] == "COLLISION"
+    res = ts.simulate(_with_velocity(req(target=(3.0, 0.0), workers=(("worker-01", 2.5, 0.0),)),
+                                     (0.0, 1.5, 0.0)))
+    assert res["result"] == "PASS"
+
+
+def test_prediction_starts_from_observed_at():
+    # 관측 후 1.5 s가 지났으면 시뮬레이션 0초에 작업자는 이미 그만큼 이동해 있다
+    state = _with_velocity(req(), (0.0, -0.4, 0.0))["state"]
+    model, data = ts.build_twin(state)
+    motion = ts.WorkerMotion(model, {**state["workers"], "observed_at": "2026-11-05T23:59:58.500Z"},
+                             "2026-11-06T00:00:00Z")
+    motion.apply(data, 0.0)
+    x, y = motion.positions(data)[0]
+    assert (x, y) == pytest.approx((2.1, 0.4 - 0.4 * 1.5))
+    assert list(motion.margin_by_geom().values())[0] == pytest.approx(ts.WORKER_MARGIN_M + 0.15)
+
+
+def test_margin_grows_with_prediction_time_and_is_capped():
+    model, data = ts.build_twin(_with_velocity(req(), (0.1, 0.0, 0.0))["state"])
+    motion = ts.WorkerMotion(model, {"observed_at": "2026-11-06T00:00:00Z",
+                                     "items": [{"worker_id": "worker-01", "velocity": [0.1, 0, 0]}]},
+                             "2026-11-06T00:00:00Z")
+    motion.apply(data, 2.0)
+    assert list(motion.margin_by_geom().values())[0] == pytest.approx(ts.WORKER_MARGIN_M + 0.2)
+    assert motion.positions(data)[0][0] == pytest.approx(2.1 + 0.2)
+    motion.apply(data, 100.0)
+    assert list(motion.margin_by_geom().values())[0] == ts.WORKER_MARGIN_MAX_M
+
+
+@pytest.mark.parametrize("velocity", [(3.0, 0.0, 0.0), (0.0, 0.0, 3.0), (0.0, 0.0, 0.1),
+                                      (float("nan"), 0.0, 0.0), (1.0, 0.0)])
+def test_invalid_worker_velocity_is_error(velocity):
+    res = ts.simulate(_with_velocity(req(), velocity))
+    assert res["result"] == "ERROR"
+
+
+
+def test_worker_velocity_at_planar_speed_limit_is_accepted():
+    state = _with_velocity(req(), (-ts.WORKER_MAX_SPEED_MPS, 0.0, 0.0))["state"]
+    model, _ = ts.build_twin(state)
+    motion = ts.WorkerMotion(model, state["workers"], "2026-11-06T00:00:00Z")
+
+    assert motion.workers[0]["velocity"] == (-ts.WORKER_MAX_SPEED_MPS, 0.0)
