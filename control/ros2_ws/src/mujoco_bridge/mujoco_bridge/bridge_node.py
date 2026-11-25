@@ -121,7 +121,19 @@ class MujocoBridge(Node):
 
         self.plant_arms = None
         self.plant_amrs = None
-        if use_arms or use_amrs:
+        warehouse_demo = self.declare_parameter("warehouse_demo", False).value
+        self.crossing_amr_id = None
+        if warehouse_demo:
+            amr = load_amr(mujoco_dir)
+            arms = load_arms(mujoco_dir)
+            import warehouse
+
+            model, data, _ = arms.build_plant_with_arms([], extras=(warehouse.add_warehouse,))
+            self.sim = simulation.DiffDriveSim(robot, model=model, data=data)
+            self.plant_amrs = amr.PlantAmrs(model, data, (warehouse.AMR,), self.cmd_timeout, preloaded=True)
+            self.crossing_amr_id = warehouse.AMR.robot_id
+            model_path = "warehouse_demo"
+        elif use_arms or use_amrs:
             arms = load_arms(mujoco_dir)
             amr = load_amr(mujoco_dir) if use_amrs else None
             model, data, kins = arms.build_plant_with_arms(arms.PLANT_ARMS if use_arms else [],
@@ -148,7 +160,7 @@ class MujocoBridge(Node):
         self.worker = None
         bodies = {m.body(i).name for i in range(m.nbody)}
         if use_worker and "worker" in bodies and m.body_mocapid[m.body("worker").id] >= 0:
-            self.worker = self.scn.WorkerScript()
+            self.worker = warehouse.CrossingWorker() if warehouse_demo else self.scn.WorkerScript()
             self.has_keep_out = "keep_out_zone" in {m.geom(i).name for i in range(m.ngeom)}
             self.worker_pub = self.create_publisher(PoseStamped, "/sim/worker_pose", 10)
             self.worker_zone_pub = self.create_publisher(Bool, "/sim/worker_in_keep_out", 10)
@@ -156,8 +168,12 @@ class MujocoBridge(Node):
 
         cams = {m.camera(i).name for i in range(m.ncam)}
         self.sensors = [s for s, (cam, _, _) in self.scn.CAMERAS.items() if cam in cams] if use_cameras else []
+        if warehouse_demo:
+            self.sensors = [s for s in self.sensors if s != "head_camera"]
+            if cctv_renderer != "threejs":
+                raise ValueError("warehouse_demo requires cctv_renderer:=threejs")
         # Three.js 모드: 고정 CCTV는 Three.js가, 로봇 카메라는 그대로 MuJoCo가 렌더한다
-        self.threejs_sensors = ([s for s in self.sensors if self.scn.CAMERAS[s][2] == "world"]
+        self.threejs_sensors = ([s for s in self.sensors if self.scn.CAMERAS[s][2] == "world" or s == "amr_camera"]
                                 if cctv_renderer == "threejs" else [])
         self.rig_sensors = [s for s in self.sensors if s not in self.threejs_sensors]
         self.rig = None
@@ -278,6 +294,9 @@ class MujocoBridge(Node):
         lag = (self.sim_start + (now - self.wall_start)) - self.sim.time
         if lag > 0:
             if self.worker:
+                if self.crossing_amr_id is not None:
+                    x, _, _, speed, _ = self.plant_amrs.odom(self.crossing_amr_id)
+                    self.worker.observe_amr(x, speed, self.sim.time)
                 self.worker.apply(self.sim.model, self.sim.data)
             before = self.sim.time
             self.sim.step(min(lag, MAX_CATCHUP_S))
@@ -430,7 +449,10 @@ class MujocoBridge(Node):
         if "worker_head" not in {m.body(i).name for i in range(m.nbody)}:
             raise RuntimeError("cctv_renderer:=threejs needs a scene with the worker model")
         # 렌더러가 읽을 정적 장면(scene.json·텍스처). 작업자 1은 브리지의 작업자 스크립트 위치 그대로 둔다
-        meta, self.packer = export_scene.prepare(m, d, Path(data_dir), self.worker or False)
+        meta, self.packer = export_scene.prepare(
+            m, d, Path(data_dir), self.worker or False,
+            live_moving_cameras=[s for s in self.threejs_sensors if self.scn.CAMERAS[s][2] != "world"],
+        )
         meta.update({"frames": 1, "fps": self.camera_hz, "live": True})
         (Path(data_dir) / "scene.json").write_text(__import__("json").dumps(meta))
 

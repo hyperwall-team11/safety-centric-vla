@@ -33,7 +33,9 @@ for (const name of ['forklift'])
   MODELS[name] = (await new GLTFLoader().loadAsync(`/models/${name}.glb`)).scene;
 const nGeom = meta.ngeom_export, nWorkers = meta.workers.length;
 const workerLen = meta.nskinvert * 3 + 7;
-const frameLen = nGeom * 12 + nWorkers * workerLen;
+const cameraOffset = nGeom * 12 + nWorkers * workerLen;
+const liveMovingCameras = meta.live_moving_cameras ?? [];
+const frameLen = cameraOffset + liveMovingCameras.length * 12;
 
 const dec = (b64, T) => { const s = atob(b64); const u = new Uint8Array(s.length);
   for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return new T(u.buffer); };
@@ -393,6 +395,13 @@ async function rosLoop() {
       if (frames.length !== frameLen) throw new Error(`frame length ${frames.length} != ${frameLen}`);
       lap('wait');
       setFrame(0, Number(simTime));
+      liveMovingCameras.forEach((name, i) => {
+        const o = cameraOffset + i * 12, cam = cams[name];
+        const [x, y, z, a, b, c, d, e, f, g, h, j] = frames.subarray(o, o + 12);
+        new THREE.Matrix4().set(a, b, c, x, d, e, f, y, g, h, j, z, 0, 0, 0, 1)
+          .decompose(cam.position, cam.quaternion, cam.scale);
+        cam.updateMatrixWorld(true);
+      });
       lap('scene');
       // toBlob은 호출한 순간의 캔버스를 복사해 다른 스레드에서 인코딩하므로, 인코딩을 기다리지 않고 다음 카메라를 렌더한다
       const blobs = [];

@@ -173,7 +173,7 @@ class Skinner:
         return out
 
 
-def export_static(m, d, out: Path, workers_cfg=WORKERS, robot_camera=False):
+def export_static(m, d, out: Path, workers_cfg=WORKERS, robot_camera=False, live_moving_cameras=()):
     out.mkdir(parents=True, exist_ok=True)
     geoms, meshes = [], {}
     for g in range(m.ngeom):
@@ -209,9 +209,9 @@ def export_static(m, d, out: Path, workers_cfg=WORKERS, robot_camera=False):
         })
 
     cams = {}
-    for sensor in ("cctv_1", "cctv_2") + ((ROBOT_CAMERA,) if robot_camera else ()):
+    for sensor in ("cctv_1", "cctv_2") + ((ROBOT_CAMERA,) if robot_camera else ()) + tuple(live_moving_cameras):
         cid = m.camera(CAMERAS[sensor][0]).id
-        cams[sensor] = {"moving": sensor == ROBOT_CAMERA,"pos": d.cam_xpos[cid].tolist(), "mat": d.cam_xmat[cid].tolist(),
+        cams[sensor] = {"moving": sensor == ROBOT_CAMERA or sensor in live_moving_cameras,"pos": d.cam_xpos[cid].tolist(), "mat": d.cam_xmat[cid].tolist(),
                         "fovy": float(m.cam_fovy[cid]), "width": 640, "height": 480,
                         "frame_id": f"camera_{sensor}"}
 
@@ -239,6 +239,7 @@ class FramePacker:
     def __init__(self, m, d, meta, extra_scripts):
         """meta: export_static 결과(workers는 작업자 1 + 추가 작업자 순서로 맞춘 것). extra_scripts: [(i, WorkerScript)]."""
         self.extra = extra_scripts
+        self.camera_ids = [m.camera(CAMERAS[s][0]).id for s in meta.get("live_moving_cameras", ())]
         self.gids = [g["id"] for g in meta["geoms"]]
         self.opt, self.cam = mujoco.MjvOption(), mujoco.MjvCamera()
         self.scn = mujoco.MjvScene(m, maxgeom=2000)
@@ -261,7 +262,7 @@ class FramePacker:
         assert self.skin_error < 0.005, "스키닝 결과가 MuJoCo와 다릅니다"
 
     def frame_length(self, m) -> int:
-        return len(self.gids) * 12 + (1 + len(self.extra)) * (m.nskinvert * 3 + 7)
+        return len(self.gids) * 12 + (1 + len(self.extra)) * (m.nskinvert * 3 + 7) + len(self.camera_ids) * 12
 
     def pack(self, m, d, sim_time):
         """추가 작업자 mocap을 sim_time 위치로 옮기고 한 프레임을 만든다. (bytes, 추가 작업자 [(x, y, yaw)])"""
@@ -280,10 +281,13 @@ class FramePacker:
             pos, quat = pos.copy(), quat.copy()
             parts.append(self.skinner(pos, quat).astype("<f4").tobytes())
             parts.append(np.concatenate([pos[self.head_part], quat[self.head_part]]).astype("<f4").tobytes())
+        if self.camera_ids:
+            parts.append(np.concatenate([d.cam_xpos[self.camera_ids], d.cam_xmat[self.camera_ids]], axis=1)
+                         .astype("<f4").tobytes())
         return b"".join(parts), states
 
 
-def prepare(m, d, out: Path, worker1_script=None, workers_cfg=WORKERS, robot_camera=False):
+def prepare(m, d, out: Path, worker1_script=None, workers_cfg=WORKERS, robot_camera=False, live_moving_cameras=()):
     """정적 장면(scene.json 내용)과 FramePacker를 만든다. 작업자 1은 worker1_script(없으면 workers_cfg[0])로 둔다.
     workers_cfg: 현장별 작업자 설정(SCENE_WORKERS), robot_camera: 로봇 탑재 카메라를 장면에 포함할지.
     worker1_script=False이면 작업자 1을 지금 자리에 둔다(브리지에서 작업자 이동을 끈 경우).
@@ -297,7 +301,10 @@ def prepare(m, d, out: Path, worker1_script=None, workers_cfg=WORKERS, robot_cam
         (worker1_script or WorkerScript(waypoints=workers_cfg[0]["waypoints"],
                                         speed=workers_cfg[0]["speed"])).apply(m, d)
     mujoco.mj_forward(m, d)
-    meta = export_static(m, d, out, workers_cfg, robot_camera=robot_camera)
+    meta = export_static(m, d, out, workers_cfg, robot_camera=robot_camera,
+                         live_moving_cameras=live_moving_cameras)
+    if live_moving_cameras:
+        meta["live_moving_cameras"] = list(live_moving_cameras)
     meta["workers"] = [meta["workers"][0]] + [meta["workers"][i] for i in extra]
     packer = FramePacker(m, d, meta, list(zip(extra, scripts)))
     meta["ngeom_export"] = len(packer.gids)

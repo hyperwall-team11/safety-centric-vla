@@ -19,6 +19,7 @@ CAMERAS = {
     # sensor_id: (MuJoCo 카메라 이름, ROS 2 토픽 접두어, 탑재 위치)
     "cctv_1": ("cctv_1", "/cctv_1", "world"),
     "cctv_2": ("cctv_2", "/cctv_2", "world"),
+    "amr_camera": ("amr_camera", "/amr_camera", "amr_01/base_link"),
     "head_camera": ("head_camera", "/robot/head_camera", "base_link"),
 }
 
@@ -205,7 +206,7 @@ def rot_to_quat(rot) -> tuple[float, float, float, float]:
 class CameraRig:
     """카메라 여러 대를 하나의 렌더러로 그린다. 렌더러는 생성한 스레드에서만 써야 한다 (OpenGL 컨텍스트)."""
 
-    def __init__(self, model, width=640, height=480, sensors=tuple(CAMERAS)):
+    def __init__(self, model, width=640, height=480, sensors=("cctv_1", "cctv_2", "head_camera")):
         self.model, self.width, self.height = model, width, height
         self.sensors = list(sensors)
         self.renderer = mujoco.Renderer(model, height=height, width=width)
