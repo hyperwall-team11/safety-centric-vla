@@ -110,3 +110,23 @@ def test_storage_workers_and_camera_are_outside_the_amr_lane():
     camera = model.camera("cctv_4").id
     assert model.cam_bodyid[camera] == 0
     assert data.cam_xpos[camera][1] > 3.0
+
+
+def test_spilled_boxes_block_the_rack_gap_outside_the_transport_lane():
+    model, data, _ = build_plant_with_arms([], extras=(add_warehouse,))
+    boxes = [model.geom(f"spill_box_{index}") for index in range(7)]
+    assert all(model.geom_contype[g.id] and model.geom_conaffinity[g.id] for g in boxes)
+    assert all(data.geom_xpos[g.id][1] - np.linalg.norm(g.size[:2]) > 6.0 for g in boxes)
+
+    # At box height a person cannot fit between rack ends and the irregular row of boxes.
+    samples = np.linspace(0.27, 1.97, 171)
+    covered = []
+    for x in samples:
+        point = np.array([x, 6.98, 0.20])
+        occupied = False
+        for geom in boxes[:3]:
+            delta = point - data.geom_xpos[geom.id]
+            local = data.geom_xmat[geom.id].reshape(3, 3).T @ delta
+            occupied |= bool(np.all(np.abs(local) <= geom.size))
+        covered.append(occupied)
+    assert sum(covered) >= 150
