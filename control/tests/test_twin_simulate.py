@@ -249,3 +249,12 @@ def test_margin_grows_with_prediction_time_and_is_capped():
 def test_invalid_worker_velocity_is_error(velocity):
     res = ts.simulate(_with_velocity(req(), velocity))
     assert res["result"] == "ERROR"
+
+
+
+def test_worker_velocity_at_planar_speed_limit_is_accepted():
+    state = _with_velocity(req(), (-ts.WORKER_MAX_SPEED_MPS, 0.0, 0.0))["state"]
+    model, _ = ts.build_twin(state)
+    motion = ts.WorkerMotion(model, state["workers"], "2026-11-06T00:00:00Z")
+
+    assert motion.workers[0]["velocity"] == (-ts.WORKER_MAX_SPEED_MPS, 0.0)
