@@ -269,13 +269,15 @@ curl -X POST http://127.0.0.1:8000/task-orders/{task_id}/action-proposals \
 
 성공하면 TaskOrder가 `CREATED`에서 `PLANNING`으로 바뀌며 Proposal은 `PROPOSED`로 저장됩니다. 같은 TaskOrder에 활성 Proposal을 중복 생성하면 `409`를 반환합니다. 선택적인 `Idempotency-Key`를 보낸 경우, 동일한 키와 동일한 본문을 재전송하면 기존 Proposal을 `200`으로 반환하고 새 Proposal을 만들지 않습니다. 같은 키에 다른 본문을 보내면 `409`입니다.
 
+대상 물체가 있는 운반 TaskOrder는 여러 ActionProposal을 순차 실행할 수 있습니다. OpenVLA는 `MANIPULATE/PICK`·`MANIPULATE/PLACE`를, Navigation Planner는 같은 TaskOrder의 목적지로 가는 `MOVE_TO`를 `POST /action-proposals`에 제출합니다. 한 번에 활성 Proposal은 하나만 허용하므로 0.5초 주기 실행기는 현재 Proposal의 결과가 반영된 뒤 다음 제안을 제출해야 합니다. 단계별 재시도는 서로 다른 `Idempotency-Key`를 사용합니다.
+
 `HELD` 작업은 일반 생성 API로 재개하지 않습니다. 관련 위험 해제까지 확인하는 별도 Resume 흐름이 팀 계약으로 추가되기 전에는 `409`를 반환합니다.
 
 평가 속도 상한은 `min(0.4, robot.motion_limits.max_speed, zone.max_speed)`이며 등록된 목적지 Zone에 `max_speed`가 없으면 Zone 항목은 제외합니다. 실행 직전 재검증이 실패하면 Proposal·TaskOrder를 `HELD`, Robot을 `ESTOP`으로 바꾸고 `RULE_ENGINE` 감사 로그를 남깁니다. 통과하면 승인 명령 발행을 시도하고, 발행까지 성공한 뒤 Proposal은 `EXECUTING`, TaskOrder는 `RUNNING`, Robot은 `MOVING`으로 전이합니다. ROS 2 발행에 실패하면 기존 상태를 유지하고 `503`을 반환합니다.
 
 열린 CRITICAL 위험은 `related_robot_ids`에 대상 Robot이 있거나 Hazard의 Zone과 TaskOrder 목적지 Zone이 같을 때 차단합니다. 빈 `related_robot_ids` 자체는 전역 위험을 뜻하지 않습니다. CRITICAL 위험 해제는 `{"resolved_by":"OPERATOR"}` 요청만 허용하고, WARNING은 `SENSOR_AUTO`도 허용합니다.
 
-실행 중인 Proposal은 `POST /action-proposals/{proposal_id}/result`로 어댑터 결과를 보고합니다. `SUCCEEDED`는 TaskOrder를 `COMPLETED`, Robot을 `IDLE`로 돌립니다. `UNSUPPORTED`는 TaskOrder를 `PLANNING`으로 되돌려 재계획할 수 있고, `TIMEOUT`은 TaskOrder `FAILED`·Robot `HOLD`, `HW_ERROR`는 TaskOrder `FAILED`·Robot `ERROR`로 전이합니다. 같은 결과 재전송은 멱등 처리되어 감사 로그가 중복되지 않습니다.
+실행 중인 Proposal은 `POST /action-proposals/{proposal_id}/result`로 어댑터 결과를 보고합니다. 일반 이동 Task의 `SUCCEEDED`는 TaskOrder를 `COMPLETED`, Robot을 `IDLE`로 돌립니다. 물체 운반 Task에서는 `PICK`과 Navigation `MOVE_TO` 성공 후 TaskOrder를 `PLANNING`으로 되돌려 다음 Proposal을 받고, 최종 `PLACE` 성공 때만 `COMPLETED`로 전이합니다. `UNSUPPORTED`는 TaskOrder를 `PLANNING`으로 되돌려 재계획할 수 있고, `TIMEOUT`은 TaskOrder `FAILED`·Robot `HOLD`, `HW_ERROR`는 TaskOrder `FAILED`·Robot `ERROR`로 전이합니다. 같은 결과 재전송은 멱등 처리되어 감사 로그가 중복되지 않습니다.
 
 ## 구현된 최소 API
 

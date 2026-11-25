@@ -126,6 +126,20 @@ PLANNABLE_TASK_STATUSES = {
 }
 
 
+def proposal_completes_task(task: TaskOrder, proposal: ActionProposal) -> bool:
+    """개별 Action 성공이 전체 TaskOrder의 완료 조건인지 판정한다.
+
+    이동 Task는 단일 MOVE_TO 성공으로 끝난다. 대상 물체가 있는 운반 Task는
+    PICK·Navigation 이동 등 중간 Proposal 성공 뒤에도 PLANNING으로 돌아가고,
+    최종 PLACE 성공 때만 완료한다.
+    """
+    if task.target_object_id is None:
+        return True
+    if proposal.action_type != ActionType.MANIPULATE:
+        return False
+    return proposal.parameters.get("manipulation") == "PLACE"
+
+
 class OntologyObjectType(str, Enum):
     ROBOT = "Robot"
     SENSOR = "Sensor"
@@ -1564,10 +1578,13 @@ def report_action_result(
             )
         if report.status == AdapterResultStatus.SUCCEEDED:
             proposal.status = ProposalStatus.SUCCEEDED
-            task.status = TaskStatus.COMPLETED
+            task_completed = proposal_completes_task(task, proposal)
+            task.status = TaskStatus.COMPLETED if task_completed else TaskStatus.PLANNING
             robot.status = RobotStatus.IDLE
             decision = Decision.COMPLETE
             result_message = report.detail or "제어 어댑터 실행 완료"
+            if not task_completed:
+                result_message = f"{result_message}; 다음 ActionProposal 대기"
         else:
             proposal.status = ProposalStatus.FAILED
             decision = Decision.FAIL
@@ -1585,7 +1602,8 @@ def report_action_result(
 
         robot.updated_at = utc_now()
         store.proposal_results[proposal_id] = report
-        store.task_received_at.pop(task.task_id, None)
+        if task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
+            store.task_received_at.pop(task.task_id, None)
         store.logs.append(
             ExecutionLog(
                 proposal_id=proposal.proposal_id,

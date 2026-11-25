@@ -428,6 +428,8 @@ v1.1 객체의 Pydantic 모델 계약에는 다음 선택 필드를 반영한다
 TaskOrder: CREATED ── proposal 생성/등록 ──> PLANNING
            PLANNING ── execute 재검증 통과 ──> RUNNING
            PLANNING ── execute 재검증 실패 ──> HELD
+           RUNNING ── 중간 단계 성공 ──> PLANNING
+           RUNNING ── 단일 작업 또는 최종 PLACE 성공 ──> COMPLETED
 
 ActionProposal: PROPOSED ── evaluate 통과 ──> APPROVED
                 PROPOSED ── evaluate 실패 ──> REJECTED
@@ -436,6 +438,8 @@ ActionProposal: PROPOSED ── evaluate 통과 ──> APPROVED
                 EXECUTING ── 완료 보고 ──> SUCCEEDED
                 EXECUTING ── 실패 보고 ──> FAILED
 ```
+
+대상 물체가 있는 운반 TaskOrder는 여러 ActionProposal을 순차 실행한다. OpenVLA 조작 Proposal과 Navigation Planner의 `MOVE_TO` Proposal을 같은 `task_id`로 등록할 수 있지만, 활성 상태(`PROPOSED`, `APPROVED`, `EXECUTING`, `HELD`)의 Proposal은 TaskOrder당 하나만 허용한다. `PICK`과 Navigation `MOVE_TO` 성공은 개별 Proposal만 `SUCCEEDED`로 끝내고 TaskOrder를 `PLANNING`으로 돌린다. 최종 `MANIPULATE/PLACE` 성공이 전체 TaskOrder를 `COMPLETED`로 만든다.
 
 ResumeTask 전이와 실제 ROS 2 어댑터 결과 토픽 연결은 아직 구현하지 않았다. 현재 결과 API는 Mock adapter 및 연동 시험용 HTTP 경계다.
 

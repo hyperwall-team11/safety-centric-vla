@@ -59,6 +59,17 @@ class ExecutionResultApiTest(unittest.TestCase):
             json=body,
         )
 
+    def execute_successfully(self, proposal_id: str, detail: str):
+        evaluated = self.client.post(f"/action-proposals/{proposal_id}/evaluate")
+        self.assertEqual(evaluated.status_code, 200, evaluated.text)
+        self.assertEqual(evaluated.json()["status"], "APPROVED")
+        executed = self.client.post(f"/action-proposals/{proposal_id}/execute")
+        self.assertEqual(executed.status_code, 200, executed.text)
+        return self.report(
+            proposal_id,
+            {"status": "SUCCEEDED", "detail": detail},
+        )
+
     def test_success_completes_proposal_task_and_robot(self) -> None:
         task, proposal = self.start_execution()
         response = self.report(
@@ -72,6 +83,72 @@ class ExecutionResultApiTest(unittest.TestCase):
         self.assertEqual(store.logs[-1].decision, "COMPLETE")
         self.assertEqual(store.logs[-1].result_message, "목적지 도착")
         self.assertNotIn(task["task_id"], store.task_received_at)
+
+    def test_object_transport_runs_multiple_proposals_before_task_completion(self) -> None:
+        task_response = self.client.post(
+            "/task-orders/from-natural-language",
+            json={
+                "instruction": "robot-01 로봇으로 상자 3을 좌표 (1, 2, 0)로 옮겨",
+            },
+        )
+        self.assertEqual(task_response.status_code, 201, task_response.text)
+        task = task_response.json()
+
+        pick = self.client.post(
+            f"/task-orders/{task['task_id']}/action-proposals",
+            json={"manipulation": "PICK"},
+        )
+        self.assertEqual(pick.status_code, 201, pick.text)
+        pick_result = self.execute_successfully(pick.json()["proposal_id"], "상자 파지")
+        self.assertEqual(pick_result.status_code, 200, pick_result.text)
+        self.assertEqual(store.tasks[task["task_id"]].status, "PLANNING")
+        self.assertEqual(store.robots["robot-01"].status, "IDLE")
+        self.assertIn(task["task_id"], store.task_received_at)
+
+        move = self.client.post(
+            "/action-proposals",
+            json={
+                "task_id": task["task_id"],
+                "robot_id": "robot-01",
+                "action_type": "MOVE_TO",
+                "parameters": {
+                    "target_pose": task["destination"],
+                    "speed_limit": 0.3,
+                },
+                "trajectory": None,
+                "frame_id": "map",
+                "speed_limit": 0.3,
+                "model_name": "navigation-planner",
+                "model_version": "test-1",
+            },
+        )
+        self.assertEqual(move.status_code, 201, move.text)
+        move_result = self.execute_successfully(move.json()["proposal_id"], "목적지 이동")
+        self.assertEqual(move_result.status_code, 200, move_result.text)
+        self.assertEqual(store.tasks[task["task_id"]].status, "PLANNING")
+
+        place = self.client.post(
+            f"/task-orders/{task['task_id']}/action-proposals",
+            json={"manipulation": "PLACE"},
+        )
+        self.assertEqual(place.status_code, 201, place.text)
+        place_result = self.execute_successfully(place.json()["proposal_id"], "상자 배치")
+        self.assertEqual(place_result.status_code, 200, place_result.text)
+        self.assertEqual(store.tasks[task["task_id"]].status, "COMPLETED")
+        self.assertEqual(store.robots["robot-01"].status, "IDLE")
+        self.assertNotIn(task["task_id"], store.task_received_at)
+
+        proposals = self.client.get(
+            f"/task-orders/{task['task_id']}/action-proposals"
+        ).json()
+        self.assertEqual(
+            [(proposal["action_type"], proposal["status"]) for proposal in proposals],
+            [
+                ("MANIPULATE", "SUCCEEDED"),
+                ("MOVE_TO", "SUCCEEDED"),
+                ("MANIPULATE", "SUCCEEDED"),
+            ],
+        )
 
     def test_unsupported_returns_task_to_planning_for_replan(self) -> None:
         task, proposal = self.start_execution()

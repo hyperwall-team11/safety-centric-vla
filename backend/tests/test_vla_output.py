@@ -201,6 +201,32 @@ class VlaOutputConversionTest(unittest.TestCase):
         self.assertEqual(proposal.action_type, "MANIPULATE")
         self.assertEqual(proposal.parameters["object_id"], "box-3")
 
+    def test_converts_navigation_output_for_object_transport_task(self):
+        task = TaskOrder.model_validate({
+            "task_id": "task-box",
+            "instruction": "robot-01 로봇이 상자3을 B작업대로 옮겨줘",
+            "target_robot_id": "robot-01",
+            "target_object_id": "box-3",
+            "destination": {"type": "ZONE", "zone_id": "B작업대"},
+        })
+        output = raw_move_output(
+            parameters={
+                "target_pose": {"type": "ZONE", "zone_id": "B작업대"},
+                "speed_limit": 0.3,
+            },
+        )
+
+        proposal = convert_vla_output_to_proposal(
+            output,
+            task,
+            ROBOT,
+            model_name="navigation-planner",
+            model_version="test-1",
+        )
+
+        self.assertEqual(proposal.action_type, "MOVE_TO")
+        self.assertEqual(proposal.task_id, task.task_id)
+
     def test_rejects_malformed_json(self):
         with self.assertRaisesRegex(VlaOutputConversionError, "JSON"):
             convert_vla_output_to_proposal(
