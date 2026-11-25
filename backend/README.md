@@ -137,6 +137,8 @@ ROS 2 모드에서는 실행 직전 재검증을 통과한 승인 스냅샷만 `
 
 실행 중인 로봇과 연결된 `CRITICAL` HazardEvent가 등록되면 `/safety/estop`(latched)에 정지 신호를 발행하고, 그 위험이 모두 해제되면 정지 신호를 풉니다. 로봇 복귀는 승인된 `RESUME`으로만 합니다.
 
+발표용 창고의 CCTV 04 낙상자 점검은 후방 통로에서 확인된 작업자 위험을 `UNKNOWN / WARNING`으로 저장합니다. [시연 절차](../docs/warehouse-presentation.md)에서 영상 관측과 위험 기록을 확인할 수 있습니다.
+
 `ZONE` 목적지를 실제 실행하려면 해당 Zone의 `geometry.navigation_target`에 `{x,y,z}` 좌표가 있어야 합니다. 없으면 명령을 추측해 보내지 않고 `422`로 차단합니다.
 
 ### MuJoCo ② 사전 시뮬레이션 연결
