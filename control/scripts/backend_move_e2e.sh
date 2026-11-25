@@ -180,6 +180,7 @@ case "${E2E_SCENARIO:-move}" in
       --robot-id "$ROBOT_ID" \
       --control-adapter tiago-adapter \
       --result-topic "/adapter/${ROBOT_TOPIC_ID}/result" \
+      --verify-recovery \
       2>&1 | tee "$LOG_DIR/hazard.log"
     echo "[PASS] 위험 개입 E2E가 완료되었습니다."
     ;;

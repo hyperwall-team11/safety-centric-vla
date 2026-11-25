@@ -76,6 +76,23 @@ class BackendClient:
         except error.URLError as exc:
             raise RuntimeError(f"Backend 연결 실패({self.base_url}): {exc.reason}") from exc
 
+    def put(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        req = request.Request(
+            f"{self.base_url}{path}",
+            data=payload,
+            method="PUT",
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with request.urlopen(req, timeout=self.timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"PUT {path} → HTTP {exc.code}: {detail}") from exc
+        except error.URLError as exc:
+            raise RuntimeError(f"Backend 연결 실패({self.base_url}): {exc.reason}") from exc
+
     def get(self, path: str) -> Any:
         req = request.Request(
             f"{self.base_url}{path}",

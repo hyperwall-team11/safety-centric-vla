@@ -128,9 +128,11 @@ pixi run backend-move-e2e
 정상 MOVE_TO 실행과 어댑터 ACK 뒤 실행 중인 로봇에 `CRITICAL WORKER_INTRUSION`을
 등록하고, Backend가 `/safety/estop`을 발행해 CTL 어댑터의 E-Stop 이벤트가 돌아오는지
 확인합니다. 위험 등록 직전 Proposal이 여전히 `EXECUTING`이어야 하며, 어댑터 result
-토픽에서 `ESTOP` 이벤트를 직접 수신해야 통과합니다. Robot은 `ESTOP`, Task와 Proposal은
-`HELD`가 되어야 하며, 어댑터가 보고한 실제 `latency_ms`와 이벤트 관측 시간도 출력합니다.
-CV 탐지 모델은 이 시험 범위에 포함하지 않고 `POST /hazards`부터 검증합니다.
+토픽에서 `ESTOP` 이벤트를 직접 수신해야 통과합니다. 중간 상태는 Robot `ESTOP`, Task와
+Proposal `HELD`여야 합니다. 이어 가상 CCTV의 2초 부재 근거, 관리자 해제, RESUME 평가,
+ROS 2 발행과 실제 RESULT까지 검증합니다. 최종 상태는 Robot `IDLE`, Task `PLANNING`,
+RESUME Proposal `SUCCEEDED`여야 합니다. CV 탐지 모델 자체는 시험 범위에 포함하지 않고
+`POST /hazards`부터 검증합니다.
 
 ```bash
 cd control
