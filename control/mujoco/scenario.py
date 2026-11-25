@@ -23,6 +23,8 @@ CAMERAS = {
     "head_camera": ("head_camera", "/robot/head_camera", "base_link"),
 }
 
+DEFAULT_CAMERAS = tuple(sensor for sensor in CAMERAS if sensor != "amr_camera")
+
 # /joint_states로 내보낼 TIAGo 관절 (팔·몸통·머리·그리퍼·바퀴). 보조바퀴(caster)는 수동 관절이라 제외.
 JOINT_STATE_NAMES = [
     *(f"arm_{i}_joint" for i in range(1, 8)),
@@ -206,7 +208,7 @@ def rot_to_quat(rot) -> tuple[float, float, float, float]:
 class CameraRig:
     """카메라 여러 대를 하나의 렌더러로 그린다. 렌더러는 생성한 스레드에서만 써야 한다 (OpenGL 컨텍스트)."""
 
-    def __init__(self, model, width=640, height=480, sensors=("cctv_1", "cctv_2", "head_camera")):
+    def __init__(self, model, width=640, height=480, sensors=DEFAULT_CAMERAS):
         self.model, self.width, self.height = model, width, height
         self.sensors = list(sensors)
         self.renderer = mujoco.Renderer(model, height=height, width=width)

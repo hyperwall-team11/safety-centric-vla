@@ -11,7 +11,7 @@ h1{font-size:1.45rem;margin:0}h2{font-size:1rem;margin:0}.muted{color:#a7b5bb}
 .live{color:#74e4bc}.camera-grid{display:grid;grid-template-columns:2.1fr 1fr;gap:12px;margin:16px 0}
 .camera{display:flex;flex-direction:column;border:1px solid #354950;border-radius:8px;background:#19252b;overflow:hidden;text-align:left;color:inherit;padding:0;font:inherit;cursor:pointer}
 .camera.selected{grid-row:span 2;border-color:#74e4bc}.camera img{width:100%;aspect-ratio:4/3;object-fit:contain;background:#05090c;display:block}
-.camera figcaption{padding:8px 12px}.camera:focus-visible{outline:2px solid #74e4bc}
+.camera .caption{padding:8px 12px}.camera:focus-visible{outline:2px solid #74e4bc}
 .details{display:grid;grid-template-columns:1.1fr 1fr;gap:12px}.card{border:1px solid #354950;border-radius:8px;background:#19252b;padding:16px}
 label{display:block;margin:12px 0 6px}input{background:#10171c;color:inherit;min-width:0;width:100%;border:1px solid #49616a;border-radius:5px;padding:10px;font:inherit}
 button:not(.camera){border:1px solid #48636a;border-radius:5px;padding:8px 12px;font:inherit;color:inherit;background:#263b42;white-space:nowrap}button:disabled{opacity:.5}
@@ -21,9 +21,9 @@ button:not(.camera){border:1px solid #48636a;border-radius:5px;padding:8px 12px;
 <main>
 <header><h1>물류창고 안전 운반 시연</h1><span id="health" role="status" class="muted">서비스 연결 중</span></header>
 <section class="camera-grid" aria-label="실시간 카메라">
-  <button type="button" class="camera selected" aria-pressed="true" data-camera="cctv_1"><img alt=""><figcaption>CCTV 01 · 운반 통로</figcaption></button>
-  <button type="button" class="camera" aria-pressed="false" data-camera="cctv_2"><img alt=""><figcaption>CCTV 02 · 작업자 횡단 구역</figcaption></button>
-  <button type="button" class="camera" aria-pressed="false" data-camera="amr_camera"><img alt=""><figcaption>AMR CAM · 로봇 전방</figcaption></button>
+  <button type="button" class="camera selected" aria-pressed="true" data-camera="cctv_1"><img alt=""><span class="caption">CCTV 01 · 운반 통로</span></button>
+  <button type="button" class="camera" aria-pressed="false" data-camera="cctv_2"><img alt=""><span class="caption">CCTV 02 · 작업자 횡단 구역</span></button>
+  <button type="button" class="camera" aria-pressed="false" data-camera="amr_camera"><img alt=""><span class="caption">AMR CAM · 로봇 전방</span></button>
 </section>
 <section class="details">
   <div class="card"><h2>운반 명령</h2>
@@ -65,7 +65,7 @@ function showEvents() {
   $('events').replaceChildren(...rows.map(({label, at}) => {
     const row = document.createElement('li'), clock = document.createElement('time');
     clock.dateTime = at;
-    clock.textContent = new Date(at).toLocaleTimeString('ko-KR', {hour12:false, fractionalSecondDigits:3});
+    clock.textContent = new Date(at).toLocaleTimeString('ko-KR', {hour12:false, hour:'2-digit', minute:'2-digit', second:'2-digit', fractionalSecondDigits:3});
     row.append(clock, ' ' + label);
     return row;
   }));
