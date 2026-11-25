@@ -23,6 +23,7 @@
 - 기본 저장소는 인메모리이다. `BACKEND_STORE=redis`를 지정하면 Redis에 상태를 영속 저장한다.
 - Redis 모드에서 연결, 분산 잠금, 스냅샷 읽기·쓰기가 실패하면 fail-closed로 `503`을 반환한다. 저장은 Lua 스크립트로 잠금 토큰 비교와 스냅샷 교체를 원자적으로 수행하므로 만료되거나 재획득된 잠금은 저장에 사용할 수 없다. 일반적인 읽기 실패나 잠금 경합은 E-Stop을 발행하지 않으며, 실행 명령 발행 후 상태 커밋이 실패한 경우에만 물리 상태와 Backend 상태 불일치를 막기 위해 E-Stop을 발행한다.
 - 다중 Backend의 E-Stop 발행은 Redis 분산 잠금으로 직렬화하며 시작 시 저장된 정지 상태를 CTL에 다시 발행한다. Redis Pub/Sub 변경 알림은 다른 인스턴스의 `/ws/state` 구독자 갱신에 사용한다.
+- `BACKEND_CLOSED_LOOP_ENABLED=1`이면 Backend Worker가 기본 0.5초마다 TaskOrder의 다음 Proposal 생성, 안전 평가, 승인 실행과 결과 대기를 자동 진행한다. 비활성화하면 기존 수동 API 흐름을 유지한다.
 
 ### 공통 오류
 
@@ -366,6 +367,10 @@ TaskOrder 기반 생성기와 외부 VLA 직접 등록은 현재 `MOVE_TO`와 `M
 - `HW_ERROR`는 Proposal·TaskOrder `FAILED`, Robot `ERROR`로 전이한다.
 - 동일한 결과 재전송은 저장 상태만 반환하고 로그를 중복 생성하지 않는다. 이미 기록된 결과와 다른 재전송은 `409`다.
 
+Closed-Loop Worker가 활성화된 경우 `UNSUPPORTED`는 성공한 직전 단계 이후의 실패 횟수를 기준으로 같은 단계를 다시 계획한다. 실행 직전 경로 시작점 불일치로 `REJECTED`된 경우도 새 Robot 위치에서 경로를 다시 만든다. 기본 최대 시도는 단계당 3회이며 환경변수 `BACKEND_CLOSED_LOOP_MAX_ATTEMPTS_PER_STEP`으로 변경할 수 있다. 최대 시도에 도달하면 TaskOrder는 `FAILED`, Robot은 `HOLD`에 머문다. 일반 안전 평가 `REJECTED`는 TaskOrder `HELD`·Robot `HOLD`, `HW_ERROR`는 TaskOrder `FAILED`·Robot `ERROR`로 중단한다.
+
+`EXECUTING` Proposal의 RESULT가 기본 120초 안에 도착하지 않으면 Worker가 `TIMEOUT` 결과를 기록한다. TIMEOUT은 실제 동작 결과를 확정할 수 없으므로 자동 재시도하지 않고 TaskOrder `HELD`·Robot `HOLD`로 정지한다. 이 시간은 `BACKEND_CLOSED_LOOP_RESULT_TIMEOUT_SECONDS`, 주기는 `BACKEND_CLOSED_LOOP_POLL_INTERVAL_SECONDS`로 설정한다. 일시적인 Provider·전송 서비스 `503`은 현재 Proposal 상태를 유지하고 다음 주기에 다시 시도한다.
+
 ### 3.6 HazardEvent
 
 `GET /hazards`는 저장된 HazardEvent를 등록 순서로 반환한다. `status`, `severity`, `robot_id`를 단독 또는 함께 필터링할 수 있다. `robot_id`는 `related_robot_ids`에 해당 ID가 포함된 이벤트만 반환한다. 필터와 일치하는 이벤트가 없으면 빈 배열을 반환한다.
@@ -447,7 +452,7 @@ ActionProposal: PROPOSED ── evaluate 통과 ──> APPROVED
 
 대상 물체가 있는 운반 TaskOrder는 여러 ActionProposal을 순차 실행한다. Task Executor는 등록된 PhysicalObject와 성공한 Proposal 이력을 보고 다음 `MOVE_TO` 또는 `MANIPULATE`를 하나씩 자동 생성한다. OpenVLA 조작 Proposal과 Navigation Planner의 `MOVE_TO` Proposal을 같은 `task_id`로 직접 등록하는 방식도 지원하지만, 활성 상태(`PROPOSED`, `APPROVED`, `EXECUTING`, `HELD`)의 Proposal은 TaskOrder당 하나만 허용한다. 물체 접근, `PICK`, 목적지 `MOVE_TO` 성공은 개별 Proposal만 `SUCCEEDED`로 끝내고 TaskOrder를 `PLANNING`으로 돌린다. 최종 `MANIPULATE/PLACE` 성공이 전체 TaskOrder를 `COMPLETED`로 만든다.
 
-ResumeTask 전이와 실제 ROS 2 어댑터 결과 토픽 연결은 아직 구현하지 않았다. 현재 결과 API는 Mock adapter 및 연동 시험용 HTTP 경계다.
+Closed-Loop Worker는 활성화 시 위 단계를 `생성 → 평가 → 실행 → RESULT 대기` 순서로 진행한다. 안전 평가를 우회하지 않으며 실행 중인 Proposal이 있으면 새 Proposal을 만들지 않는다. ResumeTask 전이는 아직 구현하지 않았다. 결과는 Mock 연동 시험에서는 HTTP API로, ROS 2 모드에서는 CTL 결과 토픽을 Backend 결과 API로 전달해 반영한다.
 
 ## 5. 기준 문서와 현재 구현의 차이
 
