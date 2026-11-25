@@ -160,14 +160,30 @@ ROBOT_TOPIC_ID="$("$PYTHON_BIN" -c \
 wait_for_log "$ADAPTER_PID" "TIAGo 어댑터" "$LOG_DIR/adapter.log" "tiago_adapter ready"
 wait_for_topic "$ADAPTER_PID" "TIAGo 어댑터" "/adapter/${ROBOT_TOPIC_ID}/state"
 
-echo "[4/4] 자연어 MOVE_TO 실행·ACK·RESULT 확인"
-"$PYTHON_BIN" "$ROOT_DIR/backend/scripts/benchmark_command_to_dispatch.py" \
-  --base-url "$BACKEND_URL" \
-  --robot-id "$ROBOT_ID" \
-  --control-adapter tiago-adapter \
-  --runs 1 \
-  --no-latency-gate \
-  --result-timeout "$RESULT_TIMEOUT" \
-  2>&1 | tee "$LOG_DIR/benchmark.log"
-
-echo "[PASS] 자연어 MOVE_TO E2E가 완료되었습니다."
+case "${E2E_SCENARIO:-move}" in
+  move)
+    echo "[4/4] 자연어 MOVE_TO 실행·ACK·RESULT 확인"
+    "$PYTHON_BIN" "$ROOT_DIR/backend/scripts/benchmark_command_to_dispatch.py" \
+      --base-url "$BACKEND_URL" \
+      --robot-id "$ROBOT_ID" \
+      --control-adapter tiago-adapter \
+      --runs 1 \
+      --no-latency-gate \
+      --result-timeout "$RESULT_TIMEOUT" \
+      2>&1 | tee "$LOG_DIR/benchmark.log"
+    echo "[PASS] 자연어 MOVE_TO E2E가 완료되었습니다."
+    ;;
+  hazard)
+    echo "[4/4] 실행 중 CRITICAL HazardEvent·E-Stop 상태 왕복 확인"
+    "$PYTHON_BIN" "$ROOT_DIR/backend/scripts/verify_hazard_estop.py" \
+      --base-url "$BACKEND_URL" \
+      --robot-id "$ROBOT_ID" \
+      --control-adapter tiago-adapter \
+      --result-topic "/adapter/${ROBOT_TOPIC_ID}/result" \
+      2>&1 | tee "$LOG_DIR/hazard.log"
+    echo "[PASS] 위험 개입 E2E가 완료되었습니다."
+    ;;
+  *)
+    fail "지원하지 않는 E2E_SCENARIO입니다: ${E2E_SCENARIO}"
+    ;;
+esac

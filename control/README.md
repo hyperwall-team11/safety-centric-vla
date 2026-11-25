@@ -93,6 +93,7 @@ macOS에서는 같은 Mac 안의 노드끼리도 서로 못 찾는 문제가 있
 | `pixi run tiago-adapter` | 공통 Action을 `/cmd_vel`·`/arm/command`로 바꾸는 TIAGo 어댑터 실행 |
 | `pixi run roundtrip` | Mock 어댑터 + 하네스 왕복·적합성 시험 (13개 항목) |
 | `pixi run backend-move-e2e` | 자연어 MOVE_TO → Backend → ROS 2 → TIAGo → MuJoCo → RESULT 최소 E2E |
+| `pixi run backend-hazard-e2e` | 실행 중 CRITICAL HazardEvent → E-Stop → Robot·Task·Proposal HELD E2E |
 | `pixi run arm` / `arm-view` | Panda 로봇 팔 집기·놓기 / 뷰어로 보기 (처음 실행 시 모델 33MB를 내려받음) |
 | `pixi run fetch-models` | 저장소에 올리지 않는 모델(Panda)만 내려받기 |
 
@@ -119,6 +120,23 @@ pixi run backend-move-e2e
 `$TMPDIR/safety-vla-move-e2e.*`에 남으며 `E2E_LOG_DIR`로 위치를 지정할 수 있습니다.
 성공 로그도 보존하려면 `KEEP_E2E_LOGS=1`을 사용합니다. 포트·로봇 ID가 겹치면
 `BACKEND_PORT`, `ROBOT_ID`로 바꿀 수 있습니다.
+
+### 위험 개입 E2E
+
+정상 MOVE_TO 실행과 어댑터 ACK 뒤 실행 중인 로봇에 `CRITICAL WORKER_INTRUSION`을
+등록하고, Backend가 `/safety/estop`을 발행해 CTL 어댑터의 E-Stop 이벤트가 돌아오는지
+확인합니다. 위험 등록 직전 Proposal이 여전히 `EXECUTING`이어야 하며, 어댑터 result
+토픽에서 `ESTOP` 이벤트를 직접 수신해야 통과합니다. Robot은 `ESTOP`, Task와 Proposal은
+`HELD`가 되어야 하며, 어댑터가 보고한 실제 `latency_ms`와 이벤트 관측 시간도 출력합니다.
+CV 탐지 모델은 이 시험 범위에 포함하지 않고 `POST /hazards`부터 검증합니다.
+
+```bash
+cd control
+pixi run backend-hazard-e2e
+```
+
+실패하면 정상 E2E와 같은 디렉터리에 `backend.log`, `bridge.log`, `adapter.log`,
+`hazard.log`가 남습니다.
 
 ### 터미널에서 직접 로봇 움직이기
 
