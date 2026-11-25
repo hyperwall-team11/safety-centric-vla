@@ -14,6 +14,7 @@ cameras in one model call with ``--batch-cameras``.
 import argparse
 import json
 import math
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -183,10 +184,33 @@ class CameraDetector(Node):
         positions, in_zone = workers_in_zone(people, width, height, camera, self.hazard["ring"])
         ids = [observation_id(sensor_id, stamp.sec, stamp.nanosec, index)
                for index, point in enumerate(positions) if point["in_zone"]]
-        trigger = self.tracker.update(sensor_id, in_zone, time.monotonic(), ids)
+        frame_observed_at = datetime.fromtimestamp(
+            stamp.sec + stamp.nanosec / 1_000_000_000,
+            tz=timezone.utc,
+        )
+        trigger = self.tracker.update(
+            sensor_id,
+            in_zone,
+            time.monotonic(),
+            ids,
+            detected_at=frame_observed_at,
+        )
         # observation_ids는 이 기록(sensor_id, stamp)과 같은 키로 만들어 HazardEvent에서 JSONL로 추적된다.
         result = {"ground_positions": positions, "in_keep_out": in_zone, "observation_ids": ids,
                   "hazard_id": None}
+        clearance = self.tracker.clearance()
+        if clearance is not None:
+            try:
+                self.hazard["client"].post_clearance(clearance)
+            except Exception as exc:
+                self.hazard_failures += 1
+                self.get_logger().error(f"Hazard clearance POST failed: {exc}")
+            else:
+                self.tracker.mark_clearance_reported()
+                result["clearance_hazard_id"] = clearance["hazard_id"]
+                self.get_logger().info(
+                    f"CV clearance acknowledged for {clearance['hazard_id']}"
+                )
         if trigger is None:
             return result
         hazard = build_hazard(self.hazard["zone_id"], self.hazard["robot_ids"], trigger)
@@ -405,7 +429,7 @@ def main():
     if bool(args.hazard_zone_id) != bool(args.robot_id):
         parser.error("--hazard-zone-id and --robot-id must be given together")
     if args.backend_url:
-        client = BackendClient(args.backend_url)
+        client = BackendClient(args.backend_url, token=os.getenv("BACKEND_API_TOKEN"))
         zones = client.zones()
         unknown = sorted(set(args.covered_zone_id) - {zone["zone_id"] for zone in zones})
         if unknown:

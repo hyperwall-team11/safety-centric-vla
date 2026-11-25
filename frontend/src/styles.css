@@ -61,6 +61,14 @@ a:hover { text-decoration: underline; }
 .system-state[data-state="down"] { color: var(--red); }
 .sync-mode { padding: 2px 8px; border-radius: 999px; background: #f0f0f2; color: #6b6b72; font-size: 12px; font-weight: 600; }
 .system-state[data-state="down"] .system-dot { background: var(--red); box-shadow: 0 0 0 4px rgba(228, 33, 25, .09); }
+.topbar-state { display: flex; align-items: center; justify-self: end; gap: 12px; }
+.auth-state { padding: 4px 9px; color: #6b6b72; background: #f0f0f2; border-radius: 999px; font-size: 11px; font-weight: 650; }
+.auth-state.dev { color: #7a5b00; background: #fff2c8; }
+.auth-state.authenticated { display: flex; align-items: center; gap: 7px; color: #1f6f42; background: #e6f5ec; }
+.auth-state button, .auth-control button { min-height: 25px; padding: 3px 8px; border: 0; font-size: 10px; }
+.auth-control { display: flex; align-items: center; gap: 6px; }
+.auth-control input { width: 130px; min-height: 30px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px; font-size: 11px; }
+.auth-control .auth-required { color: #a3201b; background: #fde8e7; }
 
 .content { display: flex; width: min(100%, 1500px); min-width: 0; margin: 0 auto; padding: 28px clamp(22px, 4.5vw, 72px) 110px; flex-direction: column; gap: 38px; }
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 36px; padding: 8px 0 16px; }
@@ -108,6 +116,7 @@ td a { font-weight: 600; }
 
 .status { display: inline-flex; min-height: 24px; align-items: center; padding: 3px 9px; color: #5a5a5e; background: #e7e7ea; border-radius: 999px; font-size: 9px; font-weight: 700; white-space: nowrap; }
 .status[data-status="APPROVED"], .status[data-status="SUCCEEDED"], .status[data-status="IDLE"], .status[data-status="RESOLVED"], .status[data-status="ALLOW"] { color: var(--green); background: var(--green-soft); }
+.status[data-status="ACKNOWLEDGED"] { color: #996400; background: #fff0bd; }
 .status[data-status="CRITICAL"], .status[data-status="ESTOP"], .status[data-status="REJECTED"], .status[data-status="FAILED"], .status[data-status="DENY"] { color: var(--red); background: var(--red-soft); }
 .status[data-status="WARNING"], .status[data-status="HOLD"], .status[data-status="HELD"], .status[data-status="BLOCKED"] { color: var(--amber); background: var(--amber-soft); }
 .status[data-status="RUNNING"], .status[data-status="EXECUTING"], .status[data-status="PROPOSED"], .status[data-status="PLANNING"] { color: var(--blue-deep); background: var(--blue-soft); }

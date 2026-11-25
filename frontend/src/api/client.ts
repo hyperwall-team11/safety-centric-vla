@@ -1,9 +1,27 @@
 import type {
-  ActionProposal, ExecutionLog, HazardEvent, Robot, TaskOrder, TaskOrderPreview, WorkerSnapshot, Zone,
+  ActionProposal, AuthStatus, ExecutionLog, HazardEvent, Robot, TaskOrder, TaskOrderPreview, WorkerSnapshot, Zone,
 } from "./types";
 
 // 개발 서버는 /api를 Backend로 프록시한다(vite.config.ts).
 const BASE = import.meta.env.VITE_API_BASE ?? "/api";
+const TOKEN_KEY = "vla-safety-api-token";
+
+export const getApiToken = () => typeof window === "undefined" ? "" : window.sessionStorage.getItem(TOKEN_KEY) ?? "";
+export const setApiToken = (token: string) => {
+  if (typeof window === "undefined") return;
+  if (token.trim()) window.sessionStorage.setItem(TOKEN_KEY, token.trim());
+  else window.sessionStorage.removeItem(TOKEN_KEY);
+};
+
+export function websocketProtocols(): string[] {
+  const token = getApiToken();
+  if (!token) return ["state.v1"];
+  const bytes = new TextEncoder().encode(token);
+  let binary = "";
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+  const encoded = window.btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return ["state.v1", `bearer.${encoded}`];
+}
 
 export class ApiError extends Error {
   constructor(public status: number, public detail: unknown) {
@@ -27,9 +45,14 @@ export class MissingApiError extends Error {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
+    const token = getApiToken();
     response = await fetch(`${BASE}${path}`, {
       ...init,
-      headers: { "Content-Type": "application/json", ...init?.headers },
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...init?.headers,
+      },
     });
   } catch (error) {
     throw new NetworkError(error);
@@ -50,6 +73,7 @@ const post = <T>(path: string, body?: unknown, headers?: Record<string, string>)
 
 export const api = {
   health: () => request<{ status: string }>("/health"),
+  authStatus: () => request<AuthStatus>("/auth/me"),
   robots: () => request<Robot[]>("/robots"),
   zones: () => request<Zone[]>("/zones"),
   tasks: (status?: string) => request<TaskOrder[]>(`/task-orders?order=desc${status ? `&status=${status}` : ""}`),
@@ -72,4 +96,5 @@ export const api = {
   evaluate: (proposalId: string) => post<ActionProposal>(`/action-proposals/${proposalId}/evaluate`),
   execute: (proposalId: string) => post<ActionProposal>(`/action-proposals/${proposalId}/execute`),
   resolveHazard: (hazardId: string) => post<HazardEvent>(`/hazards/${hazardId}/resolve`, { resolved_by: "OPERATOR" }),
+  createResumeProposal: (taskId: string) => post<ActionProposal>(`/task-orders/${taskId}/resume-proposal`),
 };

@@ -36,7 +36,7 @@
 
 ## 2. 구현 엔드포인트
 
-현재 구현은 23개 path, 29개 HTTP operation으로 구성된다.
+현재 구현은 25개 path, 31개 HTTP operation으로 구성된다.
 
 | Method | Path | 성공 | 용도 |
 |---|---|---:|---|
@@ -57,6 +57,7 @@
 | `POST` | `/task-orders/preview/batch` | `200` | 자연어 명령 1~50건 일괄 비저장 검증 |
 | `POST` | `/task-orders/from-natural-language` | `201` | 자연어를 TaskOrder로 변환·저장 |
 | `GET` | `/task-orders/{task_id}` | `200` | TaskOrder 단건 조회 |
+| `POST` | `/task-orders/{task_id}/resume-proposal` | `201` | HELD TaskOrder의 안전 복귀 Proposal 생성 |
 | `POST` | `/task-orders/{task_id}/action-proposals` | `201`, `200` | TaskOrder에서 ActionProposal 생성 |
 | `GET` | `/task-orders/{task_id}/action-proposals` | `200` | TaskOrder의 Proposal 목록 조회 |
 | `POST` | `/action-proposals` | `201` | 외부 VLA의 ActionProposal 직접 등록 |
@@ -66,6 +67,7 @@
 | `POST` | `/action-proposals/{proposal_id}/result` | `200` | 제어 어댑터 실행 결과 보고 |
 | `GET` | `/hazards` | `200` | HazardEvent 필터 목록 조회 |
 | `POST` | `/hazards` | `201` | HazardEvent 등록 |
+| `POST` | `/hazards/{hazard_id}/clearance` | `200` | CV 안전 해제 근거 등록 |
 | `POST` | `/hazards/{hazard_id}/resolve` | `200` | HazardEvent 해제 |
 | `GET` | `/safety-rules` | `200` | 활성 안전 규칙 조회 |
 | `GET` | `/execution-logs` | `200` | 전체 ExecutionLog 조회 |
@@ -260,6 +262,12 @@ VLA Provider 추론은 위험 이벤트·Worker 관측·Robot 상태 갱신을 �
 
 `GET /task-orders/{task_id}/action-proposals`는 해당 TaskOrder의 Proposal만 배열로 반환한다.
 
+`POST /task-orders/{task_id}/resume-proposal`은 `HELD` TaskOrder와 `HOLD` 또는 `ESTOP`
+Robot을 대상으로 안전 복귀용 `RESUME` Proposal을 생성한다. 인증이 활성화된 환경에서는
+`OPERATOR` 또는 `ADMIN` 역할만 호출할 수 있다. 대상 로봇이나 TaskOrder 목적지 Zone과 연결된
+미해제 `CRITICAL` HazardEvent가 있거나 처리 중인 Proposal이 있으면 `409`를 반환한다. 생성한
+Proposal은 `priority=SAFETY`이며 일반 Proposal과 동일하게 평가·실행 절차를 거친다.
+
 외부 VLA가 `POST /action-proposals`로 등록하는 제안은 요청 모델 검증 후 TaskOrder 문맥과도
 대조한다. `action_type`, `robot_id`, `parameters.target_pose`, MANIPULATE의 `object_id`,
 `frame_id`가 TaskOrder·Robot과 다르면 모델이 작업 문맥을 바꾼 것으로 보고 `422`로 거부한다.
@@ -320,10 +328,10 @@ TaskOrder 기반 생성기와 외부 VLA 직접 등록은 현재 `MOVE_TO`와 `M
 
 현재 실제 평가 항목:
 
-1. Robot 상태가 `IDLE` 또는 `HOLD`
+1. Robot 상태가 `IDLE` 또는 `HOLD`. 단, `RESUME`은 `ESTOP`도 허용
 2. `control_adapter`가 공백이 아님
 3. Proposal 속도가 `min(0.4, Robot max_speed, 목적지 Zone max_speed)` 이하. Zone이 없거나 `max_speed`가 없으면 해당 항목은 제외
-4. 대상 로봇 또는 TaskOrder의 `ZONE` 목적지와 연결된 OPEN·CRITICAL HazardEvent가 없음
+4. 대상 로봇 또는 TaskOrder의 `ZONE` 목적지와 연결된 미해제 `CRITICAL` HazardEvent가 없음
 5. `KEEP_OUT` 목적지 및 경로 제한 충족
 6. 관측 안전 규칙을 활성화한 경우 `OBSERVATION_GAP` 및 `SAFETY_DISTANCE` 통과
 7. 사전 시뮬레이션을 활성화한 경우 1~6을 모두 통과한 후보만 MuJoCo ② `COLLISION` 판정 `PASS`(3.9절)
@@ -388,7 +396,20 @@ TaskOrder 기반 생성기와 외부 VLA 직접 등록은 현재 `MOVE_TO`와 `M
 | `last_observed_at` | datetime 또는 null | 마지막 관측 시각 |
 | `resolved_by` | enum 또는 null | `SENSOR_AUTO`, `OPERATOR` |
 
-`POST /hazards/{hazard_id}/resolve` 요청은 `{"resolved_by":"SENSOR_AUTO|OPERATOR"}`이다. `WARNING`은 두 주체 모두 해제할 수 있지만 `CRITICAL`은 `OPERATOR`만 허용한다. 성공 시 `status=RESOLVED`, `resolved_at`, `resolved_by`를 기록하며, 이미 해제된 이벤트나 허용되지 않은 자동 해제는 `409`를 반환한다. 인증 계층은 아직 없으므로 이 값은 호출자가 명시하는 감사 필드다.
+`POST /hazards/{hazard_id}/clearance`는 `WORKER_INTRUSION` 위험에 대한 CV 안전 해제 근거를
+등록한다. 요청은 최신 `observed_at`, 위험 Zone을 감시하는 전체 `source_sensor_ids`, 2초 이상의
+`clear_duration_seconds`를 포함해야 한다. 등록 센서가 모두 `ONLINE`이고 최신 프레임을 가졌으며,
+최신 Worker 스냅샷에 해당 Zone의 `DANGER` 작업자가 없어야 한다. 성공 시 HazardEvent를
+`ACKNOWLEDGED`로 바꾸고 근거를 저장한다. 인증이 활성화된 환경에서는 `SENSOR` 또는 `CV`
+역할만 호출할 수 있다.
+
+`POST /hazards/{hazard_id}/resolve` 요청은 `{"resolved_by":"SENSOR_AUTO|OPERATOR"}`이다.
+`WARNING`은 두 주체 모두 해제할 수 있지만 `CRITICAL`은 `OPERATOR`만 허용한다. 특히
+`CRITICAL WORKER_INTRUSION`은 위 CV 안전 해제 근거가 등록되어 `ACKNOWLEDGED`가 된 뒤에만
+해제할 수 있다. 인증이 활성화된 환경에서는 `OPERATOR` 해제에 `OPERATOR` 또는 `ADMIN`,
+`SENSOR_AUTO` 해제에 `SENSOR` 또는 `CV` 역할이 필요하다. 성공 시 `status=RESOLVED`,
+`resolved_at`, `resolved_by`를 기록하며, 이미 해제된 이벤트나 조건을 충족하지 않은 요청은
+`409`를 반환한다.
 
 실행 중 로봇 즉시 정지: `OPEN` `CRITICAL` HazardEvent와 연결된(`related_robot_ids`에 있거나 Task 목적지 Zone이 `zone_id`와 같은) 로봇 중 `EXECUTING` Proposal을 가진 로봇이 있으면, 등록 직후 `/safety/estop`에 `{"active":true,"triggered_by":"RULE_ENGINE","issued_at":...}`를 발행한다. 상태 전이(Robot `ESTOP`, Proposal·Task `HELD`)는 CTL이 보내는 `ESTOP` 이벤트로 반영한다. 정지를 발행하게 한 HazardEvent가 모두 해제되면 `{"active":false}`를 발행하지만, 이는 정지 신호만 풀며 로봇 복귀는 승인된 `RESUME`으로만 한다. 발행은 저장소 잠금 밖에서 하되 전용 잠금으로 직렬화하고 발행 직전 저장소 상태를 다시 읽어 마지막 발행이 항상 마지막 상태와 같으며, 발행에 실패해도 등록은 성공하고 이후 평가·실행 직전 재검증 차단은 그대로 적용된다. `/safety/estop`은 전역 토픽이므로 연결된 어댑터가 모두 정지한다.
 
@@ -436,6 +457,7 @@ TaskOrder: CREATED ── proposal 생성/등록 ──> PLANNING
            PLANNING ── execute 재검증 실패 ──> HELD
            RUNNING ── 중간 단계 성공 ──> PLANNING
            RUNNING ── 단일 작업 또는 최종 PLACE 성공 ──> COMPLETED
+           HELD ── RESUME 성공 ──> PLANNING
 
 ActionProposal: PROPOSED ── evaluate 통과 ──> APPROVED
                 PROPOSED ── evaluate 실패 ──> REJECTED
@@ -447,7 +469,9 @@ ActionProposal: PROPOSED ── evaluate 통과 ──> APPROVED
 
 대상 물체가 있는 운반 TaskOrder는 여러 ActionProposal을 순차 실행한다. Task Executor는 등록된 PhysicalObject와 성공한 Proposal 이력을 보고 다음 `MOVE_TO` 또는 `MANIPULATE`를 하나씩 자동 생성한다. OpenVLA 조작 Proposal과 Navigation Planner의 `MOVE_TO` Proposal을 같은 `task_id`로 직접 등록하는 방식도 지원하지만, 활성 상태(`PROPOSED`, `APPROVED`, `EXECUTING`, `HELD`)의 Proposal은 TaskOrder당 하나만 허용한다. 물체 접근, `PICK`, 목적지 `MOVE_TO` 성공은 개별 Proposal만 `SUCCEEDED`로 끝내고 TaskOrder를 `PLANNING`으로 돌린다. 최종 `MANIPULATE/PLACE` 성공이 전체 TaskOrder를 `COMPLETED`로 만든다.
 
-ResumeTask 전이와 실제 ROS 2 어댑터 결과 토픽 연결은 아직 구현하지 않았다. 현재 결과 API는 Mock adapter 및 연동 시험용 HTTP 경계다.
+ResumeTask 전이는 안전 해제 후 `RESUME` Proposal의 평가·실행·성공 보고로 구현했다. 실제 ROS 2
+어댑터 결과 토픽 연결은 아직 구현하지 않았으며, 현재 결과 API는 Mock adapter 및 연동 시험용
+HTTP 경계다.
 
 ## 5. 기준 문서와 현재 구현의 차이
 
@@ -456,8 +480,8 @@ ResumeTask 전이와 실제 ROS 2 어댑터 결과 토픽 연결은 아직 구�
 | API prefix | `/api/v1` | 통합 객체 조회에 적용, 나머지 경로는 prefix 없음 |
 | Proposal 제출·평가 | 한 경계에서 판정 결과 반환 | 등록, 평가, 실행 API 분리 |
 | 객체 조회 | `GET /api/v1/objects/{type}` | 저장 계층이 있는 10개 객체 타입의 통합 조회 구현 |
-| ResumeTask | 관리자 승인 2단계 복귀 | 미구현, HELD 생성 요청은 `409` |
-| 인증·권한 | CRITICAL 해제와 Resume는 관리자 전용 | 선택형 역할별 API 토큰 인증과 요청자 전달 구현. CRITICAL 해제 요청의 `resolved_by=OPERATOR` 검사만 있고 역할별 인가는 미구현 |
+| ResumeTask | 관리자 승인 2단계 복귀 | CV 안전 해제 근거, 운영자 Hazard 해제, `RESUME` Proposal 평가·실행으로 구현 |
+| 인증·권한 | CRITICAL 해제와 Resume는 관리자 전용 | 선택형 역할별 API 토큰 인증 구현. CV 안전 해제는 `SENSOR|CV`, CRITICAL 해제와 Resume는 `OPERATOR|ADMIN`으로 분리 |
 | 규칙 SR-01~06 | 속도·구역·거리·위험·상태·센서 공백 | SR-01 기본 0.4m/s·Robot·Zone 상한, 로봇 상태·adapter·관련 CRITICAL 위험 구현. KEEP_OUT 경로 검사를 구현하고 거리·센서 공백은 관측 안전 검사 활성화 시 적용 |
 | E-Stop | ROS 2 latched 전용 경로 | 실행 재검증 실패 시 Robot ESTOP·Task HELD·감사 로그 구현. `CRITICAL` HazardEvent가 실행 중 로봇과 연결되면 `/safety/estop` 발행(3.6절). 운영자 E-Stop API와 로봇별 정지는 미구현 |
 | 어댑터 실행 결과 | ROS 2 result 토픽으로 완료·실패 보고 | HTTP 결과 보고, 상태 전이, 멱등 감사 로그 구현. ROS 2 토픽 연결은 미구현 |
