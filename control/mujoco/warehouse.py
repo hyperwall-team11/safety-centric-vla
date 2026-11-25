@@ -2,6 +2,7 @@
 import math
 
 import mujoco
+import numpy as np
 
 from amr import PlantAmr, add_plant_amrs
 from scenario import WorkerScript
@@ -18,11 +19,16 @@ DEMO_WORKERS = [
      "vest": "lime", "pants": "navy", "helmet": "white"},
     {"waypoints": [(-3.9, 4.0, 2.0), (-1.0, 4.0, 1.0)], "speed": 0.55,
      "vest": "orange", "pants": "jeans", "helmet": "yellow"},
-    {"waypoints": [(1.2, 5.8, 2.0), (5.8, 5.8, 2.0)], "speed": 0.55,
+    {"waypoints": [(2.9, 4.2, 2.0), (5.8, 4.2, 2.0)], "speed": 0.55,
      "vest": "lime", "pants": "jeans", "helmet": "orange"},
-    {"waypoints": [(8.2, 3.0, 1.5), (8.2, 6.5, 2.0)], "speed": 0.5,
+    {"waypoints": [(-1.25, 5.4, 0.0), (0.7, 5.4, 0.0)], "speed": 0.5,
      "vest": "orange", "pants": "navy", "helmet": "white"},
 ]
+FALL_WORKER_INDEX = 3
+FALL_POSITION = (0.7, 5.4)
+FALL_AT_S = 8.0
+FALL_DURATION_S = 0.8
+FALL_ZONE = [(0.34, 4.75), (2.7, 4.75), (2.7, 6.03), (0.34, 6.03)]
 CROSS_X = 1.0
 TRIGGER_X = -2.4
 WALK_START_Y, WALK_END_Y = -1.5, -6.6
@@ -56,6 +62,35 @@ class CrossingWorker(WorkerScript):
         return elapsed * self.speed, float(elapsed == 0.0 or elapsed >= self.duration)
 
 
+
+
+class FallenWorker(WorkerScript):
+    """후방 통로에서 걸음을 멈춘 뒤 쓰러지고 바닥에 계속 눕는다."""
+
+    def position(self, sim_time):
+        return min(FALL_POSITION[0], -1.25 + max(0.0, sim_time) * self.speed), FALL_POSITION[1], 0.0
+
+    def gait_state(self, sim_time):
+        distance = min(FALL_POSITION[0] + 1.25, self.speed * sim_time)
+        return distance, float(self.position(sim_time)[0] >= FALL_POSITION[0])
+
+    def body_pose(self, poser, sim_time, position):
+        pos, quat = super().body_pose(poser, sim_time, position)
+        progress = max(0.0, min(1.0, (sim_time - FALL_AT_S) / FALL_DURATION_S))
+        if progress == 0.0:
+            return pos, quat
+        angle = math.pi / 2 * (progress * progress * (3 - 2 * progress))
+        rotation = np.array([math.cos(angle / 2), 0, math.sin(angle / 2), 0])
+        matrix = np.empty(9)
+        mujoco.mju_quat2Mat(matrix, rotation)
+        x, y, _ = position
+        pivot = np.array([x, y, 0.0])
+        rotated = (pos - pivot) @ matrix.reshape(3, 3).T + pivot
+        rotated[:, 2] += 0.27 * math.sin(angle)
+        orientations = np.empty_like(quat)
+        for output, original in zip(orientations, quat):
+            mujoco.mju_mulQuat(output, rotation, original)
+        return rotated, orientations
 
 def build_warehouse():
     """공장 장면에서 팔·작업 셀을 떼고 창고에 필요한 모델만 구성한다."""

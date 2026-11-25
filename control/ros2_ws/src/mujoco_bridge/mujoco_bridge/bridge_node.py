@@ -516,12 +516,16 @@ class MujocoBridge(Node):
             raise RuntimeError("cctv_renderer:=threejs needs a scene with the worker model")
         # 렌더러가 읽을 정적 장면(scene.json·텍스처). 작업자 1은 브리지의 작업자 스크립트 위치 그대로 둔다
         workers_cfg = export_scene.WORKERS
+        worker_scripts = None
         if self.crossing_amr_id is not None:
             import warehouse
 
             workers_cfg = warehouse.DEMO_WORKERS
+            i = warehouse.FALL_WORKER_INDEX
+            worker_scripts = {i: warehouse.FallenWorker(waypoints=workers_cfg[i]["waypoints"],
+                                                         speed=workers_cfg[i]["speed"])}
         meta, self.packer = export_scene.prepare(
-            m, d, Path(data_dir), self.worker or False, workers_cfg=workers_cfg,
+            m, d, Path(data_dir), self.worker or False, workers_cfg=workers_cfg, worker_scripts=worker_scripts,
             live_moving_cameras=[s for s in self.threejs_sensors if self.scn.CAMERAS[s][2] != "world"],
         )
         meta.update({"frames": 1, "fps": self.camera_hz, "live": True})

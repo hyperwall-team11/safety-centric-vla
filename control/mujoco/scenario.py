@@ -158,6 +158,9 @@ class WorkerScript:
             break
         return dist, stand
 
+    def body_pose(self, poser, sim_time, position):
+        return poser.pose(*position, *self.gait_state(sim_time))
+
     def apply(self, model, data) -> tuple[float, float, float]:
         x, y, yaw = self.position(data.time)
         mocap = model.body_mocapid[model.body("worker").id]

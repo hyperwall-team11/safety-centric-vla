@@ -278,8 +278,8 @@ class FramePacker:
         parts = [np.concatenate([d.geom_xpos[self.gids], d.geom_xmat[self.gids]], axis=1).astype("<f4").tobytes(),
                  np.asarray(self.scn.skinvert, dtype="<f4").tobytes(),
                  np.concatenate([d.xpos[self.head], d.xquat[self.head]]).astype("<f4").tobytes()]
-        for (i, script), (x, y, yaw) in zip(self.extra, states):
-            pos, quat = self.poser.pose(x, y, yaw, *script.gait_state(sim_time))
+        for (_, script), position in zip(self.extra, states):
+            pos, quat = script.body_pose(self.poser, sim_time, position)
             pos, quat = pos.copy(), quat.copy()
             parts.append(self.skinner(pos, quat).astype("<f4").tobytes())
             parts.append(np.concatenate([pos[self.head_part], quat[self.head_part]]).astype("<f4").tobytes())
@@ -289,7 +289,8 @@ class FramePacker:
         return b"".join(parts), states
 
 
-def prepare(m, d, out: Path, worker1_script=None, workers_cfg=WORKERS, robot_camera=False, live_moving_cameras=()):
+def prepare(m, d, out: Path, worker1_script=None, workers_cfg=WORKERS, robot_camera=False, live_moving_cameras=(),
+            worker_scripts=None):
     """정적 장면(scene.json 내용)과 FramePacker를 만든다. 작업자 1은 worker1_script(없으면 workers_cfg[0])로 둔다.
     workers_cfg: 현장별 작업자 설정(SCENE_WORKERS), robot_camera: 로봇 탑재 카메라를 장면에 포함할지.
     worker1_script=False이면 작업자 1을 지금 자리에 둔다(브리지에서 작업자 이동을 끈 경우).
@@ -298,7 +299,9 @@ def prepare(m, d, out: Path, worker1_script=None, workers_cfg=WORKERS, robot_cam
     """
     names = {m.body(i).name for i in range(m.nbody)}
     extra = [i for i in range(1, len(workers_cfg)) if f"worker_{i + 1}" in names]
-    scripts = [WorkerScript(waypoints=workers_cfg[i]["waypoints"], speed=workers_cfg[i]["speed"]) for i in extra]
+    worker_scripts = worker_scripts or {}
+    scripts = [worker_scripts.get(i) or WorkerScript(waypoints=workers_cfg[i]["waypoints"],
+                                                    speed=workers_cfg[i]["speed"]) for i in extra]
     if worker1_script is not False:
         (worker1_script or WorkerScript(waypoints=workers_cfg[0]["waypoints"],
                                         speed=workers_cfg[0]["speed"])).apply(m, d)
