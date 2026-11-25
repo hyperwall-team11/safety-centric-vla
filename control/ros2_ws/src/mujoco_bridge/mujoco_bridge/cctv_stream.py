@@ -28,6 +28,7 @@ DEFAULT_CAMERAS = {
     "cctv_1": "/cctv_1/image_raw",
     "cctv_2": "/cctv_2/image_raw",
     "cctv_3": "/cctv_3/image_raw",
+    "cctv_4": "/cctv_4/image_raw",
     "amr_camera": "/amr_camera/image_raw",
     "head_camera": "/robot/head_camera/image_raw",
 }
@@ -193,7 +194,7 @@ def main():
 
     show_sim_clock = node.declare_parameter("show_sim_clock", False).value
     store = FrameStore(dict(DEFAULT_CAMERAS))
-    names = {"cctv_1": "CCTV 01", "cctv_2": "CCTV 02", "cctv_3": "CCTV 03", "amr_camera": "AMR CAM"}
+    names = {"cctv_1": "CCTV 01", "cctv_2": "CCTV 02", "cctv_3": "CCTV 03", "cctv_4": "CCTV 04", "amr_camera": "AMR CAM"}
 
     def on_image(sensor_id: str, msg: Image) -> None:
         try:

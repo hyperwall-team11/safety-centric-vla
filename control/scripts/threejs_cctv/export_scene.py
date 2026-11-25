@@ -209,7 +209,7 @@ def export_static(m, d, out: Path, workers_cfg=WORKERS, robot_camera=False, live
         })
 
     cams = {}
-    fixed = tuple(sensor for sensor in ("cctv_1", "cctv_2", "cctv_3")
+    fixed = tuple(sensor for sensor in ("cctv_1", "cctv_2", "cctv_3", "cctv_4")
                   if mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_CAMERA, sensor) >= 0)
     for sensor in fixed + ((ROBOT_CAMERA,) if robot_camera else ()) + tuple(live_moving_cameras):
         cid = m.camera(CAMERAS[sensor][0]).id

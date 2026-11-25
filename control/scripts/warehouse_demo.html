@@ -10,7 +10,7 @@ header,article,form,.heading{display:flex;align-items:center;justify-content:spa
 h1{font-size:1.45rem;margin:0}h2{font-size:1rem;margin:0}.muted{color:#a7b5bb}
 .live{color:#74e4bc}.camera-grid{display:grid;grid-template-columns:2.1fr 1fr;gap:12px;margin:16px 0}
 .camera{display:flex;flex-direction:column;border:1px solid #354950;border-radius:8px;background:#19252b;overflow:hidden;text-align:left;color:inherit;padding:0;font:inherit;cursor:pointer}
-.camera.selected{grid-row:span 3;border-color:#74e4bc}.camera:not(.selected) img{max-height:175px}.camera img{width:100%;aspect-ratio:4/3;object-fit:contain;background:#05090c;display:block}
+.camera.selected{grid-row:span 4;border-color:#74e4bc}.camera:not(.selected) img{max-height:140px}.camera img{width:100%;aspect-ratio:4/3;object-fit:contain;background:#05090c;display:block}
 .camera .caption{padding:8px 12px}.camera:focus-visible{outline:2px solid #74e4bc}
 .details{display:grid;grid-template-columns:1.1fr 1fr;gap:12px}.card{border:1px solid #354950;border-radius:8px;background:#19252b;padding:16px}
 label{display:block;margin:12px 0 6px}input{background:#10171c;color:inherit;min-width:0;width:100%;border:1px solid #49616a;border-radius:5px;padding:10px;font:inherit}
@@ -24,13 +24,14 @@ button:not(.camera){border:1px solid #48636a;border-radius:5px;padding:8px 12px;
   <button type="button" class="camera selected" aria-pressed="true" data-camera="cctv_1"><img alt=""><span class="caption">CCTV 01 · 운반 통로</span></button>
   <button type="button" class="camera" aria-pressed="false" data-camera="cctv_2"><img alt=""><span class="caption">CCTV 02 · 작업자 횡단 구역</span></button>
   <button type="button" class="camera" aria-pressed="false" data-camera="cctv_3"><img alt=""><span class="caption">CCTV 03 · 출하 도크</span></button>
+  <button type="button" class="camera" aria-pressed="false" data-camera="cctv_4"><img alt=""><span class="caption">CCTV 04 · 후방 보관 구역</span></button>
   <button type="button" class="camera" aria-pressed="false" data-camera="amr_camera"><img alt=""><span class="caption">AMR CAM · 로봇 전방</span></button>
 </section>
 <section class="details">
   <div class="card"><h2>운반 명령</h2>
     <label for="instruction" class="muted">자연어 입력</label>
     <form><input id="instruction" required maxlength="240" value="부품 상자를 실은 로봇을 &quot;검사 스테이션&quot;으로 이동해"><button id="send" disabled>검증 후 출발</button></form>
-    <p id="result" role="status" class="muted">네 카메라와 작업자 검출기 준비 대기 중</p>
+    <p id="result" role="status" class="muted">다섯 카메라와 작업자 검출기 준비 대기 중</p>
   </div>
   <div class="card">
     <div class="heading"><h2>안전 이벤트</h2><button id="resolve" disabled>운영자 확인 및 위험 해제</button></div>

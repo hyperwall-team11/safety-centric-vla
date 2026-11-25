@@ -216,7 +216,7 @@ def make_handler(args, telemetry):
                 state["ready"] = (fresh_workers and state["adapter"] == "IDLE" and
                                   all(any(camera["sensor_id"] == sensor and camera["last_frame_at"] is not None
                                           and time.time() - camera["last_frame_at"] < 2 for camera in camera_state)
-                                      for sensor in ("cctv_1", "cctv_2", "cctv_3", "amr_camera")))
+                                      for sensor in ("cctv_1", "cctv_2", "cctv_3", "cctv_4", "amr_camera")))
                 if first_detection_at is None:
                     first_detection_at = next((r["processed_at_utc"] for r in records if r.get("people")), None)
                 state["first_detection_at"] = first_detection_at
