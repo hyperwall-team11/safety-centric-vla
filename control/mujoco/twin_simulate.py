@@ -335,7 +335,14 @@ def build_manipulation_twin(state):
         if joints is None:
             q = kin.home
         elif isinstance(joints, (list, tuple)) and len(joints) == kin.dof:
-            q = np.array([float(v) for v in joints])
+            try:
+                q = np.array([float(v) for v in joints])
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise SimulationError(f"robot {rid}: joint_positions must be numeric") from exc
+            if not np.all(np.isfinite(q)):
+                raise SimulationError(f"robot {rid}: joint_positions must be finite")
+            if np.any(q != kin.clip(q)):
+                raise SimulationError(f"robot {rid}: joint_positions exceed model limits")
         else:
             raise SimulationError(f"robot {rid}: joint_positions needs {kin.dof} values")
         kin.set(data, q)

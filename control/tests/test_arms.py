@@ -3,6 +3,9 @@
 모델은 저장소에 없으므로(pixi run fetch-models) 없으면 건너뛴다.
 """
 import math
+import json
+import threading
+from urllib import request
 
 import mujoco
 import numpy as np
@@ -126,6 +129,28 @@ def test_manipulate_place_while_holding_passes():
     assert res["result"] == "PASS", res
 
 
+@pytest.mark.parametrize(("payload", "expected"), [
+    (manip_req(), "PASS"),
+    (manip_req("PLACE", target=[0.4, 0.4, 0.05], holding="box-01"), "PASS"),
+    (manip_req("PLACE"), "ERROR"),
+])
+def test_manipulate_http_contract(payload, expected):
+    with ts.make_server(port=0) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_address[1]}/twin/simulate"
+            data = json.dumps(payload).encode("utf-8")
+            req = request.Request(url, data=data, headers={"Content-Type": "application/json"})
+            with request.urlopen(req, timeout=10) as response:
+                result = json.load(response)
+        finally:
+            server.shutdown()
+            thread.join()
+    assert result["snapshot_id"] == payload["snapshot_id"]
+    assert result["result"] == expected, result
+
+
 def test_worker_near_arm_is_unsafe_distance():
     res = ts.simulate(manip_req(workers=(("worker-01", 0.9, 0.9),)))
     assert res["result"] == "UNSAFE_DISTANCE", res
@@ -155,6 +180,9 @@ def test_target_out_of_reach_is_goal_not_reached():
     (lambda r: r["action"]["parameters"].update(object_id="nope"), "state.objects"),
     (lambda r: r["action"]["parameters"]["target_pose"].update(position=[0.6, 0.3, 0.05]), "from object"),
     (lambda r: r["state"]["robots"][0].update(joint_positions=[0.0]), "joint_positions"),
+    (lambda r: r["state"]["robots"][0].update(joint_positions=[float("nan")] * 6), "must be finite"),
+    (lambda r: r["state"]["robots"][0].update(joint_positions=[float("inf")] * 6), "must be finite"),
+    (lambda r: r["state"]["robots"][0].update(joint_positions=[100.0] * 6), "exceed model limits"),
 ])
 def test_manipulate_invalid_requests_are_error(change, detail):
     r = manip_req()
