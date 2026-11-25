@@ -140,3 +140,17 @@ def test_warehouse_model_has_no_tiago_workcell():
     assert {"base_link", "table_a", "table_b", "part_box"}.isdisjoint(body_names)
     assert model.ncam == 6
     assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "head_camera") == -1
+
+
+def test_fallen_worker_transitions_from_standing_to_horizontal_pose():
+    from scenario import WorkerPoser
+    from warehouse import FALL_AT_S, FallenWorker
+
+    worker = FallenWorker(speed=0.5)
+    poser = WorkerPoser()
+    before, _ = worker.body_pose(poser, FALL_AT_S, worker.position(FALL_AT_S))
+    before = before.copy()
+    after, _ = worker.body_pose(poser, FALL_AT_S + 1.0, worker.position(FALL_AT_S + 1.0))
+    assert np.ptp(before[:, 2]) > 1.0
+    assert np.ptp(after[:, 0]) > 1.0
+    assert np.max(after[:, 2]) < 0.55
