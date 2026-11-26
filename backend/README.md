@@ -296,6 +296,9 @@ python vla/openvla_single_image_infer.py \
 통과해야 ROS 2로 전달됩니다. `phase_complete` 기본값은 `false`로, 한 번의
 EE_DELTA 실행 성공을 PICK/PLACE 전체 완료로 간주하지 않습니다. 새 관측으로
 단계 완료가 확인된 마지막 주기에만 `--phase-complete`를 사용합니다.
+새 CCTV 프레임마다 이 과정을 반복하려면
+[`vla/openvla_closed_loop.py`](../vla/openvla_closed_loop.py)를 사용합니다. Safety 거절,
+HELD/E-Stop, 실행 실패 후에는 새 Proposal을 만들지 않는 Fail-Closed 루프입니다.
 
 대상 물체가 있는 운반 TaskOrder는 여러 ActionProposal을 순차 실행합니다. 수동 연동에서는 0.5초 주기 실행기가 `POST /task-orders/{task_id}/action-proposals`에 `{}`을 반복 전송할 수 있습니다. Backend가 생성·평가·실행까지 자동 진행하게 하려면 다음처럼 Closed-Loop Worker를 활성화합니다.
 
