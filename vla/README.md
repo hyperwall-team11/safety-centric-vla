@@ -18,6 +18,12 @@ python vla/openvla_single_image_infer.py \
 이동을 거절합니다. 해당 제안이 `APPROVED`된 뒤에만 실행 API를 호출해야
 합니다.
 
+TIAGo MuJoCo 브리지는 월드 좌표계 EE_DELTA를 실제 TCP 목표 자세로 누적한
+뒤 IK를 풀어 팔 7축과 몸통 승강 관절을 움직입니다. 그리퍼 계약은
+`+1=닫기`, `-1=열기`입니다. 사용하는 OpenVLA 체크포인트의 그리퍼
+부호가 반대라면 Backend에 제출하기 전 로봇별 Adapter에서 부호를 반전해야
+합니다.
+
 OpenVLA 출력 한 번은 PICK/PLACE 전체가 아니라 0.5초 제어 주기 한
 번입니다. 새 이미지와 로봇 상태로 반복 추론하고, 관측으로 해당
 단계의 완료를 확인한 마지막 주기에만 `--phase-complete`를 추가합니다.
