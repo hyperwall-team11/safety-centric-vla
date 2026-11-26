@@ -125,6 +125,6 @@ ros2 topic echo --once /warehouse/tug/odom
 3. **낙상자 발견 · CCTV 04**와 **위험 발견 · 후방 통로 작업자 낙상 · 경고**를 시간순으로 보여주고, **검출 프레임**을 열어 “후방 작업 통로의 바닥에 누워 있는 작업자를 VLM으로 확인했습니다. 이 구역의 작업자 위험을 경고로 등록했습니다”라고 설명합니다.
 4. CCTV 02 횡단 시연을 이어가고, 그 경로에서 작업자 침입에 따른 AMR 자동 정지를 확인합니다.
 
-낙상 시나리오는 기존 스키마의 `UNKNOWN / WARNING`을 사용합니다. 최초 점검 전에 `florence-community/Florence-2-base`를 로컬 캐시에 준비해 두고, 점검 시간은 발표 순서에 반영합니다. 작업자 동작과 검출 결과는 화면의 별도 단계입니다. `fall/<점검 ID>/`에 원본 프레임, `preview.jpg`, ROS 시각과 관측·위험 ID가 있는 `report.json`이 남습니다.
+낙상 시나리오는 기존 스키마의 `UNKNOWN / WARNING`을 사용합니다. 최초 점검 전에 `florence-community/Florence-2-base`를 로컬 캐시에 준비해 두고, 점검 시간은 발표 순서에 반영합니다. 작업자 동작과 검출 결과는 화면의 별도 단계입니다. `fall/<점검 ID>/`에 원본 프레임, `preview.jpg`, 실행 ID, ROS 시각과 관측·위험 ID가 있는 `report.json`이 남습니다.
 
 2026-11-25 Apple Silicon CPU에서 실제 CCTV 04 프레임 **4/5**에 누운 작업자를 검출하고 Backend에 낙상 위험 경고를 등록했습니다. 프레임 수집부터 위험 등록까지 약 **85초**가 걸렸습니다. 같은 회차의 기존 AMR 안전 흐름은 CCTV 02에서 확인했습니다. 로그는 `control/outputs/warehouse.LUiJoO/`에 있습니다.

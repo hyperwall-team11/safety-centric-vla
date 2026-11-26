@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from urllib.request import urlopen
 from uuid import uuid4
 
-from hazard_reporter import BackendClient, BackendHTTPError, observation_id
+from hazard_reporter import BackendClient, BackendHTTPError, new_run_id, observation_id
 
 from warehouse import FALL_ZONE
 
@@ -24,6 +24,7 @@ class FallInspection:
         self.directory = directory
         self.client = BackendClient(backend)
         self.video = video
+        self.run_id = new_run_id()
         self.hazard_id = f"hazard-{uuid4()}"
         self.latest = None
 
@@ -71,11 +72,11 @@ class FallInspection:
             sec, nanosec = map(int, stamp.split("."))
             observations.append({"ros_stamp": stamp, "received_at": datetime.fromtimestamp(
                 received, timezone.utc).isoformat(), "boxes": [
-                    {**box, "observation_id": observation_id(VIEW, sec, nanosec, i)}
+                    {**box, "observation_id": observation_id(self.run_id, VIEW, sec, nanosec, i)}
                     for i, box in enumerate(boxes)
                 ]})
         positive = sum(bool(frame["boxes"]) for frame in observations)
-        result = {"model": inference["model"], "sensor_id": VIEW, "positive_frames": positive,
+        result = {"run_id": self.run_id, "model": inference["model"], "sensor_id": VIEW, "positive_frames": positive,
                   "frame_count": FRAME_COUNT, "observations": observations,
                   "detected_at": datetime.now(timezone.utc).isoformat(), "hazard_id": None}
         (directory / "report.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
