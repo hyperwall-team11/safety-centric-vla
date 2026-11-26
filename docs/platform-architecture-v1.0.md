@@ -328,7 +328,7 @@ VLA가 생성한 행동을 즉시 실행하지 않고, 온톨로지 규칙과 Mu
 | 물리 시뮬레이션 | MuJoCo | 가상 현장 및 로봇 물리 계산 |
 | 실사형 렌더링 | Three.js | CCTV 영상 생성 |
 | 사람 모델링 | MPFB2 + Blender | 작업자 외형 및 의상 제작 |
-| 영상 인식 | RT-DETR, Florence-2, OpenCV | 작업자 탐지 및 위치 추정 |
+| 영상 인식 | RT-DETR, Florence-2 VLM, OpenCV | 작업자 탐지·위치 추정 및 낙상자 검출 |
 | 공간 변환 | Camera Calibration, Geometry | 이미지 좌표 → 월드 좌표 |
 | 온톨로지 | FastAPI, Object/Link/Action | 현장 상태 관리 및 안전 검증 |
 | 로봇 제어 | ROS 2 | 행동 실행 및 안전 정지 |
@@ -343,7 +343,7 @@ VLA가 생성한 행동을 즉시 실행하지 않고, 온톨로지 규칙과 Mu
 | MuJoCo ② 트윈·사전 시뮬레이션 | CTL이 서비스로 구현, 백엔드는 게이트 규칙으로 호출 |
 | 사전 시뮬레이션 규칙 종류·판정 기준 | ONT |
 | 게이트 연동, 시간 초과 처리 | 백엔드 |
-| 작업자 탐지, Worker·Sensor·HazardEvent 생성 | CV |
+| CCTV 작업자 탐지, Florence-2 VLM 낙상자 검출, Worker·Sensor·HazardEvent 생성 | CV |
 | 현장 객체 관리, 안전 규칙, Action 승인·거부 | ONT |
 | 자연어 명령 해석 및 로봇 행동 제안 | NLP/VLA |
 
@@ -419,4 +419,4 @@ CV가 CCTV 영상 속 작업자를 인식해 온톨로지 현장 상태에 반�
 
 ## 발표용 창고의 낙상 위험 발견 (2026-11-25)
 
-발표자가 점검을 시작하면 CCTV 04의 후방 통로 영상 5장을 Florence-2로 분석합니다. 통로 바닥에서 쓰러진 작업자 검출이 2장 이상 확인되면 기존 `POST /hazards`에 `UNKNOWN / WARNING`으로 등록합니다. 스키마에 전용 낙상 열거값이 없어 발표 화면에서 구역과 관측으로 낙상 위험을 구분합니다. CCTV 02의 `CRITICAL WORKER_INTRUSION`은 기존 자동 정지 경로를 실행합니다. [시연 절차](warehouse-presentation.md)
+발표자가 점검을 시작하면 CV가 CCTV 04 영상 5장을 Florence-2 VLM으로 분석합니다. CV가 낙상자 관측과 위험 이벤트를 생성하고, Backend가 이를 저장합니다. 통로 바닥에서 쓰러진 작업자 검출이 2장 이상 확인되면 기존 `POST /hazards`에 `UNKNOWN / WARNING`으로 등록합니다. 스키마에 전용 낙상 열거값이 없어 발표 화면에서 구역과 관측으로 낙상 위험을 구분합니다. CCTV 02의 `CRITICAL WORKER_INTRUSION`은 기존 자동 정지 경로를 실행합니다. [시연 절차](warehouse-presentation.md)

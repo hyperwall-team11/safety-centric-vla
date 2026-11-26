@@ -127,7 +127,7 @@ ROS 2 제어 → MuJoCo ① 로봇 이동 → 다음 CCTV 프레임
 
 | 역할 | 담당 | 주요 책임 |
 |---|---|---|
-| CV | 강영한(팀장) | CCTV 작업자 탐지·위치 추정, Worker·Sensor·HazardEvent 갱신 |
+| CV | 강영한(팀장) | CCTV 작업자 탐지·위치 추정, Florence-2 VLM 낙상자 검출과 위험 이벤트 생성, Worker·Sensor 갱신 |
 | NLP | 김경무 | 자연어 명령 파싱, TaskOrder·VLA 인터페이스 |
 | ONT | 임성현 | 온톨로지 스키마, 안전 규칙·사전 시뮬레이션 판정 기준, Action 승인·거부, 감사 로그 |
 | CTL | 최민서 | MuJoCo ①/② 구성, Three.js CCTV 렌더링, 사전 시뮬레이션 서비스, ROS 2 제어 |
