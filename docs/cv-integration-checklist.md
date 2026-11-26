@@ -58,6 +58,8 @@
 
 ## 발표용 창고 낙상 확인
 
+CV 담당 범위는 CCTV 04 영상의 Florence-2 VLM 추론, 낙상자 위치 확인, 위험 이벤트 등록입니다.
+
 1. [시연 안내](warehouse-presentation.md)에 따라 실행하고 CCTV 04에서 후방 통로 작업자가 바닥에 쓰러지는 장면을 확인합니다.
 2. **CCTV 04 낙상자 점검**을 실행해 검출 표시와 낙상 위험 경고를 확인합니다.
 3. `fall/*/report.json`의 CCTV 04 ROS stamp와 관측 ID를 Backend `GET /hazards`의 `source_observation_ids`에서 확인합니다.
