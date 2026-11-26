@@ -120,7 +120,17 @@ def plan_next_task_action(
         raise TaskExecutionPlanningError("이동할 수 없는 PhysicalObject입니다.")
 
     speed_limit = request.speed_limit or min(0.4, robot.motion_limits.max_speed)
-    succeeded = [proposal for proposal in proposals if proposal.status == ProposalStatus.SUCCEEDED]
+    succeeded = [
+        proposal
+        for proposal in proposals
+        if proposal.status == ProposalStatus.SUCCEEDED
+        # EE_DELTA 한 번의 성공은 제어 주기 한 번이 완료된 것이지
+        # PICK/PLACE 단계 전체가 끝난 것은 아니다.
+        and (
+            "ee_delta" not in proposal.parameters
+            or proposal.parameters["ee_delta"].get("phase_complete") is True
+        )
+    ]
     pick_index = next(
         (
             index
