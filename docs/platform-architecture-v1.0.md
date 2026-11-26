@@ -3,10 +3,10 @@
 - 작성: 최민서 (CTL)
 - 검토 반영: 강영한 (CV), 2026-11-06 검토 의견
 - 기준: `develop` 브랜치 코드, [`ontology-schema-v1.1.md`](ontology-schema-v1.1.md), [`backend-api-spec-v0.2.md`](backend-api-spec-v0.2.md)
-- 최종 수정: 2026-11-06 (CV 2차 검토 반영)
+- 최종 수정: 2026-11-26 (Backend·CTL 구현 및 E2E 상태 반영)
 - 관계: 개발계획서 v1.0·사용자정의서 v0.1의 시스템 구성을 가상 CCTV·디지털 트윈 구조로 확장한다. 객체명·열거값·안전 수치는 [스키마 v1.1](ontology-schema-v1.1.md)을 따른다.
 
-> 이 문서는 **계획과 구현을 구분**한다. 각 기능의 현재 상태는 [11장 구현 상태](#11-구현-상태-2026-11-06-기준)를 기준으로 한다.
+> 이 문서는 **계획과 구현을 구분**한다. 각 기능의 현재 상태는 [11장 구현 상태](#11-구현-상태-2026-11-26-기준)를 기준으로 한다.
 
 ---
 
@@ -59,14 +59,14 @@
                    │ 온톨로지 상태 스냅샷                 │
                    ▼                                      │
 ┌────────────────────────────────────────┐               │
-│ MuJoCo ②: 디지털 트윈 재구성 (계획)     │               │
-│ 온톨로지 상태만으로 장면 구성           │               │
+│ MuJoCo ②: MOVE_TO 디지털 트윈 재구성     │               │
+│ Backend 상태 스냅샷으로 장면 구성           │               │
 └──────────────────┬─────────────────────┘               │
                    ▼                                      │
 ┌────────────────────────────────────────┐               │
 │ Ontology Safety Gate                   │               │
 │ 1. 규칙 검사 (5종)                      │               │
-│ 2. MuJoCo ② 사전 시뮬레이션 (계획)      │               │
+│ 2. MuJoCo ② 사전 시뮬레이션 (MOVE_TO)      │               │
 │ 3. APPROVED / REJECTED / ESTOP 판정    │               │
 │ 4. 실행 직전 재검증 실패 시 HELD        │               │
 │ 5. 판정 근거 감사 기록 (ExecutionLog)   │               │
@@ -196,13 +196,13 @@ CV 결과가 먼저 온톨로지 상태를 갱신하고, MuJoCo ②는 그 상�
 
 **추가 예정 / 미결**
 
-- 경로상 충돌 위험: MuJoCo ② 사전 시뮬레이션으로 검사 (계획)
+- 경로상 충돌 위험: Backend 연동을 활성화하면 MOVE_TO를 MuJoCo ②에서 검사한다. CTL의 MANIPULATE 검증을 Backend 승인 경로에 연결하는 작업은 후속 범위다.
 - 로봇 관절 속도·토크 제한: 미결. ONT와 기준 협의 필요
 
 ### 4.2. 하나의 Safety Gate 안에서 이중 검증
 
 1. **규칙 검사:** 온톨로지 상태와 `ActionProposal`로 4.1절 규칙을 판정한다.
-2. **물리 사전 검증 (계획):** 규칙을 통과한 후보를 같은 MuJoCo ②에서 미리 시뮬레이션해 경로 충돌·물리적 위험을 확인한다.
+2. **물리 사전 검증:** 연동을 켜면 규칙을 통과한 MOVE_TO 후보를 MuJoCo ②에서 시뮬레이션해 경로 충돌과 물리적 위험을 확인한다.
 3. **최종 판정:**
    - 규칙 위반 → `REJECTED`
    - 긴급정지 거리(0.6 m) 위반 → `ESTOP`
@@ -228,7 +228,7 @@ CV 결과가 먼저 온톨로지 상태를 갱신하고, MuJoCo ②는 그 상�
 - 승인된 Action만 ROS 2 제어 노드로 전달
 - ACK·RESULT 수신, 중복 실행 방지
 - MuJoCo ①에서 로봇 이동 후 다음 CCTV 프레임 생성
-- 새 CV 관측으로 온톨로지 → MuJoCo ② 상태 재동기화 (MuJoCo ②는 계획)
+- 평가와 실행 직전의 Backend 상태로 스냅샷을 구성하고, 기존 PASS의 `snapshot_id`와 다르면 다시 시뮬레이션한다.
 - 실행 결과를 온톨로지 및 감사 로그에 기록
 
 ### 5.2. 위험 상황 개입
@@ -249,7 +249,7 @@ ROS 2 로봇 정지
 ResumeTask 승인
 ```
 
-**실행 상태:** 실행 중 로봇과 연결된 OPEN·CRITICAL HazardEvent가 등록되면 Backend가 ROS `/safety/estop`을 발행한다.
+**실행 상태:** 실행 중 로봇과 연결된 OPEN·CRITICAL HazardEvent가 등록되면 Backend가 ROS `/safety/estop`을 발행한다. 이 토픽은 전역이며, CTL 어댑터의 `ESTOP` 보고를 통해 Robot은 `ESTOP`, 실행 중인 Proposal과 Task는 `HELD`로 반영된다. PR #119에서 왕복을 검증했다.
 
 **신속 정지 경로:** 긴급 정지는 CV → 온톨로지 → 사전 시뮬레이션으로 이어지는 경로에만 의존하지 않는다. 예를 들어 검증 서버 heartbeat가 1초 동안 끊기면 CTL 어댑터가 스스로 HOLD에 들어간다([`backend-ctl-contract-v0.1.md`](backend-ctl-contract-v0.1.md)).
 
@@ -288,11 +288,11 @@ VLA가 생성한 행동을 즉시 실행하지 않고, 온톨로지 규칙과 Mu
 
 ### Scenario 1. 정상 로봇 작업
 
-1. 가상 CCTV 환경에서 정상 작업 상황 생성 (Three.js 영상은 계획, 현재는 MuJoCo 렌더링)
+1. Three.js 또는 MuJoCo 가상 CCTV 환경에서 정상 작업 상황 생성
 2. CV가 작업자 탐지, 온톨로지 상태 갱신
-3. 온톨로지 상태로 MuJoCo ② 재구성 (계획)
+3. Backend 상태로 MuJoCo ② MOVE_TO 장면 재구성
 4. VLA가 로봇 행동 제안
-5. Safety Gate에서 규칙 검사 후 MuJoCo ② 사전 시뮬레이션 (사전 시뮬레이션은 계획)
+5. Safety Gate에서 규칙 검사 후 연동을 켠 경우 MuJoCo ② MOVE_TO 사전 시뮬레이션
 6. 승인 후 ROS 2로 MuJoCo ① 가상 로봇 실행
 7. 변경된 장면의 다음 CCTV 프레임으로 순환
 
@@ -301,7 +301,7 @@ VLA가 생성한 행동을 즉시 실행하지 않고, 온톨로지 규칙과 Mu
 ### Scenario 2. 작업자 위험구역 접근
 
 1. MuJoCo ①에서 작업자가 로봇 작업구역에 접근
-2. Three.js CCTV 영상 생성 (계획, 현재는 MuJoCo 렌더링)
+2. Three.js 또는 MuJoCo 가상 CCTV 영상 생성
 3. CV가 작업자 탐지 및 위치 추정
 4. CV가 금지구역 침입 HazardEvent 등록
 5. 실행 중인 관련 로봇에 대해 Backend가 ROS E-Stop을 발행한다.

@@ -41,9 +41,9 @@ CV: CCTV 2대 작업자 탐지·결합·바닥 좌표 추정
 Ontology: Worker · Robot · Zone(KEEP_OUT) · Sensor · HazardEvent
           │ 온톨로지 상태 스냅샷
           ▼
-MuJoCo ②: 디지털 트윈 재구성 (계획)
+MuJoCo ②: Backend 스냅샷으로 MOVE_TO 트윈 재구성
           ▼
-Safety Gate: 규칙 5종 + MuJoCo ② 사전 시뮬레이션(계획)
+Safety Gate: 안전 규칙 검사 + 선택형 MOVE_TO 사전 시뮬레이션
   APPROVED / REJECTED / ESTOP, 실행 직전 재검증 실패 시 HELD
           │ 승인된 Action만
           ▼
@@ -137,10 +137,10 @@ ROS 2 제어 → MuJoCo ① 로봇 이동 → 다음 CCTV 프레임
 ## 기술 스택
 
 - AI: PyTorch, OpenVLA, RT-DETR, Florence-2, OpenCV
-- 온톨로지 백엔드: FastAPI, REST (WebSocket `/ws/state`는 예정)
+- 온톨로지 백엔드: FastAPI, REST (WebSocket `/ws/state`로 전체 상태 구독)
 - 로봇 제어: ROS 2 Humble/Jazzy
 - 시뮬레이션: MuJoCo 3.15.0 (ROS 2 브리지 직접 구현)
-- 실사형 렌더링: Three.js (계획), MPFB2 + Blender 작업자 모델
+- 실사형 렌더링: Three.js, MPFB2 + Blender 작업자 모델
 - 모델·상태 연동: Object/Link/Action 스키마, MuJoCo 양방향 동기화
 
 ## 제약사항

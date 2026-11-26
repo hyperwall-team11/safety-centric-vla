@@ -4,7 +4,7 @@
 - 기준 코드: `backend/app/main.py`, `backend/app/models.py`
 - 기준 버전: FastAPI application `0.2.0`
 - 작성일: 2026-10-30
-- 수정일: 2026-11-25
+- 수정일: 2026-11-26
 - 기본 URL(로컬): `http://127.0.0.1:8000`
 - 대화형 문서: `/docs`
 - OpenAPI JSON: `/openapi.json`
@@ -454,7 +454,7 @@ ActionProposal: PROPOSED ── evaluate 통과 ──> APPROVED
 
 대상 물체가 있는 운반 TaskOrder는 여러 ActionProposal을 순차 실행한다. Task Executor는 등록된 PhysicalObject와 성공한 Proposal 이력을 보고 다음 `MOVE_TO` 또는 `MANIPULATE`를 하나씩 자동 생성한다. OpenVLA 조작 Proposal과 Navigation Planner의 `MOVE_TO` Proposal을 같은 `task_id`로 직접 등록하는 방식도 지원하지만, 활성 상태(`PROPOSED`, `APPROVED`, `EXECUTING`, `HELD`)의 Proposal은 TaskOrder당 하나만 허용한다. 물체 접근, `PICK`, 목적지 `MOVE_TO` 성공은 개별 Proposal만 `SUCCEEDED`로 끝내고 TaskOrder를 `PLANNING`으로 돌린다. 최종 `MANIPULATE/PLACE` 성공이 전체 TaskOrder를 `COMPLETED`로 만든다.
 
-Closed-Loop Worker는 활성화 시 위 단계를 `생성 → 평가 → 실행 → RESULT 대기` 순서로 진행한다. 안전 평가를 우회하지 않으며 실행 중인 Proposal이 있으면 새 Proposal을 만들지 않는다. ResumeTask 전이는 아직 구현하지 않았다. 결과는 Mock 연동 시험에서는 HTTP API로, ROS 2 모드에서는 CTL 결과 토픽을 Backend 결과 API로 전달해 반영한다.
+Closed-Loop Worker는 활성화 시 위 단계를 `생성 → 평가 → 실행 → RESULT 대기` 순서로 진행한다. 안전 평가를 우회하지 않으며 실행 중인 Proposal이 있으면 새 Proposal을 만들지 않는다. ResumeTask 전이는 아직 구현하지 않았다. ROS 2 모드에서 Backend는 로봇별 `/adapter/{robot_topic_id}/result`의 `ACK`, `RESULT`, `HOLD`, `ESTOP`을 처리한다. 브리지는 `RESULT`를 기존 HTTP 결과 API에 최대 3회 전달한다. 이 결과 API에서 상태 전이와 멱등 감사 기록을 처리하며, MOVE_TO 왕복과 위험 E-Stop 왕복은 각각 PR #117과 PR #119에서 검증했다.
 
 ## 5. 기준 문서와 현재 구현의 차이
 
@@ -467,7 +467,7 @@ Closed-Loop Worker는 활성화 시 위 단계를 `생성 → 평가 → 실행 
 | 인증·권한 | CRITICAL 해제와 Resume는 관리자 전용 | 선택형 역할별 API 토큰 인증과 요청자 전달 구현. CRITICAL 해제 요청의 `resolved_by=OPERATOR` 검사만 있고 역할별 인가는 미구현 |
 | 규칙 SR-01~06 | 속도·구역·거리·위험·상태·센서 공백 | SR-01 기본 0.4m/s·Robot·Zone 상한, 로봇 상태·adapter·관련 CRITICAL 위험 구현. KEEP_OUT 경로 검사를 구현하고 거리·센서 공백은 관측 안전 검사 활성화 시 적용 |
 | E-Stop | ROS 2 latched 전용 경로 | 실행 재검증 실패 시 Robot ESTOP·Task HELD·감사 로그 구현. `CRITICAL` HazardEvent가 실행 중 로봇과 연결되면 `/safety/estop` 발행(3.6절). 운영자 E-Stop API와 로봇별 정지는 미구현 |
-| 어댑터 실행 결과 | ROS 2 result 토픽으로 완료·실패 보고 | HTTP 결과 보고, 상태 전이, 멱등 감사 로그 구현. ROS 2 토픽 연결은 미구현 |
+| 어댑터 실행 결과 | ROS 2 result 토픽으로 완료·실패 보고 | 로봇별 ROS 2 결과 토픽 구독, HTTP 결과 전달, 상태 전이, 멱등 감사 로그 및 MOVE_TO E2E 검증 구현 |
 | 상태 구독 | WebSocket `/ws/state` | 전체 상태 스냅샷 구독과 15초 heartbeat 구현, delta 복구는 미구현 |
 | 영속 저장 | Redis 또는 ROS 2 상태 연동 | 인메모리 기본, Redis 스냅샷·분산 잠금 선택 가능 |
 | 판정 시간 | `evaluated_in_ms` 기록 | 평가·실행 직전 재평가 로그에 구현 |
