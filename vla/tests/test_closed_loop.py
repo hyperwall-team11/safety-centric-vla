@@ -57,7 +57,7 @@ class Backend:
         return {"proposal_id": proposal_id, "status": self.result_status}
 
 
-def make_loop(backend=None, completion=None):
+def make_loop(backend=None, completion=None, event_sink=None):
     backend = backend or Backend()
     engine = Engine()
     frames = Frames()
@@ -67,6 +67,7 @@ def make_loop(backend=None, completion=None):
         frames,
         completion=completion,
         result_timeout_seconds=5,
+        event_sink=event_sink,
     )
     return loop, backend, engine, frames
 
@@ -150,3 +151,26 @@ def test_terminal_task_stops_before_observation():
 
     assert result.reason == StopReason.TASK_TERMINAL
     assert not engine.calls and not frames.calls
+
+
+def test_emits_auditable_step_events_in_order():
+    events = []
+    loop, _backend, _engine, _frames = make_loop(event_sink=events.append)
+
+    loop.run(
+        "task-1",
+        "grasp",
+        manipulation="PICK",
+        speed_limit=0.2,
+        max_steps=1,
+    )
+
+    assert [event["event"] for event in events] == [
+        "TASK_STATUS",
+        "OBSERVED",
+        "PROPOSED",
+        "EVALUATED",
+        "DISPATCHED",
+        "RESULT",
+    ]
+    assert all(event["step"] == 0 for event in events)

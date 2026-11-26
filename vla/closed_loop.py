@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from collections.abc import Callable
 from typing import Protocol
 
 from backend_client import BackendClient, TERMINAL_TASK_STATUSES
@@ -54,6 +55,7 @@ class OpenVlaClosedLoop:
         *,
         completion: PhaseCompletionSource | None = None,
         result_timeout_seconds: float = 30.0,
+        event_sink: Callable[[dict], None] | None = None,
     ) -> None:
         if result_timeout_seconds <= 0:
             raise ValueError("result_timeout_seconds must be positive")
@@ -62,6 +64,7 @@ class OpenVlaClosedLoop:
         self.frames = frames
         self.completion = completion or NeverComplete()
         self.result_timeout_seconds = result_timeout_seconds
+        self.event_sink = event_sink or (lambda _event: None)
 
     def run(
         self,
@@ -82,6 +85,7 @@ class OpenVlaClosedLoop:
         for step in range(max_steps):
             task = self.backend.get_task(task_id)
             task_status = task.get("status")
+            self.event_sink({"event": "TASK_STATUS", "step": step, "status": task_status})
             if task_status in TERMINAL_TASK_STATUSES:
                 return RunResult(
                     StopReason.TASK_TERMINAL,
@@ -92,6 +96,12 @@ class OpenVlaClosedLoop:
 
             frame = self.frames.next_frame(step)
             phase_complete = self.completion.is_complete(manipulation, frame, step)
+            self.event_sink({
+                "event": "OBSERVED",
+                "step": step,
+                "frame": str(frame),
+                "phase_complete": phase_complete,
+            })
             action = self.engine.predict(frame, instruction)
             proposal = self.backend.submit_openvla_action(
                 task_id,
@@ -103,8 +113,19 @@ class OpenVlaClosedLoop:
                 model_version=self.engine.unnorm_key,
             )
             latest_proposal_id = proposal["proposal_id"]
+            self.event_sink({
+                "event": "PROPOSED",
+                "step": step,
+                "proposal_id": latest_proposal_id,
+            })
 
             evaluated = self.backend.evaluate(latest_proposal_id)
+            self.event_sink({
+                "event": "EVALUATED",
+                "step": step,
+                "proposal_id": latest_proposal_id,
+                "status": evaluated.get("status"),
+            })
             if evaluated.get("status") != "APPROVED":
                 return RunResult(
                     StopReason.SAFETY_REJECTED,
@@ -114,6 +135,12 @@ class OpenVlaClosedLoop:
                 )
 
             executed = self.backend.execute(latest_proposal_id)
+            self.event_sink({
+                "event": "DISPATCHED",
+                "step": step,
+                "proposal_id": latest_proposal_id,
+                "status": executed.get("status"),
+            })
             if executed.get("status") != "EXECUTING":
                 return RunResult(
                     StopReason.EXECUTION_FAILED,
@@ -126,6 +153,12 @@ class OpenVlaClosedLoop:
                 latest_proposal_id,
                 timeout_seconds=self.result_timeout_seconds,
             )
+            self.event_sink({
+                "event": "RESULT",
+                "step": step,
+                "proposal_id": latest_proposal_id,
+                "status": terminal.get("status"),
+            })
             if terminal.get("status") != "SUCCEEDED":
                 return RunResult(
                     StopReason.EXECUTION_FAILED,

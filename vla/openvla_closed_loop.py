@@ -49,6 +49,7 @@ def main() -> None:
         frames,
         completion=completion,
         result_timeout_seconds=args.result_timeout,
+        event_sink=lambda event: print(json.dumps(event, ensure_ascii=False), flush=True),
     )
     try:
         result = loop.run(
