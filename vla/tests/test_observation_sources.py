@@ -23,6 +23,8 @@ def test_file_source_returns_only_new_file_versions(tmp_path):
 
 
 def test_completion_signal_matches_phase_frame_and_step(tmp_path):
+    frame = tmp_path / "cctv.png"
+    frame.write_bytes(b"frame")
     signal = tmp_path / "complete.json"
     signal.write_text(json.dumps({
         "manipulation": "PICK",
@@ -32,8 +34,8 @@ def test_completion_signal_matches_phase_frame_and_step(tmp_path):
     }))
     source = JsonPhaseCompletionSource(signal)
 
-    assert source.is_complete("PICK", tmp_path / "cctv.png", 2)
-    assert not source.is_complete("PLACE", tmp_path / "cctv.png", 2)
+    assert source.is_complete("PICK", frame, 2)
+    assert not source.is_complete("PLACE", frame, 2)
     assert not source.is_complete("PICK", tmp_path / "other.png", 2)
     assert not source.is_complete("PICK", tmp_path / "cctv.png", 3)
 
@@ -49,3 +51,24 @@ def test_malformed_completion_signal_stops_instead_of_completing(tmp_path):
 
     with pytest.raises(CompletionSignalError):
         JsonPhaseCompletionSource(signal).is_complete("PICK", tmp_path / "cctv.png", 0)
+
+
+def test_unbound_completion_signal_is_rejected(tmp_path):
+    signal = tmp_path / "complete.json"
+    signal.write_text(json.dumps({"manipulation": "PICK", "complete": True}))
+
+    with pytest.raises(CompletionSignalError, match="frame or step"):
+        JsonPhaseCompletionSource(signal).is_complete("PICK", tmp_path / "cctv.png", 0)
+
+
+def test_completion_signal_older_than_frame_is_ignored(tmp_path):
+    signal = tmp_path / "complete.json"
+    signal.write_text(json.dumps({
+        "manipulation": "PICK",
+        "complete": True,
+        "frame": "cctv.png",
+    }))
+    frame = tmp_path / "cctv.png"
+    frame.write_bytes(b"newer-frame")
+
+    assert not JsonPhaseCompletionSource(signal).is_complete("PICK", frame, 0)

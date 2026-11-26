@@ -53,7 +53,8 @@ class JsonPhaseCompletionSource:
     """Accept only an explicit CV/operator JSON completion signal.
 
     Expected shape: ``{"manipulation":"PICK", "complete":true}``.
-    Optional ``frame`` and ``step`` fields bind the signal to one observation.
+    ``frame`` or ``step`` must bind the signal to one observation. A signal
+    older than the observed frame is ignored as stale.
     """
 
     def __init__(self, path: str | Path) -> None:
@@ -72,8 +73,15 @@ class JsonPhaseCompletionSource:
             return False
         if payload.get("manipulation") != manipulation:
             return False
+        if "frame" not in payload and "step" not in payload:
+            raise CompletionSignalError("Completion signal needs frame or step binding")
         if "frame" in payload and Path(str(payload["frame"])).name != frame.name:
             return False
         if "step" in payload and payload["step"] != step:
             return False
+        try:
+            if frame.exists() and self.path.stat().st_mtime_ns < frame.stat().st_mtime_ns:
+                return False
+        except OSError as exc:
+            raise CompletionSignalError("Cannot compare completion signal freshness") from exc
         return True
