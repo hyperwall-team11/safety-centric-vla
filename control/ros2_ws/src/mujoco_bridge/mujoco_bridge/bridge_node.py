@@ -463,6 +463,7 @@ class MujocoBridge(Node):
             step_seconds = min(lag, MAX_CATCHUP_S)
             if self.tiago_command_runner is not None:
                 self._publish_tiago_arm_results(self.tiago_command_runner.tick(step_seconds))
+                self.tiago_manipulator.sync_grasp()
             self.sim.step(step_seconds)
             if self.warehouse_vehicles:
                 self.warehouse_vehicles.update(self.sim.data)

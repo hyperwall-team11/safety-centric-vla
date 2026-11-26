@@ -38,21 +38,6 @@ set -u
   --ros-args -p cameras:=false -p worker_motion:=false >"$LOG_DIR/bridge.log" 2>&1 &
 BRIDGE_PID=$!
 
-deadline=$((SECONDS + 20))
-while ((SECONDS < deadline)); do
-  if ! kill -0 "$BRIDGE_PID" 2>/dev/null; then
-    echo "[FAIL] MuJoCo 브리지가 준비 전 종료됨" >&2
-    exit 1
-  fi
-  if ros2 topic list 2>/dev/null | grep -Fqx "/arm/command"; then
-    break
-  fi
-  sleep 0.2
-done
-
-if ! ros2 topic list 2>/dev/null | grep -Fqx "/arm/command"; then
-  echo "[FAIL] /arm/command 준비 시간 초과" >&2
-  exit 1
-fi
-
+# The probe itself waits for both /joint_states and an /arm/command subscriber.
+# Avoid `ros2 topic list` here because a stale ROS daemon can hide a ready node.
 "$LIB_DIR/safety_control/lib/safety_control/tiago_ee_delta_test"
