@@ -31,7 +31,6 @@ from pydantic import AwareDatetime, BaseModel
 from .action_planner import (
     ActionPlanningError,
     ActionProviderError,
-    RuleBasedActionPlanner,
 )
 from .auth import TokenAuthenticator, websocket_bearer_token
 from .closed_loop_executor import ClosedLoopConfig, ClosedLoopExecutor
@@ -80,6 +79,7 @@ from .models import (
     ZoneDestination,
     utc_now,
 )
+from .planner_factory import action_planner_from_environment
 from .safety import WORKER_SNAPSHOT_MAX_AGE_SECONDS, default_rules, evaluate_proposal
 from .state_stream import state_broadcaster
 from .store import StoreUnavailableError, store
@@ -115,7 +115,7 @@ app.mount(
     StaticFiles(directory=CONSOLE_DIR),
     name="console-assets",
 )
-planner = RuleBasedActionPlanner()
+planner = action_planner_from_environment()
 twin_simulator: TwinSimulator = HttpTwinSimulator()
 ACTIVE_PROPOSAL_STATUSES = {
     ProposalStatus.PROPOSED,

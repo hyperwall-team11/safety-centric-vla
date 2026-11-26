@@ -28,6 +28,11 @@ class Trial:
     proposal_id: str | None
     latency_passed: bool
     error: str | None = None
+    model_name: str | None = None
+    safety_status: str | None = None
+    proposal_status: str | None = None
+    task_status: str | None = None
+    robot_status: str | None = None
 
 
 def percentile(values: list[float], ratio: float) -> float:
@@ -170,6 +175,7 @@ def run_trial(
     *,
     frame_id: str = "world",
     result_timeout_seconds: float = 120.0,
+    expected_model_name: str | None = None,
 ) -> Trial:
     target_x = 1 if index % 2 == 0 else 0
     instruction = f"{robot_id} 로봇을 좌표 ({target_x}, 0, 0)로 이동해"
@@ -179,6 +185,11 @@ def run_trial(
     ack_succeeded = False
     finalized = False
     failure: str | None = None
+    model_name: str | None = None
+    safety_status: str | None = None
+    proposal_status: str | None = None
+    task_status: str | None = None
+    robot_status: str | None = None
 
     try:
         task = client.post(
@@ -193,9 +204,19 @@ def run_trial(
             {"Idempotency-Key": f"benchmark-proposal-{uuid4()}"},
         )
         proposal_id = proposal["proposal_id"]
+        model_name = proposal.get("model_name")
+        if (
+            expected_model_name
+            and model_name != expected_model_name
+        ):
+            raise RuntimeError(
+                "ActionProposal 모델이 예상과 다릅니다: "
+                f"{model_name} != {expected_model_name}"
+            )
         approved = client.post(f"/action-proposals/{proposal_id}/evaluate", {})
-        if approved.get("status") != "APPROVED":
-            raise RuntimeError(f"안전 평가가 승인되지 않았습니다: {approved.get('status')}")
+        safety_status = approved.get("status")
+        if safety_status != "APPROVED":
+            raise RuntimeError(f"안전 평가가 승인되지 않았습니다: {safety_status}")
 
         executing = client.post(f"/action-proposals/{proposal_id}/execute", {})
         if executing.get("status") != "EXECUTING":
@@ -227,6 +248,7 @@ def run_trial(
             completed_task.get("status"),
             idle_robot.get("status"),
         )
+        proposal_status, task_status, robot_status = final_states
         if final_states != ("SUCCEEDED", "COMPLETED", "IDLE"):
             raise RuntimeError(
                 "실제 CTL RESULT 성공 상태가 일치하지 않습니다: "
@@ -252,6 +274,11 @@ def run_trial(
             and elapsed_ms <= threshold_ms
         ),
         error=failure,
+        model_name=model_name,
+        safety_status=safety_status,
+        proposal_status=proposal_status,
+        task_status=task_status,
+        robot_status=robot_status,
     )
 
 
@@ -292,6 +319,11 @@ def main(
     )
     parser.add_argument("--frame-id", default="world")
     parser.add_argument(
+        "--expected-model-name",
+        default="",
+        help="생성된 Proposal이 이 model_name이 아니면 E2E 실패",
+    )
+    parser.add_argument(
         "--no-latency-gate",
         action="store_true",
         help="기능 E2E 종료 코드는 실행 성공률만 사용하고 ACK 지연은 출력만 함",
@@ -319,6 +351,7 @@ def main(
             args.threshold_ms,
             frame_id=args.frame_id,
             result_timeout_seconds=args.result_timeout,
+            expected_model_name=args.expected_model_name or None,
         )
         for index in range(args.runs)
     ]
@@ -347,6 +380,12 @@ def main(
                 latency_line += f" · p95 {summary['p95_ms']}ms"
             print(latency_line)
         for trial in trials:
+            if trial.execution_succeeded:
+                print(
+                    f"#{trial.index} 증거: model={trial.model_name} · "
+                    f"Safety={trial.safety_status} · Proposal={trial.proposal_status} · "
+                    f"Task={trial.task_status} · Robot={trial.robot_status}"
+                )
             if trial.error:
                 label = "경고" if trial.execution_succeeded else "실패"
                 print(f"#{trial.index} {label}: {trial.error}", file=sys.stderr)

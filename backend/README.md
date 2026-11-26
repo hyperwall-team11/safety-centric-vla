@@ -258,6 +258,27 @@ Proposal을 다시 확인합니다. 추론 중 문맥이 바뀌면 오래된 결
 `MOVE_TO`와 대상 물체·목적지가 구조화된 `MANIPULATE`입니다. `STOP`·`RESUME`은
 일반 VLA 출력으로 받지 않고 별도 안전 제어 경로에서만 생성합니다.
 
+### OpenAI Responses API 행동 Provider
+
+`BACKEND_ACTION_PLANNER=openai`를 설정하면 기본 RuleBasedActionPlanner 대신 OpenAI
+Responses API의 Structured Outputs로 `ActionProposal` 후보를 생성합니다. API에는 TaskOrder,
+Robot, 생성 요청과 목적지 Zone 문맥만 보내며 API 키는 인증 헤더에만 사용합니다. 요청은
+`store=false`이고 서버 소유 task/robot/proposal ID는 모델에 맡기지 않습니다. 모델 출력은
+기존 Pydantic 문맥 검증과 Safety Guardrail을 그대로 통과해야 하므로 구조 오류·거부·시간
+초과 시 실행하지 않고 fail-closed로 실패합니다.
+
+```bash
+BACKEND_ACTION_PLANNER=openai \
+OPENAI_API_KEY='<로컬 키>' \
+OPENAI_ACTION_MODEL=gpt-4o-mini \
+python3 -m uvicorn app.main:app
+```
+
+키는 저장소나 명령 기록에 남기지 말고 gitignore된 `.env.local` 또는 비밀 관리 도구에서
+주입합니다. `OPENAI_ACTION_TIMEOUT_SECONDS` 기본값은 30초이며 `OPENAI_BASE_URL`로 endpoint를
+바꿀 수 있습니다. 이 Provider는 현재 구조화 TaskOrder 기반 MOVE_TO와 명시적인 PICK/PLACE
+제안 경계를 연결하며, CCTV 이미지 기반 OpenVLA 7D 제어를 대체하지 않습니다.
+
 ## ActionProposal 생성
 
 TaskOrder를 생성한 뒤 아래 API를 호출합니다.

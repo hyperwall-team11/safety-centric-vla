@@ -259,6 +259,12 @@ VLA Provider 추론은 위험 이벤트·Worker 관측·Robot 상태 갱신을 �
 문맥이 변경되면 `409`로 거부하고 아무 제안도 저장하지 않는다. Provider 예외는 `503`으로
 정규화하며 TaskOrder 상태를 변경하지 않는다.
 
+`BACKEND_ACTION_PLANNER=openai`에서는 OpenAI Responses API Structured Outputs Provider를
+사용한다. 기본 모델은 `gpt-4o-mini`이며 `OPENAI_ACTION_MODEL`로 변경할 수 있다. 요청은
+`store=false`이고 모델은 행동 필드만 생성한다. Backend 소유 ID와 상태는 신뢰된 문맥에서
+주입하며 모델 응답도 기존 VLA 문맥 검증과 안전 평가를 우회하지 않는다. 기본값
+`rule-based`는 외부 API를 호출하지 않는 기존 동작이다.
+
 `GET /task-orders/{task_id}/action-proposals`는 해당 TaskOrder의 Proposal만 배열로 반환한다.
 
 외부 VLA가 `POST /action-proposals`로 등록하는 제안은 요청 모델 검증 후 TaskOrder 문맥과도

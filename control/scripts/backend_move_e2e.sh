@@ -12,6 +12,7 @@ BACKEND_PORT="${BACKEND_PORT:-8000}"
 BACKEND_URL="http://${BACKEND_HOST}:${BACKEND_PORT}"
 ROBOT_ID="${ROBOT_ID:-robot-01}"
 RESULT_TIMEOUT="${RESULT_TIMEOUT:-30}"
+BACKEND_HTTP_TIMEOUT="${BACKEND_HTTP_TIMEOUT:-5}"
 if [[ -n "${E2E_LOG_DIR:-}" ]]; then
   LOG_DIR="$E2E_LOG_DIR"
 else
@@ -169,6 +170,8 @@ case "${E2E_SCENARIO:-move}" in
       --control-adapter tiago-adapter \
       --runs 1 \
       --no-latency-gate \
+      --timeout "$BACKEND_HTTP_TIMEOUT" \
+      --expected-model-name "${EXPECTED_ACTION_MODEL:-}" \
       --result-timeout "$RESULT_TIMEOUT" \
       2>&1 | tee "$LOG_DIR/benchmark.log"
     echo "[PASS] 자연어 MOVE_TO E2E가 완료되었습니다."

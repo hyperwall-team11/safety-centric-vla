@@ -47,7 +47,10 @@ class FakeBackendClient:
             return {"task_id": self.latest_task_id}
         if path.endswith("/action-proposals"):
             self.latest_proposal_id = f"proposal-{self.sequence}"
-            return {"proposal_id": self.latest_proposal_id}
+            return {
+                "proposal_id": self.latest_proposal_id,
+                "model_name": "test-model",
+            }
         if path.endswith("/evaluate"):
             return {"status": "REJECTED" if self.reject else "APPROVED"}
         if path.endswith("/execute"):
@@ -101,7 +104,26 @@ class CommandDispatchBenchmarkTest(unittest.TestCase):
         self.assertTrue(trial.execution_succeeded)
         self.assertTrue(trial.latency_passed)
         self.assertEqual(trial.elapsed_ms, 25.0)
+        self.assertEqual(trial.model_name, "test-model")
+        self.assertEqual(trial.safety_status, "APPROVED")
+        self.assertEqual(trial.proposal_status, "SUCCEEDED")
+        self.assertEqual(trial.task_status, "COMPLETED")
+        self.assertEqual(trial.robot_status, "IDLE")
         self.assertFalse(any(path.endswith("/result") for path, _body in client.calls))
+
+    def test_human_report_prints_model_and_final_states(self):
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            code = main(["--runs", "1", "--no-latency-gate"], FakeBackendClient)
+
+        self.assertEqual(code, 0)
+        report = output.getvalue()
+        self.assertIn("model=test-model", report)
+        self.assertIn("Safety=APPROVED", report)
+        self.assertIn("Proposal=SUCCEEDED", report)
+        self.assertIn("Task=COMPLETED", report)
+        self.assertIn("Robot=IDLE", report)
 
     def test_run_trial_records_rejection_without_aborting(self):
         client = FakeBackendClient(reject=True)
@@ -109,6 +131,20 @@ class CommandDispatchBenchmarkTest(unittest.TestCase):
         self.assertFalse(trial.execution_succeeded)
         self.assertIn("REJECTED", trial.error)
         self.assertFalse(any(path.endswith("/execute") for path, _body in client.calls))
+
+    def test_run_trial_rejects_unexpected_action_model(self):
+        client = FakeBackendClient()
+
+        trial = run_trial(
+            client,
+            "robot-01",
+            0,
+            1000,
+            expected_model_name="openai-responses-action-provider",
+        )
+
+        self.assertFalse(trial.execution_succeeded)
+        self.assertIn("test-model != openai-responses-action-provider", trial.error)
 
     def test_ack_timeout_still_waits_for_execution_result(self):
         client = FakeBackendClient(ack_status="TIMED_OUT")
