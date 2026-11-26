@@ -1,7 +1,9 @@
 import json
 import os
 import unittest
+from io import BytesIO
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 from app.action_planner import RuleBasedActionPlanner, VlaActionPlanner
 from app.models import ProposalGenerationRequest, Robot, TaskOrder
@@ -51,6 +53,20 @@ class FakeResponse:
 
     def read(self) -> bytes:
         return json.dumps(self.payload).encode("utf-8")
+
+
+class RawResponse:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self) -> bytes:
+        return self.payload
 
 
 class RecordingUrlopen:
@@ -117,6 +133,61 @@ class OpenAIActionProviderTest(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(OpenAIActionProviderError, "거부"):
+            provider.generate(TASK, ROBOT, ProposalGenerationRequest())
+
+    def test_incomplete_response_fails_closed(self):
+        transport = RecordingUrlopen()
+        transport.response = {"status": "incomplete", "output": []}
+        provider = OpenAIResponsesActionProvider("test-key", urlopen=transport)
+
+        with self.assertRaisesRegex(OpenAIActionProviderError, "완료되지 않았습니다"):
+            provider.generate(TASK, ROBOT, ProposalGenerationRequest())
+
+    def test_http_error_is_normalized(self):
+        def raise_http_error(*_args, **_kwargs):
+            raise HTTPError(
+                "https://api.openai.com/v1/responses",
+                429,
+                "Too Many Requests",
+                {},
+                BytesIO(b'{"error":{"code":"rate_limit_exceeded"}}'),
+            )
+
+        provider = OpenAIResponsesActionProvider("test-key", urlopen=raise_http_error)
+
+        with self.assertRaisesRegex(OpenAIActionProviderError, "HTTP 429"):
+            provider.generate(TASK, ROBOT, ProposalGenerationRequest())
+
+    def test_timeout_is_normalized(self):
+        def raise_timeout(*_args, **_kwargs):
+            raise TimeoutError
+
+        provider = OpenAIResponsesActionProvider("test-key", urlopen=raise_timeout)
+
+        with self.assertRaisesRegex(OpenAIActionProviderError, "연결에 실패했습니다"):
+            provider.generate(TASK, ROBOT, ProposalGenerationRequest())
+
+    def test_malformed_response_json_fails_closed(self):
+        provider = OpenAIResponsesActionProvider(
+            "test-key",
+            urlopen=lambda *_args, **_kwargs: RawResponse(b"not-json"),
+        )
+
+        with self.assertRaisesRegex(OpenAIActionProviderError, "응답 JSON"):
+            provider.generate(TASK, ROBOT, ProposalGenerationRequest())
+
+    def test_malformed_structured_output_fails_closed(self):
+        transport = RecordingUrlopen()
+        transport.response = {
+            "status": "completed",
+            "output": [{
+                "type": "message",
+                "content": [{"type": "output_text", "text": "not-json"}],
+            }],
+        }
+        provider = OpenAIResponsesActionProvider("test-key", urlopen=transport)
+
+        with self.assertRaisesRegex(OpenAIActionProviderError, "구조화 출력"):
             provider.generate(TASK, ROBOT, ProposalGenerationRequest())
 
     def test_factory_defaults_to_rule_based(self):
