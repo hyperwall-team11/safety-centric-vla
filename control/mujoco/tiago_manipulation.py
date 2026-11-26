@@ -170,6 +170,55 @@ class TiagoManipulator:
             self.sim.data.ctrl[a] = opening
         yield from self._advance(duration)
 
+    def hold(self):
+        """Cancel the active plan and hold the measured arm pose immediately."""
+        for actuator, qpos in zip(self.arm_act, self.qadr):
+            self.sim.data.ctrl[actuator] = self.sim.data.qpos[qpos]
+        self.sim.stop()
+
+    @staticmethod
+    def _rpy_matrix(roll, pitch, yaw):
+        cr, sr = math.cos(roll), math.sin(roll)
+        cp, sp = math.cos(pitch), math.sin(pitch)
+        cy, sy = math.cos(yaw), math.sin(yaw)
+        return np.array([
+            [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+            [-sp, cp * sr, cp * cr],
+        ])
+
+    def ee_delta(self, translation, rotation_rpy, gripper, duration=0.4):
+        """Execute one world-frame OpenVLA end-effector delta.
+
+        Gripper convention for this adapter is ``+1=close``, ``-1=open`` and
+        values in ``(-0.5, 0.5)`` keep the current command.
+        """
+        translation = np.asarray(translation, dtype=float)
+        rotation_rpy = np.asarray(rotation_rpy, dtype=float)
+        if translation.shape != (3,) or rotation_rpy.shape != (3,):
+            raise ManipulationError("EE_DELTA translation·rotation_rpy는 3차원이어야 함")
+        if not np.isfinite(translation).all() or not np.isfinite(rotation_rpy).all():
+            raise ManipulationError("EE_DELTA는 유한한 값이어야 함")
+        if np.max(np.abs(translation)) > 0.05 or np.max(np.abs(rotation_rpy)) > 0.25:
+            raise ManipulationError("EE_DELTA 제어 주기 한계 초과")
+        if not isinstance(gripper, (int, float)) or not math.isfinite(gripper) or not -1 <= gripper <= 1:
+            raise ManipulationError("EE_DELTA gripper는 -1에서 1 사이여야 함")
+
+        position, orientation = self.tcp()
+        target_position = position + translation
+        target_orientation = self._rpy_matrix(*rotation_rpy) @ orientation
+        q = yield from self.solve_ik_async(
+            target_position,
+            target_orientation[:, 2],
+            finger_axis=target_orientation[:, 0],
+            tolerance=0.01,
+        )
+        yield from self.move_arm(q, duration)
+        if gripper >= 0.5:
+            yield from self.gripper(GRIPPER_CLOSED, min(duration, 0.4))
+        elif gripper <= -0.5:
+            yield from self.gripper(GRIPPER_OPEN, min(duration, 0.4))
+
     # ---- 베이스 ----
     def go_to(self, x, y, yaw, speed=0.3, timeout=30.0):
         """제자리 회전 → 직진 → 최종 방향 맞추기. 오차 2 cm, 3°."""

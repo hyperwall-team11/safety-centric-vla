@@ -104,7 +104,8 @@ class DiffDriveCore(MockRobotCore):
         self.arm_outbox.append({"command_id": pid, "manipulation": kind, "object_id": params["object_id"],
                                 "target_pose": params.get("target_pose"),
                                 "approach_yaw": params.get("approach_yaw"),
-                                "ee_delta": params.get("ee_delta")})
+                                "ee_delta": params.get("ee_delta"),
+                                "frame_id": msg.get("frame_id", self.frame_id)})
         self.current, self.status, self.mode = msg, "MOVING", "manipulate"
         self.deadline = now + MANIPULATE_TIMEOUT_S
         return [self._event("STATUS", pid, now, status="MOVING")]
