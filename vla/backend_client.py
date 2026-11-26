@@ -63,8 +63,20 @@ class BackendClient:
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise BackendApiError(f"Backend {method} {path} returned invalid JSON") from exc
 
+    @staticmethod
+    def _require_object(response, context: str, *required_keys: str) -> dict:
+        if not isinstance(response, dict):
+            raise BackendApiError(f"Backend {context} response is not an object")
+        missing = [key for key in required_keys if not response.get(key)]
+        if missing:
+            raise BackendApiError(
+                f"Backend {context} response is missing {', '.join(missing)}"
+            )
+        return response
+
     def get_task(self, task_id: str) -> dict:
-        return self._request("GET", f"/task-orders/{task_id}")
+        response = self._request("GET", f"/task-orders/{task_id}")
+        return self._require_object(response, "task", "task_id", "status")
 
     def submit_openvla_action(
         self,
@@ -77,7 +89,7 @@ class BackendClient:
         model_name: str,
         model_version: str,
     ) -> dict:
-        return self._request(
+        response = self._request(
             "POST",
             f"/task-orders/{task_id}/openvla-actions",
             {
@@ -89,17 +101,22 @@ class BackendClient:
                 "model_version": model_version,
             },
         )
+        return self._require_object(response, "proposal", "proposal_id", "status")
 
     def evaluate(self, proposal_id: str) -> dict:
-        return self._request("POST", f"/action-proposals/{proposal_id}/evaluate")
+        response = self._request("POST", f"/action-proposals/{proposal_id}/evaluate")
+        return self._require_object(response, "evaluation", "proposal_id", "status")
 
     def execute(self, proposal_id: str) -> dict:
-        return self._request("POST", f"/action-proposals/{proposal_id}/execute")
+        response = self._request("POST", f"/action-proposals/{proposal_id}/execute")
+        return self._require_object(response, "execution", "proposal_id", "status")
 
     def list_proposals(self, task_id: str) -> list[dict]:
         result = self._request("GET", f"/task-orders/{task_id}/action-proposals")
         if not isinstance(result, list):
             raise BackendApiError("Backend proposal list response is not an array")
+        if any(not isinstance(item, dict) for item in result):
+            raise BackendApiError("Backend proposal list contains a non-object item")
         return result
 
     def wait_for_proposal(

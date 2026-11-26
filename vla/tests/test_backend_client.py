@@ -96,3 +96,48 @@ def test_wait_for_proposal_fails_if_record_disappears():
             timeout_seconds=1.0,
             monotonic=lambda: next(clock),
         )
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ([], "not an object"),
+        ({"task_id": "task-1"}, "missing status"),
+    ],
+)
+def test_get_task_rejects_malformed_success_response(payload, message):
+    client = BackendClient(
+        "http://backend",
+        urlopen=lambda _request, timeout: Response(payload),
+    )
+
+    with pytest.raises(BackendApiError, match=message):
+        client.get_task("task-1")
+
+
+def test_submit_rejects_success_response_without_proposal_id():
+    client = BackendClient(
+        "http://backend",
+        urlopen=lambda _request, timeout: Response({"status": "PROPOSED"}),
+    )
+
+    with pytest.raises(BackendApiError, match="missing proposal_id"):
+        client.submit_openvla_action(
+            "task-1",
+            [0.0] * 7,
+            manipulation="PICK",
+            speed_limit=0.2,
+            phase_complete=False,
+            model_name="openvla",
+            model_version="bridge_orig",
+        )
+
+
+def test_list_proposals_rejects_non_object_items():
+    client = BackendClient(
+        "http://backend",
+        urlopen=lambda _request, timeout: Response(["p1"]),
+    )
+
+    with pytest.raises(BackendApiError, match="non-object"):
+        client.list_proposals("task-1")
