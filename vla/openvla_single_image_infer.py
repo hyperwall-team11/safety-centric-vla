@@ -9,10 +9,7 @@ import json
 from pathlib import Path
 from urllib import error, request
 
-import numpy as np
-import torch
-from PIL import Image
-from transformers import AutoModelForVision2Seq, AutoProcessor
+from openvla_engine import OpenVlaInferenceEngine
 
 
 def main():
@@ -34,40 +31,21 @@ def main():
         parser.error(f'Image not found: {args.image}')
     if bool(args.backend_url) != bool(args.task_id):
         parser.error('--backend-url and --task-id must be provided together')
-    if not torch.cuda.is_available():
-        raise RuntimeError('CUDA GPU unavailable. Run on an allocated GPU compute node, not the login node.')
-
-    device = 'cuda:0'
-    image = Image.open(args.image).convert('RGB')
-    print(f'[INFO] image={args.image} size={image.size}; loading model={args.model}', flush=True)
-    processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
-    model = AutoModelForVision2Seq.from_pretrained(
-        args.model,
-        torch_dtype=torch.bfloat16,
-        low_cpu_mem_usage=True,
-        trust_remote_code=True,
-    ).to(device)
-    model.eval()
-
-    prompt = f'In: What action should the robot take to {args.instruction.lower()}?\nOut:'
-    inputs = processor(prompt, image).to(device, dtype=torch.bfloat16)
-    with torch.inference_mode():
-        action = model.predict_action(**inputs, unnorm_key=args.unnorm_key, do_sample=False)
-    action = np.asarray(action, dtype=np.float32).reshape(-1)
-    if action.size != 7 or not np.isfinite(action).all():
-        raise RuntimeError(f'Expected finite 7-D action, got shape={action.shape}: {action!r}')
+    print(f'[INFO] image={args.image}; loading model={args.model}', flush=True)
+    engine = OpenVlaInferenceEngine(args.model, unnorm_key=args.unnorm_key)
+    action = engine.predict(args.image, args.instruction)
 
     result = {
         'image': str(args.image),
         'instruction': args.instruction,
         'model': args.model,
         'unnorm_key': args.unnorm_key,
-        'action_7d': action.tolist(),
+        'action_7d': action,
         'executed': False,
     }
     if args.backend_url:
         payload = json.dumps({
-            'action_7d': action.tolist(),
+            'action_7d': action,
             'manipulation': args.manipulation,
             'speed_limit': args.speed_limit,
             'phase_complete': args.phase_complete,
