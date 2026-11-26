@@ -78,8 +78,14 @@ class RecordingUrlopen:
             else {"type": "output_text", "text": json.dumps(output)}
         )
         self.response = {
+            "id": "resp_test_123",
             "status": "completed",
             "output": [{"type": "message", "content": [content]}],
+            "usage": {
+                "input_tokens": 120,
+                "output_tokens": 30,
+                "total_tokens": 150,
+            },
         }
 
     def __call__(self, req, *, timeout):
@@ -134,6 +140,35 @@ class OpenAIActionProviderTest(unittest.TestCase):
 
         with self.assertRaisesRegex(OpenAIActionProviderError, "거부"):
             provider.generate(TASK, ROBOT, ProposalGenerationRequest())
+
+    def test_logs_response_id_and_usage_without_key_or_prompt(self):
+        transport = RecordingUrlopen({
+            "action_type": "MOVE_TO",
+            "parameters": {
+                "target_pose": TASK.destination.model_dump(mode="json"),
+                "speed_limit": 0.4,
+            },
+            "trajectory": None,
+            "frame_id": "world",
+            "speed_limit": 0.4,
+        })
+        provider = OpenAIResponsesActionProvider(
+            "secret-test-key",
+            model="gpt-test",
+            urlopen=transport,
+        )
+
+        with self.assertLogs("uvicorn.error", level="INFO") as captured:
+            provider.generate(TASK, ROBOT, ProposalGenerationRequest())
+
+        log = "\n".join(captured.output)
+        self.assertIn("response_id=resp_test_123", log)
+        self.assertIn("model=gpt-test", log)
+        self.assertIn("input_tokens=120", log)
+        self.assertIn("output_tokens=30", log)
+        self.assertIn("total_tokens=150", log)
+        self.assertNotIn("secret-test-key", log)
+        self.assertNotIn(TASK.instruction, log)
 
     def test_incomplete_response_fails_closed(self):
         transport = RecordingUrlopen()

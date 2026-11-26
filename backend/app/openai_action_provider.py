@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable, Mapping
 from os import getenv
 from typing import Any
@@ -21,6 +22,9 @@ OPENAI_ACTION_MODEL_ENV = "OPENAI_ACTION_MODEL"
 OPENAI_ACTION_TIMEOUT_ENV = "OPENAI_ACTION_TIMEOUT_SECONDS"
 OPENAI_BASE_URL_ENV = "OPENAI_BASE_URL"
 DEFAULT_OPENAI_ACTION_MODEL = "gpt-4o-mini"
+# Backend는 Uvicorn으로 실행되므로 해당 logger를 사용해 운영 로그에도 남긴다.
+# 기록 내용은 응답 식별자와 과금 메타데이터뿐이며 키·프롬프트·출력은 제외한다.
+logger = logging.getLogger("uvicorn.error")
 
 
 class OpenAIActionProviderError(RuntimeError):
@@ -168,6 +172,21 @@ def _extract_output_text(response: Mapping[str, Any]) -> str:
     raise OpenAIActionProviderError("OpenAI 응답에 구조화 행동 출력이 없습니다.")
 
 
+def _log_response_metadata(response: Mapping[str, Any], model: str) -> None:
+    usage = response.get("usage")
+    if not isinstance(usage, Mapping):
+        usage = {}
+    logger.info(
+        "OpenAI action response: response_id=%s model=%s input_tokens=%s "
+        "output_tokens=%s total_tokens=%s",
+        response.get("id", "unknown"),
+        model,
+        usage.get("input_tokens", "unknown"),
+        usage.get("output_tokens", "unknown"),
+        usage.get("total_tokens", "unknown"),
+    )
+
+
 class OpenAIResponsesActionProvider:
     """OpenAI Responses API의 Structured Outputs를 VLA 출력 경계로 연결한다."""
 
@@ -270,6 +289,7 @@ class OpenAIResponsesActionProvider:
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise OpenAIActionProviderError("OpenAI 응답 JSON을 해석할 수 없습니다.") from exc
 
+        _log_response_metadata(raw_response, self.model_version)
         output_text = _extract_output_text(raw_response)
         try:
             output = json.loads(output_text)
