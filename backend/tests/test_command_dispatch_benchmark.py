@@ -104,7 +104,26 @@ class CommandDispatchBenchmarkTest(unittest.TestCase):
         self.assertTrue(trial.execution_succeeded)
         self.assertTrue(trial.latency_passed)
         self.assertEqual(trial.elapsed_ms, 25.0)
+        self.assertEqual(trial.model_name, "test-model")
+        self.assertEqual(trial.safety_status, "APPROVED")
+        self.assertEqual(trial.proposal_status, "SUCCEEDED")
+        self.assertEqual(trial.task_status, "COMPLETED")
+        self.assertEqual(trial.robot_status, "IDLE")
         self.assertFalse(any(path.endswith("/result") for path, _body in client.calls))
+
+    def test_human_report_prints_model_and_final_states(self):
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            code = main(["--runs", "1", "--no-latency-gate"], FakeBackendClient)
+
+        self.assertEqual(code, 0)
+        report = output.getvalue()
+        self.assertIn("model=test-model", report)
+        self.assertIn("Safety=APPROVED", report)
+        self.assertIn("Proposal=SUCCEEDED", report)
+        self.assertIn("Task=COMPLETED", report)
+        self.assertIn("Robot=IDLE", report)
 
     def test_run_trial_records_rejection_without_aborting(self):
         client = FakeBackendClient(reject=True)
