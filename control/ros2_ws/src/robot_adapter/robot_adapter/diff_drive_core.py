@@ -103,7 +103,8 @@ class DiffDriveCore(MockRobotCore):
             return [self._result(pid, False, INVALID, "PLACE에는 target_pose.position [x, y, z] 필요", now)]
         self.arm_outbox.append({"command_id": pid, "manipulation": kind, "object_id": params["object_id"],
                                 "target_pose": params.get("target_pose"),
-                                "approach_yaw": params.get("approach_yaw")})
+                                "approach_yaw": params.get("approach_yaw"),
+                                "ee_delta": params.get("ee_delta")})
         self.current, self.status, self.mode = msg, "MOVING", "manipulate"
         self.deadline = now + MANIPULATE_TIMEOUT_S
         return [self._event("STATUS", pid, now, status="MOVING")]
