@@ -84,6 +84,8 @@ OpenVLA 운동 출력만으로 PICK/PLACE 완료를 추측하지 않습니다. C
 `frame` 또는 `step` 중 하나는 반드시 필요하고, 현재 이미지보다 오래된 신호는
 무시합니다. CV는 임시 파일을 완성한 뒤 rename해 불완전한 JSON을 루프가
 읽지 않게 해야 합니다. 완료 파일이 없으면 기본값은 언제나 `false`입니다.
+복사 가능한 형식은 [`examples/phase_complete.example.json`](examples/phase_complete.example.json)에
+있습니다. `manipulation`, `frame`, `step`은 현재 실행 주기와 맞게 바꿉니다.
 
 ### 종료 코드
 
