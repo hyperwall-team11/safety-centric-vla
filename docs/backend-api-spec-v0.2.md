@@ -37,7 +37,7 @@
 
 ## 2. 구현 엔드포인트
 
-현재 구현은 23개 path, 29개 HTTP operation으로 구성된다.
+아래 표는 현재 공개 HTTP API를 정리합니다. 호출 가능한 스키마는 실행 중인 Backend의 `/openapi.json`에서도 확인할 수 있습니다.
 
 | Method | Path | 성공 | 용도 |
 |---|---|---:|---|
