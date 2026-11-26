@@ -84,6 +84,10 @@ python3 -m uvicorn app.main:app --reload
 | `BACKEND_STORE` | `memory` | `redis`로 설정할 때만 Redis 사용 |
 | `BACKEND_REDIS_URL` | `redis://127.0.0.1:6379/0` | Redis 접속 URL |
 | `BACKEND_REDIS_KEY` | `safety-centric-vla:state:v1` | 공유 스냅샷 키. 환경별 분리 가능 |
+| `BACKEND_CLOSED_LOOP_ENABLED` | `0` | `1`이면 Task 자동 실행 Worker 활성화 |
+| `BACKEND_CLOSED_LOOP_POLL_INTERVAL_SECONDS` | `0.5` | 자동 실행 상태 확인 주기(초) |
+| `BACKEND_CLOSED_LOOP_MAX_ATTEMPTS_PER_STEP` | `3` | 단계별 최대 시도 횟수(최초 시도 포함) |
+| `BACKEND_CLOSED_LOOP_RESULT_TIMEOUT_SECONDS` | `120` | 실행 결과 미수신을 TIMEOUT으로 처리하는 시간(초) |
 
 백업 파일을 즉시 생성하려면 다음을 실행합니다.
 
@@ -135,7 +139,9 @@ BACKEND_CTL_ROS_ENABLED=1 python -m uvicorn app.main:app
 
 ROS 2 모드에서는 실행 직전 재검증을 통과한 승인 스냅샷만 `/safety/approved_action`에 발행합니다. Backend의 `{x,y,z}` 좌표는 CTL의 `[x,y,z]` 좌표로 바꾸고, 발행 성공 후에만 Proposal을 `EXECUTING`으로 전이합니다. `/adapter/{robot_id}/result`의 `RESULT`는 표준 실패 코드로 정규화해 결과 API에 반영하며 `/safety/heartbeat`는 5 Hz로 발행합니다.
 
-실행 중인 로봇과 연결된 `CRITICAL` HazardEvent가 등록되면 `/safety/estop`(latched)에 정지 신호를 발행하고, 그 위험이 모두 해제되면 정지 신호를 풉니다. 로봇 복귀는 승인된 `RESUME`으로만 합니다.
+실행 중인 로봇과 연결된 `CRITICAL` HazardEvent가 등록되면 `/safety/estop`(latched)에 정지 신호를 발행하고, 그 위험이 모두 해제되면 정지 신호를 풉니다. 로봇 복귀에는 승인된 `RESUME`이 필요합니다. 창고 시연에서 운영자 위험 해제 뒤 AMR에 `RESUME`을 발행하는 단계는 아직 연결되지 않았습니다.
+
+발표용 창고의 CCTV 04 낙상자 점검은 후방 통로에서 확인된 작업자 위험을 `UNKNOWN / WARNING`으로 저장합니다. [시연 절차](../docs/warehouse-presentation.md)에서 영상 관측과 위험 기록을 확인할 수 있습니다.
 
 `ZONE` 목적지를 실제 실행하려면 해당 Zone의 `geometry.navigation_target`에 `{x,y,z}` 좌표가 있어야 합니다. 없으면 명령을 추측해 보내지 않고 `422`로 차단합니다.
 
@@ -265,9 +271,26 @@ curl -X POST http://127.0.0.1:8000/task-orders/{task_id}/action-proposals \
 
 요청 본문은 JSON 객체이며 `speed_limit`은 선택값입니다. 생략하면 명세 기본값인 `0.4 m/s`와 로봇 최대 속도 중 작은 값을 사용합니다. 좌표 목적지는 TaskOrder의 좌표 frame을, 구역 목적지는 로봇 pose frame을 사용합니다. 좌표 변환 없이 frame 이름만 덮어쓰는 실수를 막기 위해 생성 요청에서는 frame을 변경할 수 없습니다.
 
-`MOVE_TO` 제안은 `parameters.target_pose`와 `parameters.speed_limit`를 생성합니다. 물체 TaskOrder는 해석만으로 집기와 놓기를 임의로 결정하지 않으며, 요청 본문에 `"manipulation": "PICK"` 또는 `"PLACE"`를 명시해야 합니다. `MANIPULATE` 제안은 스키마 v1.1에 맞춰 `manipulation`, `object_id`, `target_pose`를 생성합니다. `target_pose`는 TaskOrder의 `COORDINATE` 또는 `ZONE` 목적지 표현을 그대로 유지합니다. 외부 VLA가 직접 제안을 등록할 때 선택적인 `parameters.priority`는 `NORMAL` 또는 `SAFETY`를 받으며, `SAFETY`는 시스템이 발행하는 `STOP`·`RESUME`에만 허용합니다.
+`MOVE_TO` 제안은 `parameters.target_pose`와 `parameters.speed_limit`를 생성합니다. 대상 물체가 없는 이동 작업은 기존처럼 목적지 `MOVE_TO` 하나를 생성합니다. 대상 물체가 있는 작업은 먼저 `POST /physical-objects`로 물체의 현재 pose를 등록한 뒤 빈 요청 `{}`을 보내면, 성공한 Proposal 이력을 기준으로 `물체 접근 MOVE_TO → PICK → 목적지 MOVE_TO → PLACE` 중 다음 단계 하나를 자동 생성합니다. `"manipulation": "PICK"` 또는 `"PLACE"`를 명시하면 기존 수동 단계 생성도 사용할 수 있습니다. `MANIPULATE` 제안은 스키마 v1.1에 맞춰 `manipulation`, `object_id`, `target_pose`를 생성합니다. 외부 VLA가 직접 제안을 등록할 때 선택적인 `parameters.priority`는 `NORMAL` 또는 `SAFETY`를 받으며, `SAFETY`는 시스템이 발행하는 `STOP`·`RESUME`에만 허용합니다.
 
 성공하면 TaskOrder가 `CREATED`에서 `PLANNING`으로 바뀌며 Proposal은 `PROPOSED`로 저장됩니다. 같은 TaskOrder에 활성 Proposal을 중복 생성하면 `409`를 반환합니다. 선택적인 `Idempotency-Key`를 보낸 경우, 동일한 키와 동일한 본문을 재전송하면 기존 Proposal을 `200`으로 반환하고 새 Proposal을 만들지 않습니다. 같은 키에 다른 본문을 보내면 `409`입니다.
+
+대상 물체가 있는 운반 TaskOrder는 여러 ActionProposal을 순차 실행합니다. 수동 연동에서는 0.5초 주기 실행기가 `POST /task-orders/{task_id}/action-proposals`에 `{}`을 반복 전송할 수 있습니다. Backend가 생성·평가·실행까지 자동 진행하게 하려면 다음처럼 Closed-Loop Worker를 활성화합니다.
+
+```bash
+BACKEND_CLOSED_LOOP_ENABLED=1 python3 -m uvicorn app.main:app
+```
+
+Worker는 기본 0.5초마다 `CREATED`, `PLANNING`, `RUNNING` 작업을 확인하고 `ActionProposal 생성 → 안전 평가 → 승인 Proposal 실행 → RESULT 대기`를 반복합니다. 활성 Proposal은 기존처럼 하나만 허용되며 모든 자동 단계도 같은 안전 평가와 실행 직전 재검증을 통과해야 합니다. OpenVLA 또는 Navigation Planner가 만든 구조화 Proposal을 `POST /action-proposals`로 직접 등록하는 경로도 유지됩니다.
+
+자동 다단계 회귀 테스트 한 건만 실행하려면 다음 명령을 사용합니다.
+
+```bash
+python -m pytest -q tests/test_execution_result_api.py \
+  -k object_transport_runs_multiple_proposals_before_task_completion
+```
+
+이 테스트는 같은 생성 API의 빈 요청으로 `MOVE_TO → PICK → MOVE_TO → PLACE`가 순서대로 생성되고, 앞의 세 단계에서는 TaskOrder가 `PLANNING`, 마지막 `PLACE` 성공 뒤에는 `COMPLETED`가 되는지 확인합니다.
 
 `HELD` 작업은 일반 생성 API로 재개하지 않습니다. 관련 위험 해제까지 확인하는 별도 Resume 흐름이 팀 계약으로 추가되기 전에는 `409`를 반환합니다.
 
@@ -275,12 +298,25 @@ curl -X POST http://127.0.0.1:8000/task-orders/{task_id}/action-proposals \
 
 열린 CRITICAL 위험은 `related_robot_ids`에 대상 Robot이 있거나 Hazard의 Zone과 TaskOrder 목적지 Zone이 같을 때 차단합니다. 빈 `related_robot_ids` 자체는 전역 위험을 뜻하지 않습니다. CRITICAL 위험 해제는 `{"resolved_by":"OPERATOR"}` 요청만 허용하고, WARNING은 `SENSOR_AUTO`도 허용합니다.
 
-실행 중인 Proposal은 `POST /action-proposals/{proposal_id}/result`로 어댑터 결과를 보고합니다. `SUCCEEDED`는 TaskOrder를 `COMPLETED`, Robot을 `IDLE`로 돌립니다. `UNSUPPORTED`는 TaskOrder를 `PLANNING`으로 되돌려 재계획할 수 있고, `TIMEOUT`은 TaskOrder `FAILED`·Robot `HOLD`, `HW_ERROR`는 TaskOrder `FAILED`·Robot `ERROR`로 전이합니다. 같은 결과 재전송은 멱등 처리되어 감사 로그가 중복되지 않습니다.
+실행 중인 Proposal은 `POST /action-proposals/{proposal_id}/result`로 어댑터 결과를 보고합니다. 일반 이동 Task의 `SUCCEEDED`는 TaskOrder를 `COMPLETED`, Robot을 `IDLE`로 돌립니다. 물체 운반 Task에서는 `PICK`과 Navigation `MOVE_TO` 성공 후 TaskOrder를 `PLANNING`으로 되돌려 다음 Proposal을 받고, 최종 `PLACE` 성공 때만 `COMPLETED`로 전이합니다. 같은 결과 재전송은 멱등 처리되어 감사 로그가 중복되지 않습니다.
+
+Closed-Loop Worker의 기본 실패 정책은 다음과 같습니다.
+
+- 안전 평가 `REJECTED`: TaskOrder `HELD`, Robot `HOLD`로 자동 실행 중단. 실행 직전 Robot 위치가 예상 경로 시작점과 달라진 경우만 새 경로로 재계획
+- `UNSUPPORTED`: 같은 단계를 다시 계획
+- `TIMEOUT`: CTL이 보고하거나 120초 동안 RESULT가 없으면 실제 동작 결과를 확정할 수 없으므로 TaskOrder `HELD`, Robot `HOLD`로 즉시 중단
+- `UNSUPPORTED`와 경로 재계획은 단계당 최초 시도를 포함해 최대 3회. 모두 실패하면 TaskOrder `FAILED`, Robot `HOLD`
+- `HW_ERROR`: 재시도 없이 TaskOrder `FAILED`, Robot `ERROR`
+- 물체 미등록처럼 안전한 Proposal을 만들 수 없는 `404`·`422`: TaskOrder `HELD`, Robot `HOLD`
+
+Worker가 비활성화된 수동 API 모드의 기존 전이는 유지됩니다. `UNSUPPORTED`는 TaskOrder `PLANNING`·Robot `HOLD`, `TIMEOUT`은 TaskOrder `FAILED`·Robot `HOLD`, `HW_ERROR`는 TaskOrder `FAILED`·Robot `ERROR`입니다.
 
 ## 구현된 최소 API
 
 - `POST /robots`
 - `GET /robots`
+- `POST /physical-objects`
+- `GET /physical-objects`
 - `POST /zones`
 - `GET /zones`
 - `GET /task-orders`

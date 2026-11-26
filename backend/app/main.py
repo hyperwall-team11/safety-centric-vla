@@ -34,6 +34,7 @@ from .action_planner import (
     RuleBasedActionPlanner,
 )
 from .auth import TokenAuthenticator, websocket_bearer_token
+from .closed_loop_executor import ClosedLoopConfig, ClosedLoopExecutor
 from .ctl_bridge import (
     CommandSerializationError,
     DispatchError,
@@ -56,6 +57,7 @@ from .models import (
     HazardSeverity,
     HazardStatus,
     NaturalLanguageTaskRequest,
+    PhysicalObject,
     ProposalGenerationRequest,
     ProposalStatus,
     RequestValidationErrorResponse,
@@ -82,6 +84,7 @@ from .safety import WORKER_SNAPSHOT_MAX_AGE_SECONDS, default_rules, evaluate_pro
 from .state_stream import state_broadcaster
 from .store import StoreUnavailableError, store
 from .task_parser import TaskParseError, parse_task_order, parse_task_order_preview
+from .task_executor import TaskExecutionPlanningError, plan_next_task_action
 from .twin_simulation import (
     COLLISION_RULE_ID,
     MAX_SIMULATION_ATTEMPTS,
@@ -126,10 +129,76 @@ PLANNABLE_TASK_STATUSES = {
 }
 
 
+def proposal_completes_task(task: TaskOrder, proposal: ActionProposal) -> bool:
+    """개별 Action 성공이 전체 TaskOrder의 완료 조건인지 판정한다.
+
+    이동 Task는 단일 MOVE_TO 성공으로 끝난다. 대상 물체가 있는 운반 Task는
+    PICK·Navigation 이동 등 중간 Proposal 성공 뒤에도 PLANNING으로 돌아가고,
+    최종 PLACE 성공 때만 완료한다.
+    """
+    if task.target_object_id is None:
+        return True
+    if proposal.action_type != ActionType.MANIPULATE:
+        return False
+    return proposal.parameters.get("manipulation") == "PLACE"
+
+
+def apply_successful_action_state(
+    task: TaskOrder,
+    proposal: ActionProposal,
+    robot: Robot,
+) -> None:
+    """성공한 이동·배치의 확정 목표를 다음 계획에 사용할 상태로 반영한다."""
+    target = proposal.parameters.get("target_pose")
+    if not isinstance(target, dict):
+        return
+    frame_id: str | None = None
+    position: dict | None = None
+    if target.get("type") == "COORDINATE":
+        frame_id = target.get("frame_id")
+        position = target.get("position")
+    elif target.get("type") == "ZONE":
+        zone = store.zones.get(target.get("zone_id"))
+        if zone is not None:
+            frame_id = zone.frame_id
+            position = zone.geometry.get("navigation_target")
+    if not isinstance(frame_id, str) or not isinstance(position, dict):
+        return
+    try:
+        coordinates = {
+            axis: float(position[axis])
+            for axis in ("x", "y", "z")
+        }
+    except (KeyError, TypeError, ValueError):
+        return
+
+    if proposal.action_type == ActionType.MOVE_TO:
+        robot.pose.frame_id = frame_id
+        robot.pose.position.x = coordinates["x"]
+        robot.pose.position.y = coordinates["y"]
+        robot.pose.position.z = coordinates["z"]
+    elif (
+        proposal.action_type == ActionType.MANIPULATE
+        and proposal.parameters.get("manipulation") == "PLACE"
+        and task.target_object_id is not None
+    ):
+        physical_object = store.objects.get(task.target_object_id)
+        if physical_object is None:
+            return
+        physical_object.pose.frame_id = frame_id
+        physical_object.pose.position.x = coordinates["x"]
+        physical_object.pose.position.y = coordinates["y"]
+        physical_object.pose.position.z = coordinates["z"]
+        if target.get("type") == "ZONE":
+            physical_object.current_zone_id = target["zone_id"]
+        physical_object.updated_at = utc_now()
+
+
 class OntologyObjectType(str, Enum):
     ROBOT = "Robot"
     SENSOR = "Sensor"
     WORKER = "Worker"
+    PHYSICAL_OBJECT = "PhysicalObject"
     ZONE = "Zone"
     TASK_ORDER = "TaskOrder"
     ACTION_PROPOSAL = "ActionProposal"
@@ -142,6 +211,7 @@ OntologyObject = (
     Robot
     | Sensor
     | Worker
+    | PhysicalObject
     | Zone
     | TaskOrder
     | ActionProposal
@@ -153,6 +223,7 @@ OBJECT_STORE_ATTRIBUTES = {
     OntologyObjectType.ROBOT: "robots",
     OntologyObjectType.SENSOR: "sensors",
     OntologyObjectType.WORKER: "workers",
+    OntologyObjectType.PHYSICAL_OBJECT: "objects",
     OntologyObjectType.ZONE: "zones",
     OntologyObjectType.TASK_ORDER: "tasks",
     OntologyObjectType.ACTION_PROPOSAL: "proposals",
@@ -258,6 +329,7 @@ class StateSnapshot(BaseModel):
     robots: list[Robot]
     sensors: list[Sensor]
     workers: list[Worker] | None
+    physical_objects: list[PhysicalObject]
     zones: list[Zone]
     task_orders: list[TaskOrder]
     action_proposals: list[ActionProposal]
@@ -276,6 +348,7 @@ def make_state_snapshot() -> dict:
             "robots": list(store.robots.values()),
             "sensors": list(store.sensors.values()),
             "workers": None if store.workers is None else list(store.workers),
+            "physical_objects": list(store.objects.values()),
             "zones": list(store.zones.values()),
             "task_orders": list(store.tasks.values()),
             "action_proposals": list(store.proposals.values()),
@@ -576,10 +649,12 @@ def start_action_dispatcher() -> None:
     store.start_change_notifications(state_broadcaster.publish)
     # Redis 재시작 복구 시 latched E-Stop 상태도 CTL에 다시 전달한다.
     sync_estop("Backend 시작 상태 복구")
+    closed_loop_executor.start()
 
 
 @app.on_event("shutdown")
 def stop_action_dispatcher() -> None:
+    closed_loop_executor.stop()
     store.stop_change_notifications()
     action_dispatcher.stop()
 
@@ -686,6 +761,25 @@ def create_robot(robot: Robot) -> Robot:
 def list_robots() -> list[Robot]:
     with store.lock:
         return list(store.robots.values())
+
+
+@app.post(
+    "/physical-objects",
+    response_model=PhysicalObject,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_physical_object(physical_object: PhysicalObject) -> PhysicalObject:
+    with store.lock:
+        if physical_object.object_id in store.objects:
+            raise HTTPException(status_code=409, detail="이미 등록된 object_id입니다.")
+        store.objects[physical_object.object_id] = physical_object
+    return physical_object
+
+
+@app.get("/physical-objects", response_model=list[PhysicalObject])
+def list_physical_objects() -> list[PhysicalObject]:
+    with store.lock:
+        return list(store.objects.values())
 
 
 @app.post("/zones", response_model=Zone, status_code=status.HTTP_201_CREATED)
@@ -931,6 +1025,18 @@ def generate_action_proposal(
         if robot.status == "ERROR":
             raise HTTPException(status_code=409, detail="ERROR 상태의 로봇에는 제안을 생성할 수 없습니다.")
 
+        auto_plan = task.target_object_id is not None and request.manipulation is None
+        target_object = (
+            store.objects.get(task.target_object_id)
+            if task.target_object_id is not None
+            else None
+        )
+        if auto_plan and target_object is None:
+            raise HTTPException(
+                status_code=404,
+                detail="TaskOrder 대상 PhysicalObject를 찾을 수 없습니다.",
+            )
+
         active_proposal = next(
             (
                 proposal
@@ -949,21 +1055,38 @@ def generate_action_proposal(
         destination_zone = store.zones.get(getattr(task.destination, "zone_id", None))
         task_snapshot = task.model_copy(deep=True)
         robot_snapshot = robot.model_copy(deep=True)
+        target_object_snapshot = (
+            None if target_object is None else target_object.model_copy(deep=True)
+        )
+        task_proposals_snapshot = [
+            proposal.model_copy(deep=True)
+            for proposal in store.proposals.values()
+            if proposal.task_id == task_id
+        ]
         destination_zone_snapshot = (
             None if destination_zone is None else destination_zone.model_copy(deep=True)
         )
         selected_planner = planner
 
-    # VLA 추론은 수 초 이상 걸릴 수 있으므로 위험 이벤트와 상태 갱신을 막지 않게
-    # 저장소 잠금 밖에서 실행한다.
+    # VLA 추론이나 다음 단계 계획이 상태 갱신을 막지 않게 저장소 잠금 밖에서 실행한다.
     try:
-        proposal = selected_planner.plan(
-            task_snapshot,
-            robot_snapshot,
-            request,
-            destination_zone=destination_zone_snapshot,
-        )
-    except ActionPlanningError as exc:
+        if auto_plan:
+            proposal = plan_next_task_action(
+                task_snapshot,
+                robot_snapshot,
+                target_object_snapshot,
+                task_proposals_snapshot,
+                request,
+                destination_zone=destination_zone_snapshot,
+            )
+        else:
+            proposal = selected_planner.plan(
+                task_snapshot,
+                robot_snapshot,
+                request,
+                destination_zone=destination_zone_snapshot,
+            )
+    except (ActionPlanningError, TaskExecutionPlanningError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ActionProviderError as exc:
         LOGGER.warning("VLA 추론 요청 실패: %s", exc.__cause__ or exc)
@@ -995,14 +1118,26 @@ def generate_action_proposal(
         if robot is None:
             raise HTTPException(status_code=404, detail="TaskOrder의 대상 Robot을 찾을 수 없습니다.")
         destination_zone = store.zones.get(getattr(task.destination, "zone_id", None))
+        target_object = (
+            store.objects.get(task.target_object_id)
+            if task.target_object_id is not None
+            else None
+        )
+        task_proposals = [
+            existing
+            for existing in store.proposals.values()
+            if existing.task_id == task_id
+        ]
         if (
             task != task_snapshot
             or robot != robot_snapshot
             or destination_zone != destination_zone_snapshot
+            or (auto_plan and target_object != target_object_snapshot)
+            or (auto_plan and task_proposals != task_proposals_snapshot)
         ):
             raise HTTPException(
                 status_code=409,
-                detail="VLA 추론 중 TaskOrder·Robot·Zone 문맥이 변경되어 결과를 저장하지 않습니다.",
+                detail="추론 중 또는 제안 생성 중 TaskOrder·Robot·Object·Zone 문맥이 변경되어 결과를 저장하지 않습니다.",
             )
         if task.status not in PLANNABLE_TASK_STATUSES:
             raise HTTPException(
@@ -1564,10 +1699,14 @@ def report_action_result(
             )
         if report.status == AdapterResultStatus.SUCCEEDED:
             proposal.status = ProposalStatus.SUCCEEDED
-            task.status = TaskStatus.COMPLETED
+            apply_successful_action_state(task, proposal, robot)
+            task_completed = proposal_completes_task(task, proposal)
+            task.status = TaskStatus.COMPLETED if task_completed else TaskStatus.PLANNING
             robot.status = RobotStatus.IDLE
             decision = Decision.COMPLETE
             result_message = report.detail or "제어 어댑터 실행 완료"
+            if not task_completed:
+                result_message = f"{result_message}; 다음 ActionProposal 대기"
         else:
             proposal.status = ProposalStatus.FAILED
             decision = Decision.FAIL
@@ -1585,7 +1724,8 @@ def report_action_result(
 
         robot.updated_at = utc_now()
         store.proposal_results[proposal_id] = report
-        store.task_received_at.pop(task.task_id, None)
+        if task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
+            store.task_received_at.pop(task.task_id, None)
         store.logs.append(
             ExecutionLog(
                 proposal_id=proposal.proposal_id,
@@ -1597,6 +1737,290 @@ def report_action_result(
             )
         )
         return proposal
+
+
+def _closed_loop_step_attempts(proposals: list[ActionProposal]) -> int:
+    """마지막 성공 이후 현재 단계에서 소비한 실패 시도 수를 센다."""
+    last_success = -1
+    for index, proposal in enumerate(proposals):
+        if proposal.status == ProposalStatus.SUCCEEDED:
+            last_success = index
+    return sum(
+        proposal.status in {ProposalStatus.REJECTED, ProposalStatus.FAILED}
+        for proposal in proposals[last_success + 1 :]
+    )
+
+
+def _is_stale_trajectory_rejection(proposal_id: str) -> bool:
+    log = next(
+        (
+            item
+            for item in reversed(store.logs)
+            if item.proposal_id == proposal_id and item.decision == Decision.REJECT
+        ),
+        None,
+    )
+    if log is None:
+        return False
+    failed_rule_ids = {result.rule_id for result in log.rule_results if not result.passed}
+    return failed_rule_ids == {TRAJECTORY_START_RULE_ID}
+
+
+def _apply_closed_loop_failure_policy(
+    task_id: str,
+    max_attempts_per_step: int,
+) -> tuple[bool, bool]:
+    """다음 제안을 만들 수 있는지와 상태 변경 여부를 반환한다."""
+    with store.lock:
+        task = store.tasks.get(task_id)
+        if task is None:
+            return False, False
+        robot = store.robots.get(task.target_robot_id)
+        proposals = [
+            proposal
+            for proposal in store.proposals.values()
+            if proposal.task_id == task_id
+        ]
+        if not proposals:
+            return task.status in PLANNABLE_TASK_STATUSES, False
+
+        latest = proposals[-1]
+        attempts = _closed_loop_step_attempts(proposals)
+        retry_exhausted = attempts >= max_attempts_per_step
+
+        if latest.status == ProposalStatus.REJECTED:
+            if _is_stale_trajectory_rejection(latest.proposal_id):
+                if not retry_exhausted:
+                    changed = task.status != TaskStatus.PLANNING
+                    task.status = TaskStatus.PLANNING
+                    return True, changed
+                changed = task.status != TaskStatus.FAILED
+                task.status = TaskStatus.FAILED
+                store.task_received_at.pop(task_id, None)
+                if robot is not None and robot.status not in {
+                    RobotStatus.ESTOP,
+                    RobotStatus.ERROR,
+                }:
+                    changed = changed or robot.status != RobotStatus.HOLD
+                    robot.status = RobotStatus.HOLD
+                    robot.updated_at = utc_now()
+                return False, changed
+            changed = task.status != TaskStatus.HELD
+            task.status = TaskStatus.HELD
+            if robot is not None and robot.status not in {RobotStatus.ESTOP, RobotStatus.ERROR}:
+                changed = changed or robot.status != RobotStatus.HOLD
+                robot.status = RobotStatus.HOLD
+                robot.updated_at = utc_now()
+            return False, changed
+
+        if latest.status == ProposalStatus.FAILED:
+            report = store.proposal_results.get(latest.proposal_id)
+            if report is not None and report.reason_code == AdapterFailureCode.TIMEOUT:
+                changed = task.status != TaskStatus.HELD
+                task.status = TaskStatus.HELD
+                if robot is not None and robot.status not in {
+                    RobotStatus.ESTOP,
+                    RobotStatus.ERROR,
+                }:
+                    changed = changed or robot.status != RobotStatus.HOLD
+                    robot.status = RobotStatus.HOLD
+                    robot.updated_at = utc_now()
+                return False, changed
+            retryable = (
+                report is not None
+                and report.reason_code == AdapterFailureCode.UNSUPPORTED
+            )
+            if retryable and not retry_exhausted:
+                changed = task.status != TaskStatus.PLANNING
+                task.status = TaskStatus.PLANNING
+                store.task_received_at.setdefault(task_id, utc_now())
+                if robot is not None and robot.status not in {
+                    RobotStatus.ESTOP,
+                    RobotStatus.ERROR,
+                }:
+                    changed = changed or robot.status != RobotStatus.HOLD
+                    robot.status = RobotStatus.HOLD
+                    robot.updated_at = utc_now()
+                return True, changed
+            if retryable and retry_exhausted:
+                changed = task.status != TaskStatus.FAILED
+                task.status = TaskStatus.FAILED
+                store.task_received_at.pop(task_id, None)
+                if robot is not None and robot.status not in {
+                    RobotStatus.ESTOP,
+                    RobotStatus.ERROR,
+                }:
+                    changed = changed or robot.status != RobotStatus.HOLD
+                    robot.status = RobotStatus.HOLD
+                    robot.updated_at = utc_now()
+                return False, changed
+            return False, False
+
+        return task.status in PLANNABLE_TASK_STATUSES, False
+
+
+def _hold_task_after_planning_error(task_id: str) -> bool:
+    with store.lock:
+        task = store.tasks.get(task_id)
+        if task is None:
+            return False
+        robot = store.robots.get(task.target_robot_id)
+        changed = task.status != TaskStatus.HELD
+        task.status = TaskStatus.HELD
+        if robot is not None and robot.status not in {RobotStatus.ESTOP, RobotStatus.ERROR}:
+            changed = changed or robot.status != RobotStatus.HOLD
+            robot.status = RobotStatus.HOLD
+            robot.updated_at = utc_now()
+        return changed
+
+
+def _expire_closed_loop_execution(
+    proposal: ActionProposal,
+    *,
+    result_timeout_seconds: float,
+) -> bool:
+    with store.lock:
+        record = store.proposal_acks.get(proposal.proposal_id)
+        if record is None:
+            return False
+        deadline = record.dispatched_at + timedelta(seconds=result_timeout_seconds)
+        if utc_now() <= deadline:
+            return False
+    report_action_result(
+        proposal.proposal_id,
+        AdapterResultReport(
+            status=AdapterResultStatus.FAILED,
+            reason_code=AdapterFailureCode.TIMEOUT,
+            detail=f"{result_timeout_seconds:g}초 안에 실행 결과를 받지 못했습니다.",
+        ),
+    )
+    return True
+
+
+def _internal_execution_request(proposal_id: str) -> Request:
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": f"/action-proposals/{proposal_id}/execute",
+            "headers": [],
+            "query_string": b"",
+            "server": ("closed-loop-executor", 0),
+            "client": None,
+            "scheme": "http",
+        }
+    )
+    request.state.auth_principal = None
+    return request
+
+
+def advance_closed_loop_task(
+    task_id: str,
+    config: ClosedLoopConfig,
+) -> bool:
+    """한 Task를 실행 대기 상태까지 진행하고 상태 변경 여부를 반환한다."""
+    changed = False
+    for _ in range(4):
+        with store.lock:
+            task = store.tasks.get(task_id)
+            if task is None or task.status in {TaskStatus.COMPLETED, TaskStatus.HELD}:
+                return changed
+            proposals = [
+                proposal
+                for proposal in store.proposals.values()
+                if proposal.task_id == task_id
+            ]
+            active = next(
+                (
+                    proposal.model_copy(deep=True)
+                    for proposal in reversed(proposals)
+                    if proposal.status in ACTIVE_PROPOSAL_STATUSES
+                ),
+                None,
+            )
+
+        if active is not None and active.status == ProposalStatus.EXECUTING:
+            if not _expire_closed_loop_execution(
+                active,
+                result_timeout_seconds=config.result_timeout_seconds,
+            ):
+                return changed
+            changed = True
+            continue
+
+        if active is not None and active.status == ProposalStatus.PROPOSED:
+            try:
+                evaluated = evaluate_action(active.proposal_id)
+            except HTTPException:
+                return changed
+            changed = True
+            if evaluated.status == ProposalStatus.REJECTED:
+                can_continue, policy_changed = _apply_closed_loop_failure_policy(
+                    task_id,
+                    config.max_attempts_per_step,
+                )
+                changed = changed or policy_changed
+                if not can_continue:
+                    return changed
+            continue
+
+        if active is not None and active.status == ProposalStatus.APPROVED:
+            request = _internal_execution_request(active.proposal_id)
+            try:
+                execute_action(active.proposal_id, request)
+            except StoreUnavailableError as exc:
+                if getattr(request.state, "estop_on_store_failure", False):
+                    with ESTOP_PUBLISH_LOCK:
+                        _publish_estop(True, f"Redis 실행 상태 커밋 실패: {exc}")
+                raise
+            except HTTPException:
+                return True
+            return True
+
+        if active is not None:
+            return changed
+
+        can_continue, policy_changed = _apply_closed_loop_failure_policy(
+            task_id,
+            config.max_attempts_per_step,
+        )
+        changed = changed or policy_changed
+        if not can_continue:
+            return changed
+
+        try:
+            generate_action_proposal(
+                task_id,
+                ProposalGenerationRequest(),
+                Response(),
+            )
+        except HTTPException as exc:
+            if exc.status_code in {404, 422}:
+                changed = _hold_task_after_planning_error(task_id) or changed
+            return changed
+        changed = True
+
+    return changed
+
+
+def run_closed_loop_cycle(config: ClosedLoopConfig) -> None:
+    with store.lock:
+        task_ids = [
+            task.task_id
+            for task in store.tasks.values()
+            if task.status
+            in {
+                TaskStatus.CREATED,
+                TaskStatus.PLANNING,
+                TaskStatus.RUNNING,
+                TaskStatus.FAILED,
+            }
+        ]
+    changed = False
+    for task_id in task_ids:
+        changed = advance_closed_loop_task(task_id, config) or changed
+    if changed:
+        state_broadcaster.publish()
 
 
 
@@ -1710,3 +2134,10 @@ def list_safety_rules() -> list[SafetyRule]:
 def list_execution_logs() -> list[ExecutionLog]:
     with store.lock:
         return list(store.logs)
+
+
+closed_loop_config = ClosedLoopConfig.from_environment()
+closed_loop_executor = ClosedLoopExecutor(
+    closed_loop_config,
+    lambda: run_closed_loop_cycle(closed_loop_config),
+)

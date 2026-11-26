@@ -69,7 +69,7 @@ class ArmAdapterNode(MockAdapterNode):
         )
 
     def _on_joint_states(self, msg: JointState):
-        self.core.update_joints(list(msg.position))
+        self.core.update_joints(list(msg.position), list(msg.velocity), list(msg.effort))
 
     def _on_grasp_state(self, msg: String):
         try:

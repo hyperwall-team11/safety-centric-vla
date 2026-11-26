@@ -407,11 +407,22 @@ class ActionPlannerApiTest(unittest.TestCase):
             },
         )
 
-    def test_requires_explicit_manipulation_for_object_task(self) -> None:
+    def test_accepts_navigation_step_for_object_transport_task(self) -> None:
+        task = self.create_task("robot-01 로봇으로 상자 3을 B 작업대로 옮겨")
+        response = self.client.post(
+            "/action-proposals",
+            json=self.external_move_proposal(task),
+        )
+
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["action_type"], "MOVE_TO")
+        self.assertEqual(response.json()["task_id"], task["task_id"])
+
+    def test_auto_plan_requires_registered_physical_object(self) -> None:
         task = self.create_task("robot-01 로봇으로 상자 3을 B 작업대로 옮겨")
         response = self.generate(task["task_id"])
-        self.assertEqual(response.status_code, 422, response.text)
-        self.assertIn("PICK 또는 PLACE", response.json()["detail"])
+        self.assertEqual(response.status_code, 404, response.text)
+        self.assertIn("PhysicalObject", response.json()["detail"])
         self.assertEqual(store.tasks[task["task_id"]].status, "CREATED")
         self.assertEqual(store.proposals, {})
 

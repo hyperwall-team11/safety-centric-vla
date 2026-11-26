@@ -32,7 +32,7 @@ from detectors import DETECTORS, WORKER_SCORE_THRESHOLD
 from florence_detect import percentile
 from camera_calib import frame_matches, load_calibration, normalize_camera, scene_calibration
 from hazard_reporter import (BackendClient, IntrusionTracker, build_hazard, keep_out_ring,
-                             observation_id, workers_in_zone)
+                             new_run_id, observation_id, workers_in_zone)
 from perception_feed import (FEED_INTERVAL_SECONDS, SEND_MAX_RETRIES, LatestSender, WorkerFusion,
                              parse_utc, sensor_payload, utc_now)
 
@@ -60,6 +60,31 @@ def fixed_cameras(topics, calibration_path=None, scene_path=DEFAULT_SCENE):
     if missing:
         raise SystemExit(f"No calibration for {', '.join(missing)}")
     return {topic: cameras[topic] for topic in topics}
+
+
+def write_detection_preview(path, image, record):
+    """실제로 검출한 원본 프레임 위에 같은 프레임의 검출 상자를 표시한다."""
+    from PIL import ImageDraw
+
+    preview = image.copy()
+    draw = ImageDraw.Draw(preview)
+    stamp = record["stamp"]
+    sim_time = stamp["sec"] + stamp["nanosec"] / 1e9
+    draw.rectangle((8, 8, 158, 29), fill="#10252c")
+    draw.text((14, 12), f"CCTV 02  T+{sim_time:07.2f}s", fill="white")
+    danger = (record.get("hazard") or {}).get("in_keep_out", False)
+    color = "#ff674d" if danger else "#63e7b5"
+    for person in record["people"]:
+        x, y, _, _ = person["bbox_xyxy"]
+        draw.rectangle(person["bbox_xyxy"], outline=color, width=3)
+        confidence = person["confidence"]
+        label = "WORKER" if confidence is None else f"WORKER {confidence:.0%}"
+        draw.text((x + 3, max(31, y - 15)), label, fill=color, stroke_width=2, stroke_fill="#10252c")
+    temp = path.with_suffix(".tmp")
+    preview.save(temp, format="JPEG", quality=85)
+    temp.replace(path)
+    if hazard_id := (record.get("hazard") or {}).get("hazard_id"):
+        path.with_name(f"{hazard_id}.jpg").write_bytes(path.read_bytes())
 
 
 class TopicStats:
@@ -101,6 +126,8 @@ class CameraDetector(Node):
         self.finished = False
         self.stop_reason = "interrupted"
         self.started = time.monotonic()
+        # 시뮬레이션 시각은 실행마다 0부터 다시 시작하므로 실행 ID로 관측 ID가 겹치지 않게 한다.
+        self.run_id = new_run_id()
         self.processing_ms = []
         self.queue_age_ms = []
         self.backend = getattr(args, "backend", None)
@@ -125,7 +152,7 @@ class CameraDetector(Node):
             self.create_timer(FEED_INTERVAL_SECONDS, self._publish_feed,
                               callback_group=MutuallyExclusiveCallbackGroup())
         self.get_logger().info(
-            f"Listening on {', '.join(args.topic)}; writing detections to {self.output}")
+            f"Listening on {', '.join(args.topic)}; writing detections to {self.output}; run_id={self.run_id}")
 
     def _check_stop(self, now):
         snapshots = [stats.frames.snapshot() for stats in self.topics]
@@ -181,10 +208,10 @@ class CameraDetector(Node):
         """Project people to the floor, track KEEP_OUT entries and open a HazardEvent once per entry."""
         camera = self.backend["cameras"][topic]
         positions, in_zone = workers_in_zone(people, width, height, camera, self.hazard["ring"])
-        ids = [observation_id(sensor_id, stamp.sec, stamp.nanosec, index)
+        ids = [observation_id(self.run_id, sensor_id, stamp.sec, stamp.nanosec, index)
                for index, point in enumerate(positions) if point["in_zone"]]
         trigger = self.tracker.update(sensor_id, in_zone, time.monotonic(), ids)
-        # observation_ids는 이 기록(sensor_id, stamp)과 같은 키로 만들어 HazardEvent에서 JSONL로 추적된다.
+        # observation_ids는 이 기록(run_id, sensor_id, stamp)과 같은 키로 만들어 HazardEvent에서 JSONL로 추적된다.
         result = {"ground_positions": positions, "in_keep_out": in_zone, "observation_ids": ids,
                   "hazard_id": None}
         if trigger is None:
@@ -249,6 +276,7 @@ class CameraDetector(Node):
             stamp = msg.header.stamp
             sensor_id = msg.header.frame_id.removeprefix("camera_")
             record = {
+                "run_id": self.run_id,
                 "topic": stats.topic,
                 "sensor_id": sensor_id,
                 "frame_id": msg.header.frame_id,
@@ -291,6 +319,8 @@ class CameraDetector(Node):
                                              self.backend["cameras"][stats.topic], None)[0])
                 self.fusion.update(stats.topic.strip("/").split("/")[0],
                                    parse_utc(frame.received_at_utc), positions)
+            if self.args.preview_jpeg is not None:
+                write_detection_preview(self.args.preview_jpeg, image, record)
             self.file.write(json.dumps(record, ensure_ascii=False) + "\n")
             for target in (stats, self):
                 target.processing_ms.append(processing_ms)
@@ -319,8 +349,10 @@ class CameraDetector(Node):
         firsts = [value for value in firsts if value is not None]
         elapsed = now - min(firsts) if firsts else 0.0
         summary = {
+            "run_id": self.run_id,
             "topics": [stats.topic for stats in self.topics], "detector": self.detector.name,
-            "model": self.args.model, "gpu": torch.cuda.get_device_name(0),
+            "model": self.args.model, "device": self.args.device,
+            "gpu": torch.cuda.get_device_name(0) if self.args.device == "cuda" else None,
             "stop_reason": self.stop_reason, "processed": self.processed,
             "received_callbacks": sum(t["received_callbacks"] for t in per_topic.values()),
             "replaced_pending": sum(t["replaced_pending"] for t in per_topic.values()),
@@ -354,6 +386,8 @@ def main():
     parser.add_argument("--topic", action="append",
                         help=f"camera image topic; repeat for several cameras (default {DEFAULT_TOPIC})")
     parser.add_argument("--detector", choices=sorted(DETECTORS), default="florence2")
+    parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
+    parser.add_argument("--preview-jpeg", type=Path, help="atomically replace a preview of the processed frame")
     parser.add_argument("--model", help="model id or local path (default depends on --detector)")
     parser.add_argument("--output", type=Path, default=Path("vlm_results/ros_camera.jsonl"))
     stop = parser.add_mutually_exclusive_group()
@@ -415,13 +449,19 @@ def main():
     if args.hazard_zone_id:
         args.hazard = {"client": client, "zone_id": args.hazard_zone_id, "robot_ids": args.robot_id,
                        "ring": keep_out_ring(client.zone(args.hazard_zone_id))}
-    if not torch.cuda.is_available():
+    if args.preview_jpeg is not None and len(args.topic) != 1:
+        parser.error("--preview-jpeg requires one camera topic")
+    if args.device == "cpu" and args.detector != "rtdetr":
+        parser.error("CPU mode is supported by RT-DETR")
+    if args.device == "cuda" and not torch.cuda.is_available():
         raise SystemExit("CUDA is unavailable. Run with ROS 2 and CUDA PyTorch in the same Python environment.")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     if args.save_misses_dir is not None:
         args.save_misses_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Loading {args.detector} {args.model} on {torch.cuda.get_device_name(0)}...", flush=True)
-    options = {"num_beams": args.num_beams} if args.detector == "florence2" else {}
+    if args.preview_jpeg is not None:
+        args.preview_jpeg.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Loading {args.detector} {args.model} on {args.device}...", flush=True)
+    options = {"num_beams": args.num_beams} if args.detector == "florence2" else {"device": args.device}
     detector = DETECTORS[args.detector](args.model, **options)
 
     rclpy.init()

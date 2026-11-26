@@ -171,7 +171,7 @@ class PlantAmrs:
     - ``step(dt)``: 차체·팔레트를 움직인다.
     """
 
-    def __init__(self, model, data, amrs=PLANT_AMRS, cmd_timeout=0.5):
+    def __init__(self, model, data, amrs=PLANT_AMRS, cmd_timeout=0.5, preloaded=False):
         self.model = model
         self.layout = {a.robot_id: a for a in amrs}
         self.mocap = {a.robot_id: model.body_mocapid[model.body(f"amr:{a.robot_id}").id] for a in amrs}
@@ -186,6 +186,11 @@ class PlantAmrs:
         self.cmd_age = {rid: math.inf for rid in self.mocap}
         self.cmd_timeout = cmd_timeout
         self.held: dict[str, str] = {}  # robot_id → pallet 이름
+        if preloaded:
+            for rid, layout in self.layout.items():
+                self.held[rid] = layout.pallet_id
+                self._carry(data, rid)
+            mujoco.mj_forward(model, data)
         self.transfer: dict[str, dict] = {}  # 진행 중인 싣기·내리기
         self.results: list[tuple[str, dict]] = []  # (robot_id, 결과)
 

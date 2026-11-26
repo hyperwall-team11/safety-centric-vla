@@ -4,7 +4,7 @@ import mujoco
 import numpy as np
 import pytest
 
-from scenario import CAMERAS, JOINT_STATE_NAMES, CameraRig, WorkerScript, camera_intrinsics, in_zone
+from scenario import CAMERAS, DEFAULT_CAMERAS, JOINT_STATE_NAMES, CameraRig, WorkerScript, camera_intrinsics, in_zone
 from simulation import DiffDriveSim
 
 
@@ -20,7 +20,7 @@ def box_pos(sim):
 def test_scene_has_cameras_and_joints(sim):
     m = sim.model
     names = {m.camera(i).name for i in range(m.ncam)}
-    assert {cam for cam, _, _ in CAMERAS.values()} <= names
+    assert {CAMERAS[sensor][0] for sensor in DEFAULT_CAMERAS} <= names
     joints = {m.joint(i).name for i in range(m.njnt)}
     assert set(JOINT_STATE_NAMES) <= joints
 

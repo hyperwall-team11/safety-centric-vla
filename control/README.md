@@ -17,8 +17,10 @@ ROS 2 제어 어댑터, 안전 경로(HOLD·E-Stop), MuJoCo 시뮬레이션 환�
 | #54 | MuJoCo ② 디지털 트윈 재구성: 온톨로지 상태(Robot·Worker 스냅샷·Zone)로 장면 생성, 정답 대비 위치 오차 | 완료 | `pixi run test` |
 | #53 | MuJoCo ② 사전 시뮬레이션 서비스 `POST /twin/simulate`: `MOVE_TO` 경로 접촉·안전거리·목표 도달 판정 (판정 수치는 #50 확정 전 잠정값) | 완료 | `pixi run test`, `pixi run twin-sim` |
 | #95 | 로봇 팔 공통 어댑터(UR5e·UR10e·iiwa14·Panda), 창고형 적재·포장 구역, `MANIPULATE` 사전 시뮬레이션 (요청 형식 잠정) | 완료 | `pixi run arms-demo`, `pixi run test` |
+| #97 | MuJoCo ② 작업자 이동 예측: Worker `velocity`로 등속 외삽, 예측 시간에 따라 여유 반경 확대 (요청 형식·수치 잠정, 예측 오차 평가 미구현) | 진행 중 | `pixi run test` |
 | #55 | Three.js CCTV 실시간 발행: 브리지 MuJoCo 상태 → Three.js 렌더 → `/cctv_{n}/image_raw`(stamp = 시뮬레이션 시각) | 완료 (카메라당 15Hz) | `pixi run bridge-threejs` + `pixi run cctv-threejs` |
 | AMR | 이동형 운반 로봇(AMR) 2대: 창고 ↔ TIAGo 작업 셀 팔레트 운반, `MOVE_TO`·`MANIPULATE`(싣기·내리기) 어댑터, 사전 시뮬레이션 차체 크기에 실린 팔레트 반영 | 완료 | `pixi run amr-demo`, `pixi run test` |
+| #96 | 관절 토크·속도 보고: 브리지 `/joint_states`에 `effort` 채움, 팔 어댑터 상태 `joints`에 `velocities`·`efforts` 추가 (관측용. 한계 검사·초과 시 HOLD는 #51 결정 후) | 진행 중 | `pixi run test` |
 
 다음 단계는 Backend와 TIAGo 어댑터를 함께 띄운 통합 시나리오 자동화입니다.
 
@@ -78,6 +80,8 @@ pixi install                 # 최초 1회, 약 1GB
 macOS에서는 같은 Mac 안의 노드끼리도 서로 못 찾는 문제가 있어 `ROS_LOCALHOST_ONLY=1`을 자동으로 설정합니다. 다른 컴퓨터의 노드와 통신하려면 이 값을 해제해야 합니다.
 
 ## 실행
+
+최종 발표용 적재 AMR과 실시간 CCTV를 함께 실행하려면 [물류창고 시연 안내](../docs/warehouse-presentation.md)의 `pixi run warehouse-demo` 절차를 따릅니다. 창고 화면은 고정 CCTV 5대와 AMR 전방 카메라를 사용합니다. CCTV 02는 자동 정지에 쓰는 작업자 감지 입력이고, CCTV 04는 후방 통로의 낙상자 점검 입력입니다. 지게차와 견인형 AGV의 운행 정지·재개, 정지 중 포크 승강은 시연용 ROS 2 인터페이스로 조작할 수 있습니다.
 
 | 명령 | 내용 |
 |---|---|
@@ -211,7 +215,7 @@ pixi run amr-cycle-demo         # 터미널 4: 순환 데모 (검증 서버 대�
 |---|---|---|---|
 | `/cmd_vel` | 외부 → 브리지 | 기본 | `geometry_msgs/Twist` (linear.x m/s, angular.z rad/s) |
 | `/odom` | 브리지 → 외부 | 기본, 50Hz | `nav_msgs/Odometry` (`odom` → `base_link`, TF 함께 발행) |
-| `/joint_states` | 브리지 → 외부 | 기본, 50Hz | `sensor_msgs/JointState`: 팔 7, 몸통, 머리 2, 그리퍼 2, 바퀴 2 (위치·속도) |
+| `/joint_states` | 브리지 → 외부 | 기본, 50Hz | `sensor_msgs/JointState`: 팔 7, 몸통, 머리 2, 그리퍼 2, 바퀴 2 (위치·속도·힘/토크. `effort`는 액추에이터가 관절에 가한 힘 또는 토크로, 직선 관절은 N, 회전 관절은 N·m이며 액추에이터가 없는 관절은 0) |
 | `/cctv_1/image_raw`, `/cctv_2/image_raw` | 브리지 → 외부 | sensor data, 15Hz | `sensor_msgs/Image` rgb8 640×480, frame_id `camera_cctv_1`·`camera_cctv_2`. `cctv_renderer:=threejs`이면 Three.js 렌더 영상, stamp는 시뮬레이션 시각 |
 | `/robot/head_camera/image_raw` | 브리지 → 외부 | sensor data, 15Hz | 로봇 머리 카메라, frame_id `camera_head_camera` |
 | `.../camera_info` | 브리지 → 외부 | sensor data, 15Hz | 각 카메라의 `CameraInfo` (fovy로 계산한 K·P, 왜곡 없음) |
@@ -297,7 +301,7 @@ python mujoco/twin_simulate.py --request req.json          # 서버 없이 요�
 ```
 
 - 지원 범위: `MOVE_TO`와 `MANIPULATE`(#95, 아래 "로봇 팔")를 받습니다. 다른 `action_type`은 `ERROR`입니다.
-- 동작: 로봇을 현재 위치에서 `target_pose`까지 `speed_limit` 이하로, 실제 어댑터(`diff_drive_core`)와 같은 차동 구동 제어기(방향 오차 5° 초과 시 제자리 회전, 이내면 방향을 보정하며 전진, 도착 직전 감속. 실제 궤적은 직선에서 0.05 m 이내)로 굴리며 0.01 s마다 MuJoCo 접촉을 검사합니다. 작업자는 스냅샷 위치에 멈춰 있다고 가정합니다(이동 예측 없음).
+- 동작: 로봇을 현재 위치에서 `target_pose`까지 `speed_limit` 이하로, 실제 어댑터(`diff_drive_core`)와 같은 차동 구동 제어기(방향 오차 5° 초과 시 제자리 회전, 이내면 방향을 보정하며 전진, 도착 직전 감속. 실제 궤적은 직선에서 0.05 m 이내)로 굴리며 0.01 s마다 MuJoCo 접촉을 검사합니다. 작업자는 `velocity`가 없으면 스냅샷 위치에 멈춰 있다고 가정하고, 있으면 아래 "작업자 이동 예측"대로 움직입니다.
 - 실행 경로 계약: 사전 시뮬레이션은 CTL 어댑터가 실제로 낼 경로를 **같은 제어기로 적분해** 검증합니다(`twin_simulate.py`의 `DD_*` 상수는 `diff_drive_core`와 같아야 하며 테스트가 확인합니다). 경유점·회피 경로를 실행하는 어댑터는 실행 예정 궤적을 요청에 넣어 검증하도록 계약을 먼저 확장해야 합니다.
 - `target_pose.position`의 z는 바닥 평면 이동만 지원하므로 `|z| <= PLANAR_Z_TOLERANCE_M`(0.05 m)여야 하며, 벗어나면 `ERROR`입니다.
 - `result` 우선순위: `COLLISION`(이동하는 로봇이 여유 반경 포함 작업자 캡슐이나 다른 로봇과 접촉) → `UNSAFE_DISTANCE`(몸 표면 사이 거리가 `UNSAFE_DISTANCE_M` 미만) → `GOAL_NOT_REACHED`(최대 구간 안에 목표 0.05 m 이내 미도달) → `PASS`.
@@ -310,11 +314,21 @@ python mujoco/twin_simulate.py --request req.json          # 서버 없이 요�
 | `SNAPSHOT_MAX_AGE_S` | 2.0 s | 스키마 v1.1 Sensor `last_frame_at` 2초 무수신 → `DEGRADED` |
 | `UNSAFE_DISTANCE_M` | 0.6 m | 스키마 v1.1 Zone `estop_distance` 기본값 |
 | `MAX_HORIZON_S` | 30 s | 시연 장면 크기 기준 |
+| `WORKER_MAX_SPEED_MPS` | 2.0 m/s | 빠른 걸음(약 1.5 m/s) 이상은 측정 오류로 보고 `ERROR` |
+| `WORKER_MARGIN_GROWTH_MPS` | 0.10 m/s | 등속 예측 오차: 예측 1초마다 여유 반경 증가 |
+| `WORKER_MARGIN_MAX_M` | 1.0 m | 커진 여유 반경 상한(CV 여유 반경 포함) |
 
 위 값은 #50(ONT 판정 기준·시간 제한)이 확정되기 전의 **잠정값**입니다. 확정되면 상수를 바꿉니다. 요청 시간 제한과 시간 초과 처리는 Backend가 합니다(계약 13.2).
 
-한계: 로봇 원기둥과 정지한 작업자로 만든 단순화 모델의 검사입니다. 결과를 안전 보장으로 해석하지 않고, Safety Gate의 `SAFETY_DISTANCE` 판정을 대신하지 않습니다. Backend 호출·`snapshot_id` 계산·`ExecutionLog` 기록은 Backend 작업입니다.
-- 미구현: Backend에 Worker 조회 API(`GET /workers/snapshot`)가 없어 `--backend` 모드에서는 Worker 스냅샷을 파일로 넘깁니다. 작업자 이동 예측은 아직 없습니다. 상자·작업대 같은 물체는 `state.objects`(#95)로 넣습니다.
+**작업자 이동 예측 (#97, 잠정)**: `state.workers.items[]`에 선택 필드 `velocity: [vx, vy, vz]`(m/s, `world`)가 있으면 작업자가 `observed_at`부터 등속으로 움직인다고 보고, 시뮬레이션 시각마다 작업자 위치를 옮깁니다(`MOVE_TO`·`MANIPULATE` 모두).
+
+- 예측 시간 τ = (`snapshot_at` − `observed_at`) + 시뮬레이션 시각. 관측 뒤 흐른 시간만큼 이미 이동한 위치에서 시작합니다.
+- 등속 외삽은 방향 전환·정지를 모르므로 여유 반경을 `0.20 + 0.10·τ` m(상한 1.0 m)로 키웁니다. 접촉(`COLLISION`)에는 커진 반경을, `min_worker_distance_m`·`UNSAFE_DISTANCE`에는 예측 위치의 몸 표면 거리를 씁니다.
+- `velocity`가 없는 작업자는 지금처럼 정지·고정 여유 반경입니다(하위 호환). 평면 속도가 2.0 m/s를 넘거나, `vz`가 0이 아니거나, 성분이 3개가 아니거나 유한하지 않으면 `ERROR`입니다.
+- 속도 출처(CV가 보고 vs Backend가 스냅샷 연속값으로 추정)는 CV·ONT 협의 대상이며, 계약 13.1절 반영은 Backend·ONT 승인이 필요합니다. MuJoCo ① 정답 경로로 예측 오차를 재는 평가는 아직 없습니다.
+
+한계: 로봇 원기둥과 등속 또는 정지한 작업자로 만든 단순화 모델의 검사입니다. 결과를 안전 보장으로 해석하지 않고, Safety Gate의 `SAFETY_DISTANCE` 판정을 대신하지 않습니다. Backend 호출·`snapshot_id` 계산·`ExecutionLog` 기록은 Backend 작업입니다.
+- 미구현: Backend에 Worker 조회 API(`GET /workers/snapshot`)가 없어 `--backend` 모드에서는 Worker 스냅샷을 파일로 넘깁니다. 작업자 속도를 보고하는 경로(CV 또는 Backend)는 아직 없습니다. 상자·작업대 같은 물체는 `state.objects`(#95)로 넣습니다.
 
 ## 로봇 팔 (#95)
 
@@ -353,8 +367,8 @@ pixi run arm-cycle-demo   # 데모: 4대가 상자를 계속 옮김 (검증 서�
 | `/<seg>/arm/joint_command` | 어댑터 → 브리지 | `sensor_msgs/JointState` 위치 목표 |
 | `/<seg>/arm/gripper` | 어댑터 → 브리지 | `std_msgs/Bool` (닫힘) |
 | `/<seg>/arm/grasp_state` | 브리지 → 어댑터 | `std_msgs/String` JSON `{closed, held}`. 그리퍼 명령마다 실제로 잡은 물체 이름(`held`, 못 잡으면 `null`)을 알린다. 어댑터는 이 결과로 파지 성공을 확정하고, 실패하거나 1초 안에 오지 않으면 `HW_ERROR`로 끝낸다 |
-| `/<seg>/joint_states` | 브리지 → 어댑터 | `sensor_msgs/JointState` 실제 관절각 |
-| `/adapter/<seg>/state` | 어댑터 → 검증 서버 | 기존 상태에 `robot_model`, `joints`, `tcp_position`, `gripper_closed`, `holding_object_id` 추가 |
+| `/<seg>/joint_states` | 브리지 → 어댑터 | `sensor_msgs/JointState` 실제 관절각·속도·토크(`effort`, N·m) |
+| `/adapter/<seg>/state` | 어댑터 → 검증 서버 | 기존 상태에 `robot_model`, `joints`, `tcp_position`, `gripper_closed`, `holding_object_id` 추가. `joints`는 `names`, `positions`(rad), `velocities`(rad/s), `efforts`(N·m, #96). 속도·토크를 못 받았거나 개수가 맞지 않으면 `null` |
 
 **`MANIPULATE` 사전 시뮬레이션 (잠정)**: 제어 계약 13.1절은 대상 물체와 관절 초기 상태 형식을 정하지 않았습니다. 아래 형식은 CTL이 제안하는 **잠정 형식**이며 Backend·ONT 승인 후 계약에 넣습니다.
 
@@ -374,6 +388,7 @@ pixi run arm-cycle-demo   # 데모: 4대가 상자를 계속 옮김 (검증 서�
 }
 ```
 
+- `joint_positions`를 보내면 모델의 관절 순서에 맞는 유한한 값이어야 합니다. 관절 한계를 벗어난 초기 상태는 `ERROR`로 처리합니다.
 - `parameters`는 계약 4.3절 `MANIPULATE`와 같습니다(`manipulation`, `object_id`, `target_pose`).
 - `robots[].robot_model`: `ARM_MODELS` 키. 이 값이 있는 로봇은 원기둥 대신 실제 팔 모델로 붙입니다. `position`은 베이스(받침대 윗면) 위치입니다.
 - `joint_positions`: 생략하거나 `null`이면 모델의 `home` 자세. `holding_object_id`: 들고 있는 물체(`PLACE`에 필요).
