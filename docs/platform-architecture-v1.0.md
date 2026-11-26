@@ -305,7 +305,7 @@ VLA가 생성한 행동을 즉시 실행하지 않고, 온톨로지 규칙과 Mu
 3. CV가 작업자 탐지 및 위치 추정
 4. CV가 금지구역 침입 HazardEvent 등록
 5. 실행 중인 관련 로봇에 대해 Backend가 ROS E-Stop을 발행한다.
-6. ROS 2 제어 노드를 통해 가상 로봇 정지 (미구현, 현재는 이후 평가와 실행 직전 재검증만 차단)
+6. ROS 2 어댑터가 E-Stop을 수신해 가상 로봇을 정지시키고, Backend에 상태 이벤트를 보낸다.
 
 **검증 목표:** 위험 탐지부터 로봇 정지까지의 전체 안전 개입
 
@@ -332,7 +332,7 @@ VLA가 생성한 행동을 즉시 실행하지 않고, 온톨로지 규칙과 Mu
 | 공간 변환 | Camera Calibration, Geometry | 이미지 좌표 → 월드 좌표 |
 | 온톨로지 | FastAPI, Object/Link/Action | 현장 상태 관리 및 안전 검증 |
 | 로봇 제어 | ROS 2 | 행동 실행 및 안전 정지 |
-| 통신 | ROS 2 Topics, REST, WebSocket(예정, `/ws/state` 미구현) | 상태 및 이벤트 전달 |
+| 통신 | ROS 2 Topics, REST, WebSocket(`/ws/state` 전체 상태 스냅샷) | 상태 및 이벤트 전달 |
 
 ### 8.2. 팀별 역할
 
@@ -389,22 +389,20 @@ CV가 CCTV 영상 속 작업자를 인식해 온톨로지 현장 상태에 반�
 
 ---
 
-## 11. 구현 상태 (2026-11-06 기준)
+## 11. 구현 상태 (2026-11-26 기준)
 
 | 기능 | 상태 | 비고 |
 |---|---|---|
-| CV CCTV 2대 탐지·결합, 바닥 좌표 투영 | 구현 | PR #36 병합 |
-| CV → 금지구역 HazardEvent 등록 | 구현, 리뷰 중 | PR #41. CTL 승인, ONT 의견 반영(`9a6a68e`) |
-| CV → Sensor 상태·Worker 스냅샷 전송 | 구현, PR 예정 | `feat/cv-perception-feed` |
-| Safety Gate 규칙 5종, 실행 직전 재검증, ExecutionLog | 구현 | 관측 규칙은 `BACKEND_PERCEPTION_SAFETY_ENABLED=1`일 때 적용 |
-| 승인 명령 ROS 2 전달, ACK·RESULT, 중복 실행 방지 | 구현 | PR #30 |
-| 운영자 웹 콘솔 | 구현 | PR #31 |
-| 사람 형태 작업자 모델 (MuJoCo skin) | 구현, 리뷰 중 | PR #43. 걷기 자세 계산·MPFB 에셋은 Three.js에서 재사용 |
-| Three.js 실사 CCTV 영상 | 구현, 리뷰 중 | PR #45. 오프라인 PNG·마스크·정답 출력, Cycles 실사 렌더, 실시간 재생. ROS 2 토픽 발행은 #55 |
-| MuJoCo ② 트윈 재구성·사전 시뮬레이션 | 계획 | 새 규칙 종류는 스키마 반영 필요 |
-| HazardEvent 등록 시 실행 중인 로봇 즉시 정지 | 구현, 리뷰 중 | PR #66. `CRITICAL` 위험이 실행 중 로봇과 연결되면 Backend가 `/safety/estop` 발행 |
-| 토크·관절 속도 검사 | 미결 | ONT와 기준 협의 |
-| Scenario 3 (여러 현장 구성) | 계획 | |
+| CCTV 작업자 탐지·바닥 좌표 투영 | 구현 | CCTV 02 RT-DETR 검출과 Worker·Sensor 갱신 |
+| 작업자 침입 위험 등록과 자동 정지 | 구현 | 관련 OPEN·CRITICAL 위험에 대응해 Backend가 ROS `/safety/estop` 발행 |
+| 안전 규칙·실행 직전 재검증·감사 기록 | 구현 | 관측 규칙 및 트윈 사전 시뮬레이션은 Backend 실행 옵션으로 활성화 |
+| 승인 명령 ROS 2 전달과 ACK·RESULT | 구현 | 로봇 어댑터의 결과를 Backend 상태와 이력에 반영 |
+| 운영자 콘솔 및 상태 구독 | 구현 | `/ws/state` 전체 스냅샷 |
+| MuJoCo ② 사전 시뮬레이션 | 구현 | MOVE_TO와 제한된 MANIPULATE를 검사 |
+| 최종 발표용 가상 창고 | 구현 | 고정 CCTV 5대와 AMR CAM, 적재 AMR 3대, 지게차와 견인형 AGV |
+| CCTV 04 낙상자 점검 | 구현 | Florence-2 검출로 후방 통로 `UNKNOWN / WARNING` 경고 등록 |
+| 정지 후 승인된 재개 | 창고 시연 미연동 | 운영자 위험 해제 후 AMR의 재개와 도착은 별도 과제 |
+| 토크·관절 속도 한계 적용 | 미결 | 어댑터 관측 보고와 승인 기준을 구분 |
 
 ---
 
