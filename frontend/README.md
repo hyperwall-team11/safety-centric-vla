@@ -15,6 +15,11 @@ CCTV 영상은 `control`에서 `pixi run bridge`와 `pixi run cctv-stream`을 �
 
 Backend 주소가 다르면 `VITE_BACKEND_URL=http://host:8000 npm run dev`. Backend에 CORS 설정이 없어 개발 서버 프록시(`/api`)로 호출합니다.
 
+
+## 발표용 창고 화면
+
+운영 콘솔은 위 개발 서버에서 실행합니다. 창고 발표는 `control`에서 `pixi run warehouse-demo`를 실행해 `http://127.0.0.1:5181`을 엽니다. 발표 화면은 CCTV 5대와 AMR 전방 카메라 확대, 자연어 운반 지시, 정지 기록, CCTV 04 낙상자 점검을 제공합니다. [발표 화면 실행 안내](../docs/warehouse-presentation.md)
+
 ## 화면과 사용자 흐름
 
 | 경로 | 화면 | 흐름 | 사용 API |
