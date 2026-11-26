@@ -87,9 +87,9 @@ OpenVLA 운동 출력만으로 PICK/PLACE 완료를 추측하지 않습니다. C
 
 ### 종료 코드
 
-- `0`: Task가 완료·HELD·FAILED 종료 상태이거나, 관측으로 현재 조작 단계 완료
+- `0`: Task가 `COMPLETED`이거나, 관측으로 현재 조작 단계 완료
 - `1`: Backend·프레임·완료 신호 오류
-- `2`: 안전 거절, 제어 실패, 또는 `--max-steps` 도달
+- `2`: Task `HELD`/`FAILED`, 안전 거절, 제어 실패, 또는 `--max-steps` 도달
 - `130`: 사용자 중단
 
 ## 테스트

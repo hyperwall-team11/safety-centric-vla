@@ -73,7 +73,11 @@ def main() -> None:
         "task_status": result.task_status,
         "proposal_id": result.proposal_id,
     }, ensure_ascii=False))
-    successful = result.reason in {StopReason.PHASE_COMPLETE, StopReason.TASK_TERMINAL}
+    successful = (
+        result.reason == StopReason.PHASE_COMPLETE
+        or result.reason == StopReason.TASK_TERMINAL
+        and result.task_status == "COMPLETED"
+    )
     raise SystemExit(0 if successful else 2)
 
 

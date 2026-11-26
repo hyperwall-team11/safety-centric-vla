@@ -64,6 +64,37 @@ def test_cli_returns_nonzero_for_step_limit(monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out)["reason"] == "STEP_LIMIT"
 
 
+@pytest.mark.parametrize("task_status", ["HELD", "FAILED"])
+def test_cli_returns_nonzero_for_unsafe_terminal_task(
+    monkeypatch, capsys, task_status
+):
+    install_fakes(
+        monkeypatch,
+        RunResult(StopReason.TASK_TERMINAL, 1, task_status, "p1"),
+    )
+    monkeypatch.setattr(sys, "argv", arguments())
+
+    with pytest.raises(SystemExit) as stopped:
+        cli.main()
+
+    assert stopped.value.code == 2
+    assert json.loads(capsys.readouterr().out)["task_status"] == task_status
+
+
+def test_cli_returns_zero_for_completed_task(monkeypatch, capsys):
+    install_fakes(
+        monkeypatch,
+        RunResult(StopReason.TASK_TERMINAL, 2, "COMPLETED", "p2"),
+    )
+    monkeypatch.setattr(sys, "argv", arguments())
+
+    with pytest.raises(SystemExit) as stopped:
+        cli.main()
+
+    assert stopped.value.code == 0
+    assert json.loads(capsys.readouterr().out)["task_status"] == "COMPLETED"
+
+
 def test_cli_normalizes_backend_failure(monkeypatch, capsys):
     install_fakes(monkeypatch, failure=BackendApiError("backend unavailable"))
     monkeypatch.setattr(sys, "argv", arguments())
