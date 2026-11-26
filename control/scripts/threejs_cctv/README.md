@@ -1,5 +1,7 @@
 # Three.js 가상 CCTV 오프라인 영상
 
+실시간 발표용 창고는 고정 CCTV 01~05와 AMR 전방 카메라를 사용합니다. CCTV 04는 낙상자 VLM 점검에 원본 시각이 포함된 스냅샷을 제공합니다. 실행은 [창고 시연 안내](../../../docs/warehouse-presentation.md)를 참조합니다.
+
 MuJoCo ① 공장 장면(`mujoco/models/plant_scene.xml`)을 Three.js로 렌더해 CV 오프라인 시험용 CCTV 영상을 만든다.
 
 - **MuJoCo**: 위치·충돌·가림의 기준. 로봇 셀(TIAGo, 금지구역, A·B 작업대)은 `scenario_scene.xml`과 같고, 주변 설비는 단순 형상 `prop_<종류>`로 둔다.

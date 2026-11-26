@@ -2,6 +2,19 @@
 
 금속 랙 사이의 자재 공급 구역에서 `amr-01`이 부품 상자와 팔레트를 싣고 출발합니다. 검사 스테이션까지의 8 m 운반 통로에서 AMR의 x 좌표가 −2.4 m를 지나면 작업자가 선반 사이에서 나와 한 번 횡단합니다. CCTV 02에서 나온 실제 RGB 프레임을 RT-DETR에 입력하고, 검출한 작업자의 발 위치를 고정 카메라 보정값으로 바닥에 투영합니다. 두 연속 프레임에서 보행자 진입부를 관측하면 기존 CV 경로로 위험 이벤트를 등록합니다. 보행자 진입부 감시 영역은 AMR 차선 중심에 접근하기 전의 횡단 구역입니다. 기존 경로의 금지구역 판정과 검출 신뢰도 기준을 적용합니다.
 
+## 현재 시연 구성
+
+| 영상 | 발표할 내용 |
+|---|---|
+| CCTV 01 · 운반 통로 | 적재 AMR 출발과 자동 정지 위치 |
+| CCTV 02 · 작업자 횡단 구역 | RT-DETR 작업자 검출과 E-Stop을 일으킨 횡단 |
+| CCTV 03 · 출하 도크 | 대기 AMR과 무인 지게차의 팔레트 운반 |
+| CCTV 04 · 후방 보관 구역 | 랙 사이에 쏟아진 상자와 후방 작업 통로의 낙상자 점검 |
+| CCTV 05 · 부품 공급 구역 | 견인형 AGV와 카트 3대의 공급대 정차·이송 |
+| AMR CAM · 로봇 전방 | 운반 통로와 정지 지점의 로봇 시야 |
+
+약 23 × 20 m 창고에 작업자 네 명과 적재 AMR 세 대를 배치했습니다. 지게차와 견인차는 별도 구역에서 지정 경로를 따라 운행합니다.
+
 ## 처음 한 번 준비
 
 ROS 2와 MuJoCo는 `control/pixi.toml`의 기존 환경을 사용합니다. Node.js, `uv`, Chromium 및 Three.js 에셋이 필요합니다. 창고는 기존 작업자 에셋과 적재 AMR 제어 코드를 사용하므로 로봇 팔 모델 4종의 별도 다운로드는 필요하지 않습니다.
@@ -12,7 +25,7 @@ ROS 2와 MuJoCo는 `control/pixi.toml`의 기존 환경을 사용합니다. Node
 cd control
 pixi install --frozen
 uv pip install --python "$PWD/.pixi/envs/default/bin/python" \
-  --target "$PWD/outputs/warehouse-deps" -r ../backend/requirements.txt torch 'transformers<5'
+  --target "$PWD/outputs/warehouse-deps" -r ../backend/requirements.txt torch 'transformers>=4.57,<5'
 cd scripts/threejs_cctv
 npm ci
 pixi run --manifest-path ../../pixi.toml python fetch_assets.py
