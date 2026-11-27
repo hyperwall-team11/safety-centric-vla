@@ -188,6 +188,21 @@ python offline_eval.py --render-dir <렌더 폴더> --replay-frames eval/rtdetr/
 - `--detector truth`로 `hit_when_inside`가 1.0에 가깝지 않으면 카메라 정보나 구역 좌표가 어긋난 것이니 모델 측정 전에 확인합니다. 가림으로 발이 안 보이면 정답 상자로도 위치 오차가 생깁니다.
 - 미구현: ROS 토픽 실시간 입력. 이 스크립트는 저장된 PNG만 처리하므로 처리율은 카메라 수신·전송 지연을 포함하지 않습니다.
 
+## VLM 장면 분석과 낙상 의심 표시 (초안)
+
+실시간 감시는 RT-DETR이 계속 맡고, VLM은 사건이 났을 때처럼 고른 프레임만 분석합니다. 캡션 생성이 느려 모든 프레임에 쓰지 않습니다. `scene_analysis.py`는 프레임마다 Florence-2 캡션(`<MORE_DETAILED_CAPTION>`)과 RT-DETR 작업자 상자를 구하고, 낙상 단서 두 가지를 따로 기록합니다.
+
+```bash
+python scene_analysis.py frame_a.png frame_b.png --output vlm_results/scene_analysis.jsonl
+```
+
+- `caption_terms`: 캡션에서 찾은 낙상 표현(예: `lying on the floor`, `collapsed`). 부정문("쓰러진 사람 없음")은 구분하지 못합니다.
+- `lying_boxes`: 가로가 세로의 1.2배 이상인 작업자 상자의 순번. 서 있는 사람의 상자는 세로가 깁니다.
+- `fall_suspected`: 두 단서 중 하나라도 있으면 `true`입니다. 놓치는 쪽이 오경보보다 위험하다고 보고 정했습니다.
+- 기록에는 `analysis_id`, `run_id`, `hazard_id`, `sensor_id`, 캡션 원문, 생성 시간(`generation_ms`)이 함께 남습니다.
+
+아직 검증하지 않은 초안입니다. 낙상 영상이 없어 두 단서의 정확도, 1.2 비율, 누운 사람을 RT-DETR이 사람으로 탐지하는지는 확인하지 못했습니다. GPU에서 실행해 본 적도 없습니다. 결과는 검토용 근거이며 승인된 HazardEvent가 아닙니다. ROS 노드와 백엔드 연결(분석 요청·결과 전달)은 팀에서 형식을 정한 뒤 추가합니다. 낙상은 스키마 v1.1의 `hazard_type`에 없어 ONT 승인이 필요합니다.
+
 ## 연속 추론 속도 측정 (CV-03)
 
 GPU 할당을 받은 터미널에서 아래처럼 실행하면 모델 로드와 워밍업 3회를 제외하고 두 정지 이미지를 순서대로 **60초 이상 반복 추론**합니다. 출력은 `vlm_results/benchmark.json`에 저장됩니다.
