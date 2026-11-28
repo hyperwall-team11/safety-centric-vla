@@ -1,5 +1,6 @@
 import type {
-  ActionProposal, ExecutionLog, HazardEvent, Robot, TaskOrder, TaskOrderPreview, WorkerSnapshot, Zone,
+  ActionProposal, ExecutionLog, HazardEvent, Robot, SafetyEstopStatus, TaskOrder, TaskOrderPreview,
+  WorkerSnapshot, Zone,
 } from "./types";
 
 // 개발 서버는 /api를 Backend로 프록시한다(vite.config.ts).
@@ -56,6 +57,7 @@ export const api = {
   task: (taskId: string) => request<TaskOrder>(`/task-orders/${taskId}`),
   taskProposals: (taskId: string) => request<ActionProposal[]>(`/task-orders/${taskId}/action-proposals`),
   executionLogs: () => request<ExecutionLog[]>("/execution-logs"),
+  estopStatus: () => request<SafetyEstopStatus>("/safety/estop"),
 
   // #75로 추가되는 조회 API. 없는 Backend에서는 "API 대기"로 표시한다.
   hazards: () => request<HazardEvent[]>("/hazards"),
@@ -72,4 +74,6 @@ export const api = {
   evaluate: (proposalId: string) => post<ActionProposal>(`/action-proposals/${proposalId}/evaluate`),
   execute: (proposalId: string) => post<ActionProposal>(`/action-proposals/${proposalId}/execute`),
   resolveHazard: (hazardId: string) => post<HazardEvent>(`/hazards/${hazardId}/resolve`, { resolved_by: "OPERATOR" }),
+  triggerEstop: (reason: string) => post<SafetyEstopStatus>("/safety/estop", { reason }),
+  releaseEstop: () => post<SafetyEstopStatus>("/safety/estop/release"),
 };
