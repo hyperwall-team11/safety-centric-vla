@@ -170,7 +170,7 @@ def compute_snapshot_id(
         "hazards": sorted(
             (h.model_dump(mode="json", include={
                 "hazard_id", "hazard_type", "severity", "status", "zone_id", "related_robot_ids",
-            }) for h in hazards if h.status == HazardStatus.OPEN),
+            }) for h in hazards if h.status != HazardStatus.RESOLVED),
             key=lambda item: item["hazard_id"],
         ),
         "zones": sorted((z.model_dump(mode="json") for z in zones), key=lambda item: item["zone_id"]),

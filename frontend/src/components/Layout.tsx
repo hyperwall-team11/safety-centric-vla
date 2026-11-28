@@ -4,6 +4,7 @@ import { api } from "../api/client";
 import { usePolling } from "../hooks/usePolling";
 import { useStateStream } from "../hooks/useStateStream";
 import { CriticalBanner } from "./CriticalBanner";
+import { AuthControl } from "./AuthControl";
 
 const MENU = [
   { to: "/", label: "대시보드", end: true },
@@ -30,10 +31,13 @@ export function Layout() {
         <nav className="topnav" aria-label="주요 메뉴">
           {MENU.map((m) => <NavLink key={m.to} to={m.to} end={m.end}>{m.label}</NavLink>)}
         </nav>
-        <div className="system-state" data-state={health.error ? "down" : health.data ? "up" : "pending"}>
-          <span className="system-dot" />
-          <span>{health.error ? "연결 안 됨" : health.data ? "현장 정상 운영" : "확인 중"}</span>
-          {health.data && !health.error && <span className="sync-mode">{stream.connected ? "실시간" : "주기 조회"}</span>}
+        <div className="topbar-state">
+          <AuthControl />
+          <div className="system-state" data-state={health.error ? "down" : health.data ? "up" : "pending"}>
+            <span className="system-dot" />
+            <span>{health.error ? "연결 안 됨" : health.data ? "현장 정상 운영" : "확인 중"}</span>
+            {health.data && !health.error && <span className="sync-mode">{stream.connected ? "실시간" : "주기 조회"}</span>}
+          </div>
         </div>
       </header>
       <main className="content">

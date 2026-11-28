@@ -1,8 +1,8 @@
 """Turn CCTV worker detections inside a KEEP_OUT Zone into backend HazardEvents, without ROS.
 
 Team decision (2026-11-05): a worker seen inside the KEEP_OUT Zone by any one camera is a
-CRITICAL WORKER_INTRUSION. CRITICAL events cannot be cleared by sensors (schema v1.1 §HazardEvent),
-so an operator resolves them; this module only opens events.
+CRITICAL WORKER_INTRUSION. After every configured camera observes the zone clear for two seconds,
+the module submits clearance evidence. The event still requires an operator to resolve it.
 """
 
 import json
@@ -132,6 +132,7 @@ class IntrusionTracker:
         self.last_seen = None
         self.hazard_id = None
         self.trigger = None
+        self.pending_clearance = None
 
     def _entry_over(self, now):
         observed_since = all(self.last_frame.get(s, float("-inf")) > self.last_seen
@@ -154,6 +155,14 @@ class IntrusionTracker:
             self.streaks[sensor_id] = 0
             self.observations[sensor_id] = []
             if self.active and self.reported and self._entry_over(now):
+                self.pending_clearance = {
+                    "hazard_id": self.hazard_id,
+                    "observed_at": (
+                        detected_at or datetime.now(timezone.utc)
+                    ).isoformat(),
+                    "source_sensor_ids": sorted(self.sensor_ids | set(self.last_frame)),
+                    "clear_duration_seconds": self.clear_seconds,
+                }
                 self.active = self.reported = False
                 self.hazard_id = self.trigger = None
         if in_zone and self.streaks[sensor_id] >= self.required and not self.active:
@@ -169,6 +178,12 @@ class IntrusionTracker:
 
     def mark_reported(self):
         self.reported = True
+
+    def clearance(self):
+        return None if self.pending_clearance is None else dict(self.pending_clearance)
+
+    def mark_clearance_reported(self):
+        self.pending_clearance = None
 
 
 def build_hazard(zone_id, robot_ids, trigger, detected_at=None):
@@ -192,14 +207,17 @@ class BackendHTTPError(RuntimeError):
 
 
 class BackendClient:
-    def __init__(self, base_url, timeout=2.0):
+    def __init__(self, base_url, timeout=2.0, token=None):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.token = token
 
     def _call(self, method, path, body=None):
         data = None if body is None else json.dumps(body).encode("utf-8")
-        req = request.Request(self.base_url + path, data=data, method=method,
-                              headers={"Content-Type": "application/json"})
+        headers = {"Content-Type": "application/json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        req = request.Request(self.base_url + path, data=data, method=method, headers=headers)
         try:
             with request.urlopen(req, timeout=self.timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
@@ -230,3 +248,8 @@ class BackendClient:
             if exc.code == 409:
                 return {"hazard_id": hazard["hazard_id"], "already_registered": True}
             raise
+
+    def post_clearance(self, clearance):
+        hazard_id = clearance["hazard_id"]
+        body = {key: value for key, value in clearance.items() if key != "hazard_id"}
+        return self._call("POST", f"/hazards/{hazard_id}/clearance", body)

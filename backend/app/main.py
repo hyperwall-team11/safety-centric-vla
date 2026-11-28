@@ -51,11 +51,14 @@ from .models import (
     AdapterResultStatus,
     Decision,
     ExecutionLog,
+    HazardClearanceEvidence,
+    HazardClearanceRequest,
     HazardEvent,
     HazardResolveRequest,
     HazardResolvedBy,
     HazardSeverity,
     HazardStatus,
+    HazardType,
     NaturalLanguageTaskRequest,
     OpenVlaActionSubmission,
     OperatorEstopRequest,
@@ -69,6 +72,7 @@ from .models import (
     SafetyRule,
     SafetyEstopStatus,
     Sensor,
+    SensorStatus,
     TaskOrder,
     TaskOrderPreview,
     TaskOrderPreviewBatchItem,
@@ -84,7 +88,12 @@ from .models import (
     utc_now,
 )
 from .openvla_adapter import convert_openvla_action_7d
-from .safety import WORKER_SNAPSHOT_MAX_AGE_SECONDS, default_rules, evaluate_proposal
+from .safety import (
+    SENSOR_FRAME_TIMEOUT,
+    WORKER_SNAPSHOT_MAX_AGE_SECONDS,
+    default_rules,
+    evaluate_proposal,
+)
 from .state_stream import state_broadcaster
 from .store import StoreUnavailableError, store
 from .task_parser import TaskParseError, parse_task_order, parse_task_order_preview
@@ -129,12 +138,29 @@ ACTIVE_PROPOSAL_STATUSES = {
     ProposalStatus.PROPOSED,
     ProposalStatus.APPROVED,
     ProposalStatus.EXECUTING,
-    ProposalStatus.HELD,
 }
 PLANNABLE_TASK_STATUSES = {
     TaskStatus.CREATED,
     TaskStatus.PLANNING,
 }
+OPERATOR_ROLES = {"OPERATOR", "ADMIN"}
+SENSOR_ROLES = {"SENSOR", "CV"}
+
+
+def require_api_role(http_request: Request, allowed_roles: set[str]) -> str:
+    """인증 활성화 환경에서만 역할을 강제하고 감사용 subject를 반환한다."""
+    authenticator: TokenAuthenticator = app.state.token_authenticator
+    if not authenticator.enabled:
+        return "development-mode"
+    principal = http_request.state.auth_principal
+    if principal is None:
+        raise HTTPException(status_code=401, detail="인증된 요청자가 필요합니다.")
+    if principal.role.upper() not in allowed_roles:
+        raise HTTPException(
+            status_code=403,
+            detail=f"허용된 역할이 필요합니다: {', '.join(sorted(allowed_roles))}",
+        )
+    return principal.subject
 
 
 def proposal_completes_task(task: TaskOrder, proposal: ActionProposal) -> bool:
@@ -623,17 +649,11 @@ def _dispatch_estop(active: bool, triggered_by: TriggerSource) -> dict:
 
 
 def require_operator(request: Request) -> str | None:
-    """인증 사용 시 OPERATOR만 안전 제어 변경을 허용한다."""
+    """인증 사용 시 OPERATOR·ADMIN만 안전 제어 변경을 허용한다."""
     authenticator: TokenAuthenticator = app.state.token_authenticator
     if not authenticator.enabled:
         return None
-    principal = request.state.auth_principal
-    if principal is None or principal.role != "OPERATOR":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="OPERATOR 역할만 비상정지를 제어할 수 있습니다.",
-        )
-    return principal.subject
+    return require_api_role(request, OPERATOR_ROLES)
 
 
 def apply_ctl_ack_event(
@@ -1393,7 +1413,7 @@ def evaluate_current_safety(
         0 <= (now - observed_at).total_seconds() < WORKER_SNAPSHOT_MAX_AGE_SECONDS
     ):
         workers = store.workers
-    return evaluate_proposal(
+    rule_results, hazard_ids, estop_requested = evaluate_proposal(
         proposal,
         task,
         robot,
@@ -1404,6 +1424,19 @@ def evaluate_current_safety(
         workers=workers,
         now=now,
     )
+    rule_results.insert(
+        0,
+        RuleResult(
+            rule_id="precondition-operator-estop-released",
+            passed=not store.operator_estop_active,
+            reason=(
+                "운영자 E-Stop 신호 해제됨"
+                if not store.operator_estop_active
+                else "운영자 E-Stop 신호가 활성 상태"
+            ),
+        ),
+    )
+    return rule_results, hazard_ids, estop_requested
 
 
 def needs_collision_simulation(
@@ -1792,12 +1825,17 @@ def report_action_result(
         if report.status == AdapterResultStatus.SUCCEEDED:
             proposal.status = ProposalStatus.SUCCEEDED
             apply_successful_action_state(task, proposal, robot)
-            task_completed = proposal_completes_task(task, proposal)
+            resumed = proposal.action_type == ActionType.RESUME
+            task_completed = not resumed and proposal_completes_task(task, proposal)
             task.status = TaskStatus.COMPLETED if task_completed else TaskStatus.PLANNING
             robot.status = RobotStatus.IDLE
             decision = Decision.COMPLETE
-            result_message = report.detail or "제어 어댑터 실행 완료"
-            if not task_completed:
+            result_message = report.detail or (
+                "안전 복귀 완료; 원래 작업 재계획 대기"
+                if resumed
+                else "제어 어댑터 실행 완료"
+            )
+            if not task_completed and not resumed:
                 result_message = f"{result_message}; 다음 ActionProposal 대기"
         else:
             proposal.status = ProposalStatus.FAILED
@@ -2294,7 +2332,15 @@ def create_hazard(hazard: HazardEvent) -> HazardEvent:
 
 
 @app.post("/hazards/{hazard_id}/resolve", response_model=HazardEvent)
-def resolve_hazard(hazard_id: str, request: HazardResolveRequest) -> HazardEvent:
+def resolve_hazard(
+    hazard_id: str,
+    request: HazardResolveRequest,
+    http_request: Request,
+) -> HazardEvent:
+    if request.resolved_by == HazardResolvedBy.OPERATOR:
+        require_api_role(http_request, OPERATOR_ROLES)
+    else:
+        require_api_role(http_request, SENSOR_ROLES)
     with store.lock:
         hazard = store.hazards.get(hazard_id)
         if hazard is None:
@@ -2309,6 +2355,18 @@ def resolve_hazard(hazard_id: str, request: HazardResolveRequest) -> HazardEvent
                 status_code=409,
                 detail="CRITICAL HazardEvent는 OPERATOR만 해제할 수 있습니다.",
             )
+        if (
+            hazard.severity == HazardSeverity.CRITICAL
+            and hazard.hazard_type == HazardType.WORKER_INTRUSION
+            and (
+                hazard.status != HazardStatus.ACKNOWLEDGED
+                or hazard_id not in store.hazard_clearances
+            )
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="CV 안전 해제 확인 후에만 CRITICAL 작업자 침입을 해제할 수 있습니다.",
+            )
         hazard.status = HazardStatus.RESOLVED
         hazard.resolved_at = utc_now()
         hazard.resolved_by = request.resolved_by
@@ -2320,6 +2378,158 @@ def resolve_hazard(hazard_id: str, request: HazardResolveRequest) -> HazardEvent
     if release:
         sync_estop(f"{hazard_id} 해제")
     return hazard
+
+
+@app.post(
+    "/hazards/{hazard_id}/clearance",
+    response_model=HazardClearanceEvidence,
+)
+def acknowledge_hazard_clearance(
+    hazard_id: str,
+    clearance: HazardClearanceRequest,
+    http_request: Request,
+) -> HazardClearanceEvidence:
+    reported_by = require_api_role(http_request, SENSOR_ROLES)
+    now = utc_now()
+    age = now - clearance.observed_at
+    if age < timedelta(0) or age > SENSOR_FRAME_TIMEOUT:
+        raise HTTPException(status_code=409, detail="최신 CV 관측만 안전 해제 근거로 사용할 수 있습니다.")
+    if len(set(clearance.source_sensor_ids)) != len(clearance.source_sensor_ids):
+        raise HTTPException(status_code=422, detail="source_sensor_ids가 중복되었습니다.")
+
+    with store.lock:
+        hazard = store.hazards.get(hazard_id)
+        if hazard is None:
+            raise HTTPException(status_code=404, detail="HazardEvent를 찾을 수 없습니다.")
+        if hazard.hazard_type != HazardType.WORKER_INTRUSION:
+            raise HTTPException(status_code=409, detail="작업자 침입 위험만 CV 안전 해제를 확인할 수 있습니다.")
+        if hazard.status == HazardStatus.RESOLVED:
+            raise HTTPException(status_code=409, detail="이미 해제된 HazardEvent입니다.")
+
+        covering_sensors = [
+            sensor
+            for sensor in store.sensors.values()
+            if hazard.zone_id in sensor.covered_zone_ids
+        ]
+        covering_ids = {sensor.sensor_id for sensor in covering_sensors}
+        if not covering_sensors or set(clearance.source_sensor_ids) != covering_ids:
+            raise HTTPException(
+                status_code=409,
+                detail="위험 구역을 감시하는 모든 등록 센서의 안전 관측이 필요합니다.",
+            )
+        stale_sensors = [
+            sensor.sensor_id
+            for sensor in covering_sensors
+            if sensor.status != SensorStatus.ONLINE
+            or sensor.last_frame_at is None
+            or now - sensor.last_frame_at < timedelta(0)
+            or now - sensor.last_frame_at >= SENSOR_FRAME_TIMEOUT
+        ]
+        if stale_sensors:
+            raise HTTPException(
+                status_code=409,
+                detail="최신 ONLINE 프레임이 없는 센서: " + ", ".join(sorted(stale_sensors)),
+            )
+        if store.workers is None or store.workers_observed_at is None:
+            raise HTTPException(status_code=409, detail="최신 Worker 관측 스냅샷이 필요합니다.")
+        worker_age = now - store.workers_observed_at
+        if (
+            worker_age < timedelta(0)
+            or worker_age.total_seconds() > WORKER_SNAPSHOT_MAX_AGE_SECONDS
+        ):
+            raise HTTPException(status_code=409, detail="Worker 관측 스냅샷이 오래되었습니다.")
+        if any(
+            worker.current_zone_id == hazard.zone_id
+            and worker.safety_status == "DANGER"
+            for worker in store.workers
+        ):
+            raise HTTPException(status_code=409, detail="위험 구역에 작업자가 남아 있습니다.")
+
+        evidence = HazardClearanceEvidence(
+            hazard_id=hazard_id,
+            observed_at=clearance.observed_at,
+            source_sensor_ids=clearance.source_sensor_ids,
+            clear_duration_seconds=clearance.clear_duration_seconds,
+            reported_by=reported_by,
+        )
+        existing = store.hazard_clearances.get(hazard_id)
+        if hazard.status == HazardStatus.ACKNOWLEDGED and existing is not None:
+            if (
+                existing.observed_at == evidence.observed_at
+                and existing.source_sensor_ids == evidence.source_sensor_ids
+                and existing.clear_duration_seconds == evidence.clear_duration_seconds
+            ):
+                return existing
+            raise HTTPException(status_code=409, detail="이미 다른 CV 안전 해제 근거가 등록되었습니다.")
+        store.hazard_clearances[hazard_id] = evidence
+        hazard.status = HazardStatus.ACKNOWLEDGED
+        return evidence
+
+
+@app.post(
+    "/task-orders/{task_id}/resume-proposal",
+    response_model=ActionProposal,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_resume_proposal(task_id: str, http_request: Request) -> ActionProposal:
+    require_api_role(http_request, OPERATOR_ROLES)
+    with store.lock:
+        if store.operator_estop_active:
+            raise HTTPException(
+                status_code=409,
+                detail="운영자 E-Stop 신호를 먼저 해제해야 합니다.",
+            )
+        task = store.tasks.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="TaskOrder를 찾을 수 없습니다.")
+        if task.status != TaskStatus.HELD:
+            raise HTTPException(status_code=409, detail="HELD TaskOrder만 복귀할 수 있습니다.")
+        robot = store.robots.get(task.target_robot_id)
+        if robot is None:
+            raise HTTPException(status_code=404, detail="TaskOrder의 대상 Robot을 찾을 수 없습니다.")
+        if robot.status not in {RobotStatus.HOLD, RobotStatus.ESTOP}:
+            raise HTTPException(status_code=409, detail="HOLD 또는 ESTOP Robot만 복귀할 수 있습니다.")
+        destination_zone_id = getattr(task.destination, "zone_id", None)
+        blocking_hazards = [
+            hazard.hazard_id
+            for hazard in store.hazards.values()
+            if hazard.severity == HazardSeverity.CRITICAL
+            and hazard.status != HazardStatus.RESOLVED
+            and (
+                robot.robot_id in hazard.related_robot_ids
+                or (
+                    destination_zone_id is not None
+                    and hazard.zone_id == destination_zone_id
+                )
+            )
+        ]
+        if blocking_hazards:
+            raise HTTPException(
+                status_code=409,
+                detail="관련 CRITICAL 위험을 먼저 해제해야 합니다: "
+                + ", ".join(blocking_hazards),
+            )
+        if any(
+            proposal.task_id == task_id
+            and proposal.status
+            in {ProposalStatus.PROPOSED, ProposalStatus.APPROVED, ProposalStatus.EXECUTING}
+            for proposal in store.proposals.values()
+        ):
+            raise HTTPException(status_code=409, detail="처리 중인 ActionProposal이 이미 있습니다.")
+
+        proposal = ActionProposal(
+            task_id=task_id,
+            robot_id=robot.robot_id,
+            action_type=ActionType.RESUME,
+            parameters={"task_id": task_id, "priority": "SAFETY"},
+            trajectory=None,
+            frame_id=robot.pose.frame_id,
+            speed_limit=min(0.4, robot.motion_limits.max_speed),
+            model_name="safety-resume",
+            model_version="0.1.0",
+        )
+        store.proposals[proposal.proposal_id] = proposal
+        return proposal
 
 
 @app.get("/safety-rules", response_model=list[SafetyRule])

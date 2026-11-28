@@ -204,10 +204,22 @@ def evaluate_proposal(
     results = [
         RuleResult(
             rule_id="precondition-robot-state",
-            passed=robot.status in (RobotStatus.IDLE, RobotStatus.HOLD),
+            passed=(
+                robot.status in (RobotStatus.IDLE, RobotStatus.HOLD)
+                or (
+                    proposal.action_type == ActionType.RESUME
+                    and robot.status == RobotStatus.ESTOP
+                )
+            ),
             reason=(
                 f"로봇 상태 {robot.status}에서 계획 가능"
-                if robot.status in (RobotStatus.IDLE, RobotStatus.HOLD)
+                if (
+                    robot.status in (RobotStatus.IDLE, RobotStatus.HOLD)
+                    or (
+                        proposal.action_type == ActionType.RESUME
+                        and robot.status == RobotStatus.ESTOP
+                    )
+                )
                 else f"로봇 상태 {robot.status}에서는 실행 계획 불가"
             ),
         ),
@@ -277,7 +289,7 @@ def evaluate_proposal(
             blocking = [
                 hazard
                 for hazard in hazards
-                if hazard.status == HazardStatus.OPEN
+                if hazard.status != HazardStatus.RESOLVED
                 and hazard.severity == HazardSeverity.CRITICAL
                 and (
                     robot.robot_id in hazard.related_robot_ids
@@ -620,4 +632,3 @@ def evaluate_safety_distance(
         ),
         None,
     )
-

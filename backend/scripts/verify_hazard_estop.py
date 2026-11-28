@@ -5,6 +5,7 @@ import json
 import re
 import sys
 import threading
+from datetime import datetime, timezone
 from time import monotonic, sleep
 from typing import Any, Callable
 from uuid import uuid4
@@ -14,12 +15,14 @@ try:
         BackendClient,
         register_robot,
         wait_for_ack,
+        wait_for_result,
     )
 except ImportError:
     from benchmark_command_to_dispatch import (
         BackendClient,
         register_robot,
         wait_for_ack,
+        wait_for_result,
     )
 
 
@@ -259,6 +262,7 @@ def run_hazard_scenario(
     )
     adapter_event_observed_ms = (clock() - started_at) * 1000
     return {
+        "robot_id": robot_id,
         "task_id": task_id,
         "proposal_id": proposal_id,
         "hazard_id": hazard["hazard_id"],
@@ -269,6 +273,107 @@ def run_hazard_scenario(
         "robot_status": robot["status"],
         "task_status": held_task["status"],
         "proposal_status": held_proposal["status"],
+    }
+
+
+def recover_hazard_scenario(
+    client: BackendClient,
+    report: dict[str, Any],
+    frame_id: str,
+    ack_timeout_seconds: float,
+    state_timeout_seconds: float,
+    *,
+    sleep_fn: Callable[[float], None] = sleep,
+) -> dict[str, Any]:
+    """CV 안전 확인부터 실제 CTL RESUME RESULT까지 이어서 검증한다."""
+    observed_at = datetime.now(timezone.utc).isoformat()
+    sensor_id = "e2e-cctv"
+    zone_id = "e2e-hazard-zone"
+    client.put(
+        f"/sensors/{sensor_id}",
+        {
+            "sensor_id": sensor_id,
+            "sensor_type": "CCTV",
+            "source_uri": "e2e:///cctv",
+            "frame_id": f"{sensor_id}_frame",
+            "pose": {
+                "frame_id": frame_id,
+                "position": {"x": 0, "y": 0, "z": 3},
+                "orientation": {"x": 0, "y": 0, "z": 0, "w": 1},
+            },
+            "status": "ONLINE",
+            "mounted_robot_id": None,
+            "covered_zone_ids": [zone_id],
+            "last_frame_at": observed_at,
+            "calibrated": True,
+        },
+    )
+    client.put(
+        "/workers/snapshot",
+        {"observed_at": observed_at, "workers": []},
+    )
+    client.post(
+        f"/hazards/{report['hazard_id']}/clearance",
+        {
+            "observed_at": observed_at,
+            "source_sensor_ids": [sensor_id],
+            "clear_duration_seconds": 2,
+        },
+    )
+    acknowledged = _find(
+        client.get("/hazards"), "hazard_id", report["hazard_id"]
+    )
+    if acknowledged.get("status") != "ACKNOWLEDGED":
+        raise RuntimeError("CV 안전 확인 뒤 Hazard가 ACKNOWLEDGED가 아닙니다.")
+    resolved = client.post(
+        f"/hazards/{report['hazard_id']}/resolve",
+        {"resolved_by": "OPERATOR"},
+    )
+    if resolved.get("status") != "RESOLVED":
+        raise RuntimeError("관리자 해제 뒤 Hazard가 RESOLVED가 아닙니다.")
+
+    # E-Stop 해제 latched 메시지가 어댑터에 반영된 뒤 RESUME을 발행한다.
+    sleep_fn(0.2)
+    resume = client.post(
+        f"/task-orders/{report['task_id']}/resume-proposal",
+        {},
+    )
+    if resume.get("action_type") != "RESUME":
+        raise RuntimeError("RESUME ActionProposal이 생성되지 않았습니다.")
+    resume_id = resume["proposal_id"]
+    evaluated = client.post(f"/action-proposals/{resume_id}/evaluate", {})
+    if evaluated.get("status") != "APPROVED":
+        raise RuntimeError(f"RESUME 안전 평가 실패: {evaluated.get('status')}")
+    executing = client.post(f"/action-proposals/{resume_id}/execute", {})
+    if executing.get("status") != "EXECUTING":
+        raise RuntimeError(f"RESUME 발행 실패: {executing.get('status')}")
+    ack = wait_for_ack(client, resume_id, ack_timeout_seconds)
+    proposal, task, robot = wait_for_result(
+        client,
+        report["task_id"],
+        resume_id,
+        report["robot_id"],
+        state_timeout_seconds,
+    )
+    final_states = (
+        proposal.get("status"),
+        task.get("status"),
+        robot.get("status"),
+    )
+    if final_states != ("SUCCEEDED", "PLANNING", "IDLE"):
+        raise RuntimeError(
+            "RESUME 결과 상태가 올바르지 않습니다: "
+            f"Proposal={final_states[0]}, Task={final_states[1]}, Robot={final_states[2]}"
+        )
+    return {
+        **report,
+        "hazard_status_after_clearance": acknowledged["status"],
+        "hazard_status": resolved["status"],
+        "resume_proposal_id": resume_id,
+        "resume_ack_ms": ack.get("command_to_ack_ms"),
+        "resume_proposal_status": proposal["status"],
+        "resumed_task_status": task["status"],
+        "resumed_robot_status": robot["status"],
     }
 
 
@@ -290,6 +395,7 @@ def main(
     parser.add_argument("--adapter-event-timeout", type=float, default=5)
     parser.add_argument("--result-topic")
     parser.add_argument("--hazard-delay", type=float, default=0.2)
+    parser.add_argument("--verify-recovery", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     if (
@@ -318,6 +424,14 @@ def main(
             args.hazard_delay,
             estop_event_waiter=monitor.wait_for_estop,
         )
+        if args.verify_recovery:
+            report = recover_hazard_scenario(
+                client,
+                report,
+                args.frame_id,
+                args.ack_timeout,
+                args.state_timeout,
+            )
     except (KeyError, RuntimeError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -338,6 +452,17 @@ def main(
             f"Robot {report['robot_status']} · Task {report['task_status']} · "
             f"Proposal {report['proposal_status']}"
         )
+        if args.verify_recovery:
+            print("CV 안전 확인 → 관리자 해제 → RESUME ROS 2 E2E 통과")
+            print(
+                f"Hazard {report['hazard_status_after_clearance']} → "
+                f"{report['hazard_status']} · RESUME ACK {report['resume_ack_ms']}ms"
+            )
+            print(
+                f"Robot {report['resumed_robot_status']} · "
+                f"Task {report['resumed_task_status']} · "
+                f"RESUME Proposal {report['resume_proposal_status']}"
+            )
     return 0
 
 

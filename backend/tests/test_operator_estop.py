@@ -125,12 +125,18 @@ class OperatorEstopTests(unittest.TestCase):
 
     def test_authenticated_non_operator_cannot_control_estop(self):
         operator_token = "operator-token"
+        admin_token = "admin-token"
         viewer_token = "viewer-token"
         app.state.token_authenticator = TokenAuthenticator.from_json(json.dumps([
             {
                 "token_sha256": token_sha256(operator_token),
                 "subject": "operator-1",
                 "role": "OPERATOR",
+            },
+            {
+                "token_sha256": token_sha256(admin_token),
+                "subject": "admin-1",
+                "role": "ADMIN",
             },
             {
                 "token_sha256": token_sha256(viewer_token),
@@ -149,10 +155,15 @@ class OperatorEstopTests(unittest.TestCase):
             json={"reason": "운영자 정지"},
             headers={"Authorization": f"Bearer {operator_token}"},
         )
+        released = self.client.post(
+            "/safety/estop/release",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
 
         self.assertEqual(denied.status_code, 403, denied.text)
         self.assertEqual(allowed.status_code, 200, allowed.text)
         self.assertEqual(allowed.json()["requested_by"], "operator-1")
+        self.assertEqual(released.status_code, 200, released.text)
 
     def test_dispatch_failure_returns_503_but_keeps_fail_closed_state(self):
         class FailingDispatcher(MockActionDispatcher):

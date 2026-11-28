@@ -13,6 +13,7 @@ from .models import (
     AdapterAckRecord,
     AdapterResultReport,
     ExecutionLog,
+    HazardClearanceEvidence,
     HazardEvent,
     PhysicalObject,
     Robot,
@@ -90,6 +91,7 @@ def _initialize_empty_state(target: Any) -> None:
     target.proposal_results: dict[str, AdapterResultReport] = {}
     target.proposal_acks: dict[str, AdapterAckRecord] = {}
     target.hazards: dict[str, HazardEvent] = {}
+    target.hazard_clearances: dict[str, HazardClearanceEvidence] = {}
     # CRITICAL HazardEvent 중 E-Stop을 발행하게 한 hazard_id.
     target.estop_hazard_ids: set[str] = set()
     # 운영자 수동 E-Stop은 HazardEvent 해제와 독립적으로 유지한다.
@@ -146,6 +148,9 @@ def _serialize_state(source: Any) -> dict[str, Any]:
             key: _dump_model(value) for key, value in source.proposal_acks.items()
         },
         "hazards": {key: _dump_model(value) for key, value in source.hazards.items()},
+        "hazard_clearances": {
+            key: _dump_model(value) for key, value in source.hazard_clearances.items()
+        },
         "estop_hazard_ids": sorted(source.estop_hazard_ids),
         "operator_estop_active": source.operator_estop_active,
         "operator_estop_reason": source.operator_estop_reason,
@@ -217,6 +222,10 @@ def _restore_state(target: Any, snapshot: dict[str, Any]) -> None:
     target.hazards = {
         key: HazardEvent.model_validate(value)
         for key, value in snapshot["hazards"].items()
+    }
+    target.hazard_clearances = {
+        key: HazardClearanceEvidence.model_validate(value)
+        for key, value in snapshot.get("hazard_clearances", {}).items()
     }
     target.estop_hazard_ids = set(snapshot["estop_hazard_ids"])
     target.operator_estop_active = bool(snapshot.get("operator_estop_active", False))

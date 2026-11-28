@@ -498,6 +498,21 @@ class HazardResolveRequest(OntologyModel):
     resolved_by: HazardResolvedBy
 
 
+class HazardClearanceRequest(OntologyModel):
+    observed_at: AwareDatetime
+    source_sensor_ids: list[NonBlankString] = Field(min_length=1)
+    clear_duration_seconds: float = Field(ge=2.0)
+
+
+class HazardClearanceEvidence(OntologyModel):
+    hazard_id: NonBlankString
+    observed_at: AwareDatetime
+    source_sensor_ids: list[NonBlankString]
+    clear_duration_seconds: float = Field(ge=2.0)
+    reported_by: NonBlankString
+    confirmed_at: datetime = Field(default_factory=utc_now)
+
+
 class AdapterResultStatus(str, Enum):
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"

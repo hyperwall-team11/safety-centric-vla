@@ -81,6 +81,24 @@ class HazardReporterTests(unittest.TestCase):
         second = tracker.update("cctv_1", True, 4.1)
         self.assertNotEqual(first["hazard_id"], second["hazard_id"])
 
+    def test_clear_entry_emits_operator_pending_evidence(self):
+        tracker = IntrusionTracker(["cctv_1", "cctv_2"])
+        tracker.update("cctv_1", True, 0.0)
+        trigger = tracker.update("cctv_1", True, 0.1)
+        tracker.mark_reported()
+        tracker.update("cctv_1", False, 2.2)
+        observed_at = datetime(2026, 11, 25, tzinfo=timezone.utc)
+        tracker.update("cctv_2", False, 2.3, detected_at=observed_at)
+
+        clearance = tracker.clearance()
+
+        self.assertEqual(clearance["hazard_id"], trigger["hazard_id"])
+        self.assertEqual(clearance["source_sensor_ids"], ["cctv_1", "cctv_2"])
+        self.assertEqual(clearance["clear_duration_seconds"], 2.0)
+        self.assertEqual(clearance["observed_at"], observed_at.isoformat())
+        tracker.mark_clearance_reported()
+        self.assertIsNone(tracker.clearance())
+
     def test_failed_report_is_retried_with_the_same_hazard_id(self):
         tracker = IntrusionTracker(["cctv_1"])
         tracker.update("cctv_1", True, 0.0)

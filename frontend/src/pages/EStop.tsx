@@ -1,18 +1,29 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { ApiError, api } from "../api/client";
 import { usePolling } from "../hooks/usePolling";
 import { Async, Panel, Status, Table, time } from "../components/ui";
 
 /** 흐름: 정지(ESTOP·HOLD) 확인 → 위험 해제 → RESUME 행동 제안 → 검증·실행. 해제만으로 로봇이 움직이지 않는다. */
 export function EStop() {
+  const navigate = useNavigate();
   const robots = usePolling(api.robots);
   const tasks = usePolling(() => api.tasks("HELD"), 2000);
   const logs = usePolling(api.executionLogs, 2000);
+  const auth = usePolling(api.authStatus, 5000, false);
   const estop = usePolling(api.estopStatus, 1000);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const stops = (logs.data ?? []).filter((l) => l.decision === "ESTOP").reverse();
+  const operator = auth.data?.enabled === false || ["OPERATOR", "ADMIN"].includes(auth.data?.role ?? "");
+  const resume = (taskId: string) => {
+    setBusy(true);
+    setError(undefined);
+    api.createResumeProposal(taskId)
+      .then(() => navigate(`/proposals/${taskId}`))
+      .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))
+      .finally(() => setBusy(false));
+  };
 
   const act = (action: "trigger" | "release") => {
     const message = action === "trigger"
@@ -38,7 +49,7 @@ export function EStop() {
   return (
     <>
       <div className="page-head">
-        <div className="page-head-copy"><span className="eyebrow">비상정지 · 복귀</span><h1>복귀는, 한 단계씩.</h1><p>정지 상태를 확인하고 안전한 복귀 절차를 순서대로 진행합니다.</p></div>
+        <div className="page-head-copy"><span className="eyebrow">비상정지 · 복귀</span><h1>해제와 복귀는 분리합니다.</h1><p>CV 안전 확인, 관리자 위험 해제, RESUME 규칙 검증을 모두 통과해야 ROS 2 복귀 명령이 발행됩니다.</p></div>
         <div className="estop-actions">
           <button className="danger" disabled={busy || estop.data?.operator_active === true} onClick={() => act("trigger")}>전체 비상정지</button>
           <button className="button subtle" disabled={busy || estop.data?.operator_active !== true} onClick={() => act("release")}>정지 신호 해제</button>
@@ -73,10 +84,10 @@ export function EStop() {
       </Panel>
       <Panel title="복귀 순서" className="recovery-panel">
         <ol className="steps">
-          <li>현장 확인 후 <Link to="/hazards">위험 모니터링</Link>에서 관련 위험을 운영자 해제</li>
+          <li>CV가 모든 감시 카메라와 Worker 스냅샷으로 2초간 안전 상태 확인</li>
+          <li><Link to="/hazards">위험 모니터링</Link>에서 관리자 권한으로 관련 위험 해제</li>
           <li>운영자 정지를 사용했다면 위의 정지 신호 해제</li>
-          <li>보류 작업에서 RESUME 행동 제안을 만들고 검증</li>
-          <li>승인되면 실행. 로봇이 IDLE로 돌아오면 원래 작업을 다시 요청</li>
+          <li>RESUME 제안을 다시 검증·실행해 로봇을 IDLE로 복귀</li>
         </ol>
       </Panel>
       <Panel title="보류 작업">
@@ -86,6 +97,13 @@ export function EStop() {
               { key: "id", label: "작업", render: (t) => <Link to={`/proposals/${t.task_id}`}>{t.task_id.slice(0, 13)}</Link> },
               { key: "robot", label: "로봇", render: (t) => t.target_robot_id },
               { key: "ins", label: "지시", render: (t) => t.instruction },
+              { key: "resume", label: "", render: (t) => (
+                <button className="compact-button" disabled={!operator || busy}
+                        onClick={() => resume(t.task_id)}
+                        title={operator ? "RESUME 안전 제안을 생성합니다" : "OPERATOR 또는 ADMIN 권한이 필요합니다"}>
+                  RESUME 제안 생성
+                </button>
+              ) },
             ]} />
           )}
         </Async>

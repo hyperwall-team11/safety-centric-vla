@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { websocketProtocols } from "../api/client";
 
 // WebSocket /ws/state(#76) 구독. Backend는 연결 직후·상태 변경 시·15초마다 전체 스냅샷을 보낸다.
 // 화면은 스냅샷 내용 대신 revision만 보고, 바뀌면 각자 쓰던 조회 API를 다시 부른다.
@@ -39,7 +40,7 @@ export function StateStreamProvider({ children }: { children: ReactNode }) {
     };
 
     const connect = () => {
-      socket = new WebSocket(streamUrl());
+      socket = new WebSocket(streamUrl(), websocketProtocols());
       socket.onopen = () => { delay = RECONNECT_MIN_MS; markStale(); };
       socket.onmessage = (event) => {
         markStale();

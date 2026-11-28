@@ -67,8 +67,12 @@ class OpenVlaActionApiTest(unittest.TestCase):
 
         self.assertEqual(evaluated.status_code, 200, evaluated.text)
         self.assertEqual(evaluated.json()["status"], "REJECTED")
-        self.assertFalse(store.logs[-1].rule_results[2].passed)
-        self.assertEqual(store.logs[-1].rule_results[2].rule_id, "precondition-ee-delta-bounds")
+        bounds = next(
+            result
+            for result in store.logs[-1].rule_results
+            if result.rule_id == "precondition-ee-delta-bounds"
+        )
+        self.assertFalse(bounds.passed)
 
     def test_does_not_accept_next_cycle_while_previous_is_active(self):
         body = {

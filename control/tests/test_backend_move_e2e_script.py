@@ -49,6 +49,7 @@ def test_backend_move_e2e_supports_hazard_scenario():
     script = SCRIPT.read_text(encoding="utf-8")
     assert '"$ROOT_DIR/backend/scripts/verify_hazard_estop.py"' in script
     assert '--result-topic "/adapter/${ROBOT_TOPIC_ID}/result"' in script
+    assert "--verify-recovery" in script
     assert 'tee "$LOG_DIR/hazard.log"' in script
 
 

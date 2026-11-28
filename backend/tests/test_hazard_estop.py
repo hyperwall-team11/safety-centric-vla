@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from app import main
 from app.ctl_bridge import MockActionDispatcher
 from app.main import app, seed_rules
+from app.models import HazardClearanceEvidence, HazardStatus, utc_now
 from app.store import store
 from tests.zone_fixtures import register_work_zones
 
@@ -59,7 +60,19 @@ class HazardEStopTests(unittest.TestCase):
         })
 
     def resolve(self, hazard):
+        self.allow_operator_resolution(hazard["hazard_id"])
         return self._post(f"/hazards/{hazard['hazard_id']}/resolve", {"resolved_by": "OPERATOR"}, 200)
+
+    def allow_operator_resolution(self, hazard_id):
+        with store.lock:
+            store.hazards[hazard_id].status = HazardStatus.ACKNOWLEDGED
+            store.hazard_clearances[hazard_id] = HazardClearanceEvidence(
+                hazard_id=hazard_id,
+                observed_at=utc_now(),
+                source_sensor_ids=["cctv-test"],
+                clear_duration_seconds=2,
+                reported_by="test",
+            )
 
     def test_critical_hazard_stops_executing_robot(self):
         self.execute()
@@ -140,12 +153,13 @@ class HazardEStopTests(unittest.TestCase):
         worker = threading.Thread(target=lambda: created.update(self.hazard()))
         worker.start()
         self.assertTrue(entered.wait(5))
-        resolver = threading.Thread(target=lambda: self.client.post(
-            f"/hazards/{created_id()}/resolve", json={"resolved_by": "OPERATOR"}))
-
         def created_id():
             with store.lock:
                 return next(iter(store.hazards))
+
+        self.allow_operator_resolution(created_id())
+        resolver = threading.Thread(target=lambda: self.client.post(
+            f"/hazards/{created_id()}/resolve", json={"resolved_by": "OPERATOR"}))
 
         resolver.start()
         proceed.set()

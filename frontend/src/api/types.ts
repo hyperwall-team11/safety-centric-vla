@@ -80,6 +80,21 @@ export type HazardEvent = {
   resolved_by: "SENSOR_AUTO" | "OPERATOR" | null;
 };
 
+export type HazardClearanceEvidence = {
+  hazard_id: string;
+  observed_at: string;
+  source_sensor_ids: string[];
+  clear_duration_seconds: number;
+  reported_by: string;
+  confirmed_at: string;
+};
+
+export type AuthStatus = {
+  enabled: boolean;
+  subject: string | null;
+  role: string | null;
+};
+
 export type Worker = {
   worker_id: string;
   pose: Pose;
