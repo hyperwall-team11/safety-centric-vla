@@ -75,10 +75,11 @@ class RtDetrDetector:
     name = "rtdetr"
     task = "object_detection"
 
-    def __init__(self, model_id, record_threshold=RECORD_SCORE_THRESHOLD):
+    def __init__(self, model_id, record_threshold=RECORD_SCORE_THRESHOLD, device="cuda"):
         from transformers import AutoImageProcessor, RTDetrForObjectDetection
 
-        self.model = RTDetrForObjectDetection.from_pretrained(model_id).to("cuda").eval()
+        self.device = device
+        self.model = RTDetrForObjectDetection.from_pretrained(model_id).to(self.device).eval()
         self.processor = AutoImageProcessor.from_pretrained(model_id)
         self.record_threshold = record_threshold
 
@@ -89,12 +90,14 @@ class RtDetrDetector:
     def detect_batch(self, images):
         import torch
 
-        inputs = self.processor(images=images, return_tensors="pt").to("cuda")
-        torch.cuda.synchronize()
+        inputs = self.processor(images=images, return_tensors="pt").to(self.device)
+        if self.device == "cuda":
+            torch.cuda.synchronize()
         started = time.perf_counter()
         with torch.inference_mode():
             outputs = self.model(**inputs)
-        torch.cuda.synchronize()
+        if self.device == "cuda":
+            torch.cuda.synchronize()
         inference_ms = (time.perf_counter() - started) * 1000
         results = self.processor.post_process_object_detection(
             outputs, target_sizes=[(image.height, image.width) for image in images],

@@ -96,8 +96,15 @@ def workers_in_zone(people, width, height, camera, ring):
     return positions, any(p["in_zone"] for p in positions)
 
 
-def observation_id(sensor_id, sec, nanosec, index):
-    return f"obs-{uuid5(NAMESPACE_URL, f'{sensor_id}:{sec}.{nanosec:09d}:{index}')}"
+def new_run_id(now=None):
+    """One ID per node start. Simulation stamps restart at 0 every run, so stamps alone repeat."""
+    now = now or datetime.now(timezone.utc)
+    return f"run-{now:%Y%m%dT%H%M%SZ}-{uuid4().hex[:8]}"
+
+
+def observation_id(run_id, sensor_id, sec, nanosec, index):
+    """Deterministic within a run: the same record (run_id, sensor_id, stamp, index) gives the same ID."""
+    return f"obs-{uuid5(NAMESPACE_URL, f'{run_id}:{sensor_id}:{sec}.{nanosec:09d}:{index}')}"
 
 
 class IntrusionTracker:

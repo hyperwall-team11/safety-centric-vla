@@ -27,7 +27,7 @@ python florence_detect.py \
 
 외부망이 없는 계산 노드에서는 모델 파일을 미리 공유 저장소에 내려받은 뒤 `--model /path/to/Florence-2-base`로 실행할 수 있습니다. 실행 결과는 이미지별 JSON과 바운딩 박스가 그려진 PNG입니다. `examples/`에는 2026-10-09에 만든 예시 이미지가 있습니다. 이 코드는 허깅페이스 모델 구현을 `trust_remote_code=True`로 로드하므로 신뢰할 수 있는 모델 파일을 사용해야 합니다.
 
-현재 Florence-2 탐지 출력은 픽셀 좌표의 `person` 바운딩 박스이며 신뢰도 점수는 없습니다. `HazardEvent` 판정은 아직 구현되지 않았습니다.
+이 절의 오프라인 `florence_detect.py`는 픽셀 좌표의 `person` 바운딩 박스를 출력합니다. 실시간 위험 등록은 아래 ROS 2 카메라 탐지와 창고 낙상자 점검 절차를 참고합니다.
 
 ## Observation 변환
 
@@ -156,7 +156,7 @@ python ros_camera_detect.py --topic /cctv_1/image_raw --topic /cctv_2/image_raw 
 - 사람 상자의 아래 중앙을 바닥(z=0)에 투영해 금지구역 안인지 판정합니다. **카메라 1대라도 연속 2프레임**에서 금지구역 안 작업자를 보면 `CRITICAL` `WORKER_INTRUSION` HazardEvent를 `POST /hazards`로 한 번 등록합니다(팀 결정 2026-11-05). 진입은 **모든 카메라가 마지막 목격 뒤에도 계속 결과를 내면서** 2초 동안 금지구역 안 작업자를 못 볼 때만 끝난 것으로 봅니다. 카메라가 끊기거나 결과가 늦으면 작업자 부재로 보지 않고 진입을 유지합니다. 진입이 끝난 뒤 다시 들어오면 새 이벤트를 등록합니다(이전 이벤트가 아직 OPEN이면 같은 구역에 여러 건이 쌓일 수 있으며, 이벤트 재사용은 백엔드 조회 API가 필요해 PR #41에서 논의 중입니다).
 - `related_robot_ids`에 `--robot-id`를 넣습니다. 스키마 v1.1에 따라 빈 목록은 모든 로봇을 뜻하지 않으므로 막을 로봇을 꼭 지정합니다.
 - 진입 종료 조건을 만족하면 이 노드는 `POST /hazards/{hazard_id}/clearance`로 카메라 ID·관측 시각·2초 부재 근거를 보냅니다. Backend는 모든 등록 감시 센서와 최신 Worker 스냅샷을 다시 확인한 뒤 위험을 `ACKNOWLEDGED`로만 바꾸며 정지 차단은 유지합니다. 이후 `OPERATOR|ADMIN`이 위험을 해제하고 별도 RESUME 제안을 검증·실행해야 합니다. 인증이 켜진 Backend에는 `BACKEND_API_TOKEN` 환경변수로 `SENSOR|CV` 토큰을 전달합니다.
-- Florence-2 `<OD>`는 점수가 없어 `confidence`에 모델 점수 대신 트리거한 카메라의 최근 5프레임 중 금지구역 안 탐지 비율(탐지 지속 비율)을 넣습니다. 모델 confidence와 의미가 다르므로 해석은 ONT와 정합니다. `source_observation_ids`는 이 프레임들의 결정적 ID이며, 같은 ID가 JSONL 기록의 `hazard.observation_ids`에 남아 원본 탐지로 추적할 수 있습니다. Observation 객체는 아직 백엔드에 등록하지 않습니다.
+- Florence-2 `<OD>`는 점수가 없어 `confidence`에 모델 점수 대신 트리거한 카메라의 최근 5프레임 중 금지구역 안 탐지 비율(탐지 지속 비율)을 넣습니다. 모델 confidence와 의미가 다르므로 해석은 ONT와 정합니다. `source_observation_ids`는 이 프레임들의 결정적 ID이며, 같은 ID가 JSONL 기록의 `hazard.observation_ids`에 남아 원본 탐지로 추적할 수 있습니다. ID는 실행 ID·센서·프레임 시각·탐지 순번으로 만듭니다. 시뮬레이션 시각은 실행마다 0부터 다시 시작하므로, 노드를 시작할 때마다 새 실행 ID(`run-<시작 UTC>-<난수>`)를 정해 다른 실행의 관측 ID와 겹치지 않게 합니다. 실행 ID는 각 기록과 요약의 `run_id`에 남습니다. Observation 객체는 아직 백엔드에 등록하지 않습니다.
 - 진입마다 고정 `hazard_id`를 정해 보내므로, 응답 타임아웃 뒤 다시 보내도 같은 진입이 두 번 등록되지 않습니다(백엔드의 `409` 중복 ID 응답을 등록 완료로 처리). 등록에 실패하면 로그를 남기고 다음 프레임에서 다시 시도합니다. 재시도 때는 최초 트리거의 센서·관측 ID·신뢰도·감지 시각을 그대로 보내며, 등록될 때까지 진입을 끝내지 않아 실패한 사건이 사라지지 않습니다. 기록의 `hazard`에 투영 위치·금지구역 판정·등록된 `hazard_id`가, 요약에 `hazard_ids`·`hazard_post_failures`가 남습니다.
 - Backend는 실행 중 로봇과 연결된 `CRITICAL` 이벤트가 등록되면 ROS 2 latched E-Stop을 발행하고, CTL의 `ESTOP` 이벤트로 Robot·Proposal·Task 상태를 정지 상태에 맞춥니다. CV 노드는 로봇에 직접 명령하지 않습니다.
 
@@ -212,3 +212,11 @@ python3 -m unittest discover -s mujoco-demo/tests -v
 ```
 
 검증 범위는 알려진 카메라 위치·회전에서의 바닥 투영, 이미지 해시 불일치 거부, 시간대 검사, 신뢰도 없는 탐지 보류 및 잘못된 신뢰도 거부입니다. 테스트의 점수는 출력 계약을 확인하는 인공 값이며 실제 탐지 신뢰도나 재현율의 근거가 아닙니다. MuJoCo 캡처와 CPU 검증 기록은 [2026-10-30 검토](../docs/cv-review-2026-10-30.md)를 참고하세요.
+
+## 창고 시연의 CCTV 04 낙상자 점검
+
+CV가 Florence-2 VLM 추론, 위치 확인, 작업자 위험 이벤트 생성을 담당합니다. Backend에서 이벤트를 저장하고 발표 화면에서 표시합니다.
+
+`fall_vlm.py`는 서로 다른 ROS stamp의 CCTV 04 프레임에서, 카메라 보정값으로 잘라낸 후방 작업 통로를 Florence-2에 입력합니다. 바닥에 누운 작업자를 대상으로 구문 접지를 수행하고, CCTV 04에서 가로로 누운 검출과 해당 바닥 구역 안의 위치를 확인합니다. 5장 중 2장 이상에서 확인되면 기존 Backend 위험 API를 사용해 작업자 낙상 경고를 등록합니다.
+
+기본 모델은 `florence-community/Florence-2-base`이며, `WAREHOUSE_FALL_MODEL`에 캐시된 로컬 폴더를 지정할 수 있습니다. 제품 구역과 카메라에 맞춘 발표용 검증입니다. 화면 조작과 증거 기록은 [창고 시연](../docs/warehouse-presentation.md)에 있습니다.

@@ -13,6 +13,7 @@ VLA(Vision-Language-Action) 모델은 자연어와 시각 정보를 바탕으로
 - [문서 목록 (스키마·개발계획서·사용자 정의서·구현 명세)](docs/README.md)
 - [제어·시뮬레이션 실행 안내](control/README.md)
 - [CV 탐지 실험](mujoco-demo/README.md)
+- [OpenVLA 7D·반복 추론 실행 안내](vla/README.md)
 
 ## 프로젝트 목표
 
@@ -41,9 +42,9 @@ CV: CCTV 2대 작업자 탐지·결합·바닥 좌표 추정
 Ontology: Worker · Robot · Zone(KEEP_OUT) · Sensor · HazardEvent
           │ 온톨로지 상태 스냅샷
           ▼
-MuJoCo ②: 디지털 트윈 재구성 (계획)
+MuJoCo ②: Backend 스냅샷으로 MOVE_TO 트윈 재구성
           ▼
-Safety Gate: 규칙 5종 + MuJoCo ② 사전 시뮬레이션(계획)
+Safety Gate: 안전 규칙 검사 + 선택형 MOVE_TO 사전 시뮬레이션
   APPROVED / REJECTED / ESTOP, 실행 직전 재검증 실패 시 HELD
           │ 승인된 Action만
           ▼
@@ -84,27 +85,14 @@ ROS 2 제어 → MuJoCo ① 로봇 이동 → 다음 CCTV 프레임
 
 ## 검증 시나리오
 
-### Scenario 1. 정상 동작
+### 최종 발표용 물류창고
 
-`A구역 부품 상자를 B 작업대로 이송해 줘`라는 명령을 처리합니다.
+1. CCTV 01에서 적재 AMR을 확인하고 `부품 상자를 실은 로봇을 "검사 스테이션"으로 이동해`를 제출합니다. Backend가 명령을 해석하고 안전 규칙과 MuJoCo 사전 시뮬레이션을 통과한 이동을 ROS 2로 전달합니다.
+2. CCTV 02에서 작업자가 횡단하면 RT-DETR이 감지합니다. 관련 `CRITICAL / WORKER_INTRUSION`이 등록되면 Backend가 E-Stop을 보내고, 콘솔은 오도메트리로 AMR 정지를 확인합니다.
+3. CCTV 04에서 **낙상자 점검**을 실행합니다. Florence-2가 후방 통로의 CCTV 영상에서 쓰러진 작업자를 검출하고, 조건을 충족하면 `UNKNOWN / WARNING` 위험을 등록합니다.
+4. 운영자는 작업자가 횡단을 마치면 위험을 해제할 수 있습니다. 현재 창고 시연은 승인된 `RESUME` 발행까지 연결되지 않아 자동 정지와 위험 해제까지 검증했습니다.
 
-1. 명령을 `TaskOrder`로 등록
-2. VLM이 상자와 작업대를 인식
-3. VLA가 접근·파지·이동·놓기 행동을 `ActionProposal`로 생성
-4. 제출 기준을 통과한 `ExecuteMotion`을 `APPROVED` 처리
-5. ROS 2로 실행하고 온톨로지 및 감사 로그에 결과 기록
-
-### Scenario 2. 작업자 위험구역 접근
-
-1. MuJoCo ①에서 작업자가 로봇 작업구역에 접근
-2. 가상 CCTV 영상 생성 (Three.js는 계획, 현재는 MuJoCo 렌더링)
-3. CV가 연속 2프레임에서 금지구역 안 작업자를 보면 `CRITICAL` `WORKER_INTRUSION` HazardEvent 등록
-4. 이후 제안 거부와 `TriggerEStop` / `Hold State` (실행 중 로봇 즉시 정지는 미구현)
-5. `ResolveHazard`와 `ResumeTask` 승인 후 작업 재개
-
-### Scenario 3. 서로 다른 현장 구성 (계획)
-
-작업자 수, 카메라 배치, 금지구역 위치를 바꿔도 현장 배치와 카메라 보정만 다시 설정하면 같은 파이프라인이 동작하는지 검증합니다.
+발표 화면에서 고정 CCTV 5대와 AMR 전방 카메라를 확대할 수 있습니다. 무인 지게차와 견인형 AGV는 별도 구역에서 운행합니다. 시작 명령, 초기화, 발표 순서 및 실제 검증 기록은 [물류창고 시연 안내](docs/warehouse-presentation.md)에 있습니다.
 
 ## 기능 요구사항
 
@@ -140,7 +128,7 @@ ROS 2 제어 → MuJoCo ① 로봇 이동 → 다음 CCTV 프레임
 
 | 역할 | 담당 | 주요 책임 |
 |---|---|---|
-| CV | 강영한(팀장) | CCTV 작업자 탐지·위치 추정, Worker·Sensor·HazardEvent 갱신 |
+| CV | 강영한(팀장) | CCTV 작업자 탐지·위치 추정, Florence-2 VLM 낙상자 검출과 위험 이벤트 생성, Worker·Sensor 갱신 |
 | NLP | 김경무 | 자연어 명령 파싱, TaskOrder·VLA 인터페이스 |
 | ONT | 임성현 | 온톨로지 스키마, 안전 규칙·사전 시뮬레이션 판정 기준, Action 승인·거부, 감사 로그 |
 | CTL | 최민서 | MuJoCo ①/② 구성, Three.js CCTV 렌더링, 사전 시뮬레이션 서비스, ROS 2 제어 |
@@ -150,10 +138,10 @@ ROS 2 제어 → MuJoCo ① 로봇 이동 → 다음 CCTV 프레임
 ## 기술 스택
 
 - AI: PyTorch, OpenVLA, RT-DETR, Florence-2, OpenCV
-- 온톨로지 백엔드: FastAPI, REST (WebSocket `/ws/state`는 예정)
+- 온톨로지 백엔드: FastAPI, REST (WebSocket `/ws/state`로 전체 상태 구독)
 - 로봇 제어: ROS 2 Humble/Jazzy
 - 시뮬레이션: MuJoCo 3.15.0 (ROS 2 브리지 직접 구현)
-- 실사형 렌더링: Three.js (계획), MPFB2 + Blender 작업자 모델
+- 실사형 렌더링: Three.js, MPFB2 + Blender 작업자 모델
 - 모델·상태 연동: Object/Link/Action 스키마, MuJoCo 양방향 동기화
 
 ## 제약사항

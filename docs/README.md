@@ -13,16 +13,20 @@
 
 문서 간 우선순위: 객체명·열거값·규칙 수치는 스키마 v1.1이 기준이며, 개발계획서·사용자 정의서·플랫폼 구조 문서는 스키마를 따릅니다.
 
-전체 구조와 구현 상태는 [플랫폼 구조 v1.0](platform-architecture-v1.0.md)이 최신입니다(2026-11-06). 개발계획서·사용자 정의서의 시스템 구성은 이 문서로 확장됐습니다.
+2026-11-26 기준으로 전체 구조와 구현 상태는 [플랫폼 구조 v1.0](platform-architecture-v1.0.md), 실행 방법과 실측 결과는 [최종 발표용 창고 시연](warehouse-presentation.md)에서 확인할 수 있습니다. 개발계획서와 사용자정의서는 목표 요구사항을 설명합니다.
 
 ## 구현 명세
 
 | 문서 | 버전 | 내용 |
 |---|---|---|
-| [backend-api-spec-v0.2.md](backend-api-spec-v0.2.md) | v0.2 (As-Built) | 현재 FastAPI 23개 path·29개 operation의 요청·응답·상태 전이·오류와 목표 인터페이스 대비 미구현 범위 |
+| [backend-api-spec-v0.2.md](backend-api-spec-v0.2.md) | v0.2 (As-Built) | FastAPI 요청·응답, 상태 전이, 오류와 미구현 범위 |
 | [backend-ctl-contract-v0.1.md](backend-ctl-contract-v0.1.md) | v0.2 Draft | 승인 Action ROS 2 전송, ACK·RESULT, E-Stop·Heartbeat, 상태 전이, 가상 CCTV 영상 출력, MuJoCo ② 사전 시뮬레이션 서비스 |
 
 기준 문서의 `/api/v1/...` 표는 목표 인터페이스이며, 현재 호출 가능한 경로는 구현 명세와 FastAPI `/openapi.json`을 기준으로 합니다.
+
+## 시연
+
+- [최종 발표용 물류창고 시연](warehouse-presentation.md) · AMR 자동 정지, 낙상자 VLM 발견, 작업자 위험 경고
 
 ## 진행 기록
 

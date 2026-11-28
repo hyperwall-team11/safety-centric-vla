@@ -120,3 +120,14 @@ export type ExecutionLog = {
   evaluated_in_ms: number | null;
   triggered_by: "RULE_ENGINE" | "OPERATOR" | "HEARTBEAT_LOSS" | null;
 };
+
+export type SafetyEstopStatus = {
+  active: boolean;
+  operator_active: boolean;
+  hazard_ids: string[];
+  held_robot_ids: string[];
+  held_task_ids: string[];
+  requested_by: string | null;
+  reason: string | null;
+  issued_at: string | null;
+};

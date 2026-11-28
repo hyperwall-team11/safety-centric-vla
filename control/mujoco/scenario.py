@@ -19,8 +19,14 @@ CAMERAS = {
     # sensor_id: (MuJoCo 카메라 이름, ROS 2 토픽 접두어, 탑재 위치)
     "cctv_1": ("cctv_1", "/cctv_1", "world"),
     "cctv_2": ("cctv_2", "/cctv_2", "world"),
+    "cctv_3": ("cctv_3", "/cctv_3", "world"),
+    "cctv_4": ("cctv_4", "/cctv_4", "world"),
+    "cctv_5": ("cctv_5", "/cctv_5", "world"),
+    "amr_camera": ("amr_camera", "/amr_camera", "amr_01/base_link"),
     "head_camera": ("head_camera", "/robot/head_camera", "base_link"),
 }
+
+DEFAULT_CAMERAS = tuple(sensor for sensor in CAMERAS if sensor not in {"cctv_3", "cctv_4", "cctv_5", "amr_camera"})
 
 # /joint_states로 내보낼 TIAGo 관절 (팔·몸통·머리·그리퍼·바퀴). 보조바퀴(caster)는 수동 관절이라 제외.
 JOINT_STATE_NAMES = [
@@ -152,6 +158,9 @@ class WorkerScript:
             break
         return dist, stand
 
+    def body_pose(self, poser, sim_time, position):
+        return poser.pose(*position, *self.gait_state(sim_time))
+
     def apply(self, model, data) -> tuple[float, float, float]:
         x, y, yaw = self.position(data.time)
         mocap = model.body_mocapid[model.body("worker").id]
@@ -205,7 +214,7 @@ def rot_to_quat(rot) -> tuple[float, float, float, float]:
 class CameraRig:
     """카메라 여러 대를 하나의 렌더러로 그린다. 렌더러는 생성한 스레드에서만 써야 한다 (OpenGL 컨텍스트)."""
 
-    def __init__(self, model, width=640, height=480, sensors=tuple(CAMERAS)):
+    def __init__(self, model, width=640, height=480, sensors=DEFAULT_CAMERAS):
         self.model, self.width, self.height = model, width, height
         self.sensors = list(sensors)
         self.renderer = mujoco.Renderer(model, height=height, width=width)

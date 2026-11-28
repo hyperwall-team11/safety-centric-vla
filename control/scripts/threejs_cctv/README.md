@@ -1,5 +1,7 @@
 # Three.js 가상 CCTV 오프라인 영상
 
+실시간 발표용 창고는 고정 CCTV 01~05와 AMR 전방 카메라를 사용합니다. CCTV 04는 낙상자 VLM 점검에 원본 시각이 포함된 스냅샷을 제공합니다. 실행은 [창고 시연 안내](../../../docs/warehouse-presentation.md)를 참조합니다.
+
 MuJoCo ① 공장 장면(`mujoco/models/plant_scene.xml`)을 Three.js로 렌더해 CV 오프라인 시험용 CCTV 영상을 만든다.
 
 - **MuJoCo**: 위치·충돌·가림의 기준. 로봇 셀(TIAGo, 금지구역, A·B 작업대)은 `scenario_scene.xml`과 같고, 주변 설비는 단순 형상 `prop_<종류>`로 둔다.
@@ -110,3 +112,8 @@ python cctv_post.py --dir ../../outputs/threejs_cctv   # raw_*.png → CCTV 효�
 ## 에셋 라이선스
 
 `fetch_assets.py`가 받는 텍스처·HDRI·모델은 모두 [Poly Haven](https://polyhaven.com/license) CC0이다. 작업자 모델은 MakeHuman CC0 에셋(PR #43)이다.
+
+### 창고 시연의 외부 물류 차량 모델
+
+- `models/warehouse-forklift.glb`는 [Forklift v1 LOD2](https://tevy.dev/models/forklift)의 CC0 모델입니다. MuJoCo 포크 높이를 모델의 캐리지에 반영합니다.
+- `models/warehouse-tug.glb`는 [Aircraft Pushback Tug v1 LOD2](https://tevy.dev/models/pushback-tug)의 CC0 모델입니다. 원본 토우바를 숨기고 창고 카트 연결봉을 렌더합니다.

@@ -141,7 +141,16 @@ BACKEND_CTL_ROS_ENABLED=1 python -m uvicorn app.main:app
 
 ROS 2 모드에서는 실행 직전 재검증을 통과한 승인 스냅샷만 `/safety/approved_action`에 발행합니다. Backend의 `{x,y,z}` 좌표는 CTL의 `[x,y,z]` 좌표로 바꾸고, 발행 성공 후에만 Proposal을 `EXECUTING`으로 전이합니다. `/adapter/{robot_id}/result`의 `RESULT`는 표준 실패 코드로 정규화해 결과 API에 반영하며 `/safety/heartbeat`는 5 Hz로 발행합니다.
 
-실행 중인 로봇과 연결된 `CRITICAL` HazardEvent가 등록되면 `/safety/estop`(latched)에 정지 신호를 발행하고, 그 위험이 모두 해제되면 정지 신호를 풉니다. 로봇 복귀는 승인된 `RESUME`으로만 합니다.
+실행 중인 로봇과 연결된 `CRITICAL` HazardEvent가 등록되면 `/safety/estop`(latched)에 정지 신호를 발행하고, 그 위험이 모두 해제되면 정지 신호를 풉니다. 로봇 복귀에는 승인된 `RESUME`이 필요합니다. 창고 시연에서 운영자 위험 해제 뒤 AMR에 `RESUME`을 발행하는 단계는 아직 연결되지 않았습니다.
+
+운영 콘솔의 수동 정지는 `POST /safety/estop`으로 전역 E-Stop을 발행합니다. 운영자
+정지 상태는 Redis 스냅샷에도 보존되며, 실행 중 Proposal과 Task를 `HELD`, Robot을
+`ESTOP`으로 전이하고 `triggered_by=OPERATOR` 감사 로그를 남깁니다. 인증이 활성화된
+환경에서는 `OPERATOR` 또는 `ADMIN` 역할만 정지·해제를 호출할 수 있습니다. `POST
+/safety/estop/release`는 latched 정지 신호만 해제하며 로봇을 자동 재개하지 않습니다.
+열린 위험 기반 정지가 남아 있으면 신호는 계속 활성 상태입니다.
+
+발표용 창고의 CCTV 04 낙상자 점검은 후방 통로에서 확인된 작업자 위험을 `UNKNOWN / WARNING`으로 저장합니다. [시연 절차](../docs/warehouse-presentation.md)에서 영상 관측과 위험 기록을 확인할 수 있습니다.
 
 `ZONE` 목적지를 실제 실행하려면 해당 Zone의 `geometry.navigation_target`에 `{x,y,z}` 좌표가 있어야 합니다. 없으면 명령을 추측해 보내지 않고 `422`로 차단합니다.
 
@@ -252,8 +261,12 @@ VLA는 `action_type`, `parameters`, `trajectory`, `frame_id`, `speed_limit`만 �
 모델 추론은 저장소 잠금 밖에서 실행하며, 완료 후 TaskOrder·Robot·Zone과 활성
 Proposal을 다시 확인합니다. 추론 중 문맥이 바뀌면 오래된 결과를 저장하지 않고
 `409`를, 모델 서버 연결 실패·시간 초과 등 Provider 예외는 `503`을 반환합니다.
-일반적인 OpenVLA의 7차원 행동 벡터를 연결하려면 로봇별 좌표계·제어 주기에 맞춰
-이 구조화 계약으로 변환하는 별도 Adapter가 필요합니다.
+일반적인 OpenVLA의 7차원 행동 벡터
+`[dx, dy, dz, droll, dpitch, dyaw, gripper]`는
+`app.openvla_adapter.convert_openvla_action_7d()`가 `MANIPULATE.parameters.ee_delta`로
+변환합니다. 평행이동은 m, RPY 회전은 rad, gripper는 `[-1, 1]`이며,
+제어 한 주기의 축별 한계는 `0.05m`, `0.25rad`입니다. 한계를 넘는 제안은
+Safety Gate가 `precondition-ee-delta-bounds`로 거절합니다.
 현재 TaskOrder v1.1에서 VLA 자동·직접 제안으로 허용하는 행동은 목적지가 구조화된
 `MOVE_TO`와 대상 물체·목적지가 구조화된 `MANIPULATE`입니다. `STOP`·`RESUME`은
 일반 VLA 출력으로 받지 않고 별도 안전 제어 경로에서만 생성합니다.
@@ -274,6 +287,27 @@ curl -X POST http://127.0.0.1:8000/task-orders/{task_id}/action-proposals \
 `MOVE_TO` 제안은 `parameters.target_pose`와 `parameters.speed_limit`를 생성합니다. 대상 물체가 없는 이동 작업은 기존처럼 목적지 `MOVE_TO` 하나를 생성합니다. 대상 물체가 있는 작업은 먼저 `POST /physical-objects`로 물체의 현재 pose를 등록한 뒤 빈 요청 `{}`을 보내면, 성공한 Proposal 이력을 기준으로 `물체 접근 MOVE_TO → PICK → 목적지 MOVE_TO → PLACE` 중 다음 단계 하나를 자동 생성합니다. `"manipulation": "PICK"` 또는 `"PLACE"`를 명시하면 기존 수동 단계 생성도 사용할 수 있습니다. `MANIPULATE` 제안은 스키마 v1.1에 맞춰 `manipulation`, `object_id`, `target_pose`를 생성합니다. 외부 VLA가 직접 제안을 등록할 때 선택적인 `parameters.priority`는 `NORMAL` 또는 `SAFETY`를 받으며, `SAFETY`는 시스템이 발행하는 `STOP`·`RESUME`에만 허용합니다.
 
 성공하면 TaskOrder가 `CREATED`에서 `PLANNING`으로 바뀌며 Proposal은 `PROPOSED`로 저장됩니다. 같은 TaskOrder에 활성 Proposal을 중복 생성하면 `409`를 반환합니다. 선택적인 `Idempotency-Key`를 보낸 경우, 동일한 키와 동일한 본문을 재전송하면 기존 Proposal을 `200`으로 반환하고 새 Proposal을 만들지 않습니다. 같은 키에 다른 본문을 보내면 `409`입니다.
+
+GPU에서 실행한 OpenVLA 출력은 다음 전용 경계로 보낼 수 있습니다.
+
+```bash
+python vla/openvla_single_image_infer.py \
+  --image /shared/cctv.png \
+  --instruction 'grasp the red box' \
+  --backend-url http://127.0.0.1:8000 \
+  --task-id {task_id} \
+  --manipulation PICK
+```
+
+스크립트는 `POST /task-orders/{task_id}/openvla-actions`로 7D 한 주기를
+제출하며, Backend는 대상 로봇·물체·목적지를 신뢰된 TaskOrder 문맥에서
+주입합니다. 반환된 Proposal은 기존 `/evaluate` → `/execute` 경로를 그대로
+통과해야 ROS 2로 전달됩니다. `phase_complete` 기본값은 `false`로, 한 번의
+EE_DELTA 실행 성공을 PICK/PLACE 전체 완료로 간주하지 않습니다. 새 관측으로
+단계 완료가 확인된 마지막 주기에만 `--phase-complete`를 사용합니다.
+새 CCTV 프레임마다 이 과정을 반복하려면
+[`vla/openvla_closed_loop.py`](../vla/openvla_closed_loop.py)를 사용합니다. Safety 거절,
+HELD/E-Stop, 실행 실패 후에는 새 Proposal을 만들지 않는 Fail-Closed 루프입니다.
 
 대상 물체가 있는 운반 TaskOrder는 여러 ActionProposal을 순차 실행합니다. 수동 연동에서는 0.5초 주기 실행기가 `POST /task-orders/{task_id}/action-proposals`에 `{}`을 반복 전송할 수 있습니다. Backend가 생성·평가·실행까지 자동 진행하게 하려면 다음처럼 Closed-Loop Worker를 활성화합니다.
 
@@ -325,6 +359,7 @@ Worker가 비활성화된 수동 API 모드의 기존 전이는 유지됩니다.
 - `POST /task-orders/from-natural-language`
 - `GET /task-orders/{task_id}`
 - `POST /task-orders/{task_id}/action-proposals`
+- `POST /task-orders/{task_id}/openvla-actions`
 - `GET /task-orders/{task_id}/action-proposals`
 - `POST /action-proposals`
 - `POST /action-proposals/{proposal_id}/evaluate`

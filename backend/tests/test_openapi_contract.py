@@ -31,6 +31,7 @@ class OpenApiContractTest(unittest.TestCase):
             ("GET", "/task-orders/{task_id}"),
             ("POST", "/task-orders/{task_id}/resume-proposal"),
             ("POST", "/task-orders/{task_id}/action-proposals"),
+            ("POST", "/task-orders/{task_id}/openvla-actions"),
             ("GET", "/task-orders/{task_id}/action-proposals"),
             ("POST", "/action-proposals"),
             ("POST", "/action-proposals/{proposal_id}/evaluate"),
@@ -41,14 +42,17 @@ class OpenApiContractTest(unittest.TestCase):
             ("POST", "/hazards"),
             ("POST", "/hazards/{hazard_id}/resolve"),
             ("POST", "/hazards/{hazard_id}/clearance"),
+            ("GET", "/safety/estop"),
+            ("POST", "/safety/estop"),
+            ("POST", "/safety/estop/release"),
             ("GET", "/safety-rules"),
             ("GET", "/execution-logs"),
         }
 
         self.assertEqual(schema["info"]["version"], "0.2.0")
-        self.assertEqual(len(schema["paths"]), 25)
+        self.assertEqual(len(schema["paths"]), 28)
         self.assertEqual(actual_operations, expected_operations)
-        self.assertEqual(len(actual_operations), 31)
+        self.assertEqual(len(actual_operations), 35)
         self.assertEqual(
             schema["components"]["securitySchemes"]["BearerAuth"]["scheme"],
             "bearer",

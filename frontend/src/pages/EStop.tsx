@@ -1,6 +1,6 @@
-import { Link, useNavigate } from "react-router-dom";
 import { useState } from "react";
-import { api } from "../api/client";
+import { Link, useNavigate } from "react-router-dom";
+import { ApiError, api } from "../api/client";
 import { usePolling } from "../hooks/usePolling";
 import { Async, Panel, Status, Table, time } from "../components/ui";
 
@@ -11,8 +11,9 @@ export function EStop() {
   const tasks = usePolling(() => api.tasks("HELD"), 2000);
   const logs = usePolling(api.executionLogs, 2000);
   const auth = usePolling(api.authStatus, 5000, false);
-  const [error, setError] = useState<string>();
+  const estop = usePolling(api.estopStatus, 1000);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
   const stops = (logs.data ?? []).filter((l) => l.decision === "ESTOP").reverse();
   const operator = auth.data?.enabled === false || ["OPERATOR", "ADMIN"].includes(auth.data?.role ?? "");
   const resume = (taskId: string) => {
@@ -24,12 +25,51 @@ export function EStop() {
       .finally(() => setBusy(false));
   };
 
+  const act = (action: "trigger" | "release") => {
+    const message = action === "trigger"
+      ? "전체 로봇에 비상정지를 발행할까요? 실행 중 작업은 즉시 보류됩니다."
+      : "운영자 비상정지 신호를 해제할까요? 로봇은 자동으로 재개되지 않습니다.";
+    if (!window.confirm(message)) return;
+    setBusy(true);
+    setError(undefined);
+    const request = action === "trigger"
+      ? api.triggerEstop("운영자 콘솔 수동 비상정지")
+      : api.releaseEstop();
+    request
+      .catch((e) => setError(e instanceof ApiError ? `${e.status}: ${JSON.stringify(e.detail)}` : String(e)))
+      .finally(() => {
+        setBusy(false);
+        estop.refresh();
+        robots.refresh();
+        tasks.refresh();
+        logs.refresh();
+      });
+  };
+
   return (
     <>
       <div className="page-head">
         <div className="page-head-copy"><span className="eyebrow">비상정지 · 복귀</span><h1>해제와 복귀는 분리합니다.</h1><p>CV 안전 확인, 관리자 위험 해제, RESUME 규칙 검증을 모두 통과해야 ROS 2 복귀 명령이 발행됩니다.</p></div>
-        <button className="danger" disabled title="운영자 E-Stop API가 아직 없어요">비상정지 · API 대기</button>
+        <div className="estop-actions">
+          <button className="danger" disabled={busy || estop.data?.operator_active === true} onClick={() => act("trigger")}>전체 비상정지</button>
+          <button className="button subtle" disabled={busy || estop.data?.operator_active !== true} onClick={() => act("release")}>정지 신호 해제</button>
+        </div>
       </div>
+      {error && <p className="error" role="alert">{error}</p>}
+      <Panel title="비상정지 신호">
+        <Async state={estop}>
+          {(current) => (
+            <dl className="fields">
+              <dt>현재 신호</dt><dd><Status value={current.active ? "ESTOP" : "IDLE"} /></dd>
+              <dt>운영자 정지</dt><dd>{current.operator_active ? "활성" : "비활성"}</dd>
+              <dt>위험 연동</dt><dd>{current.hazard_ids.join(", ") || "없음"}</dd>
+              <dt>정지 사유</dt><dd>{current.reason ?? "-"}</dd>
+              <dt>요청자</dt><dd>{current.requested_by ?? "로컬 운영자"}</dd>
+              <dt>발행 시각</dt><dd>{current.issued_at ? time(current.issued_at) : "-"}</dd>
+            </dl>
+          )}
+        </Async>
+      </Panel>
       <Panel title="정지 중 로봇">
         <Async state={robots}>
           {(rows) => (
@@ -42,11 +82,11 @@ export function EStop() {
           )}
         </Async>
       </Panel>
-      {error && <p className="error" role="alert">{error}</p>}
       <Panel title="복귀 순서" className="recovery-panel">
         <ol className="steps">
           <li>CV가 모든 감시 카메라와 Worker 스냅샷으로 2초간 안전 상태 확인</li>
           <li><Link to="/hazards">위험 모니터링</Link>에서 관리자 권한으로 관련 위험 해제</li>
+          <li>운영자 정지를 사용했다면 위의 정지 신호 해제</li>
           <li>RESUME 제안을 다시 검증·실행해 로봇을 IDLE로 복귀</li>
         </ol>
       </Panel>

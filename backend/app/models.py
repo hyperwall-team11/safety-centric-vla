@@ -325,10 +325,25 @@ class MoveToParameters(OntologyModel):
     priority: ActionPriority | None = None
 
 
+class EndEffectorDelta(OntologyModel):
+    """One closed-loop OpenVLA end-effector command.
+
+    Translation is expressed in metres and rotation in roll/pitch/yaw radians,
+    both relative to ``ActionProposal.frame_id``. ``gripper`` keeps the model's
+    normalized command so the robot-specific adapter can map it to hardware.
+    """
+
+    translation: Vector3
+    rotation_rpy: Vector3
+    gripper: float = Field(ge=-1, le=1)
+    phase_complete: bool = False
+
+
 class ManipulateParameters(OntologyModel):
     manipulation: ManipulationType
     object_id: NonBlankString
     target_pose: TaskDestination
+    ee_delta: EndEffectorDelta | None = None
     priority: ActionPriority | None = None
 
 
@@ -386,6 +401,15 @@ class ActionProposal(OntologyModel):
 class ProposalGenerationRequest(OntologyModel):
     speed_limit: float | None = Field(default=None, gt=0)
     manipulation: ManipulationType | None = None
+
+
+class OpenVlaActionSubmission(OntologyModel):
+    action_7d: list[float] = Field(min_length=7, max_length=7)
+    manipulation: ManipulationType
+    speed_limit: float = Field(gt=0)
+    phase_complete: bool = False
+    model_name: NonBlankString = "openvla-7b"
+    model_version: NonBlankString = "unknown"
 
 
 class RuleType(str, Enum):
@@ -555,6 +579,21 @@ class TriggerSource(str, Enum):
     RULE_ENGINE = "RULE_ENGINE"
     OPERATOR = "OPERATOR"
     HEARTBEAT_LOSS = "HEARTBEAT_LOSS"
+
+
+class OperatorEstopRequest(OntologyModel):
+    reason: NonBlankString = Field(default="운영자 비상정지", max_length=500)
+
+
+class SafetyEstopStatus(OntologyModel):
+    active: bool
+    operator_active: bool
+    hazard_ids: list[str]
+    held_robot_ids: list[str] = Field(default_factory=list)
+    held_task_ids: list[str] = Field(default_factory=list)
+    requested_by: str | None = None
+    reason: str | None = None
+    issued_at: datetime | None = None
 
 
 class RuleResult(OntologyModel):

@@ -141,6 +141,7 @@ button:active:not(:disabled), .button:active { transform: scale(.97); }
 button.primary, .button.primary { color: #fff; background: var(--blue); border-color: var(--blue); }
 button.primary:hover:not(:disabled), .button.primary:hover { background: var(--blue-deep); border-color: var(--blue-deep); }
 button.danger { min-width: 190px; min-height: 52px; color: #fff; background: var(--red); border-color: var(--red); }
+.estop-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
 .button.subtle { color: var(--ink); border-color: rgba(0,0,0,.2); }
 .compact-button { min-height: 32px; padding: 6px 12px; font-size: 10px; }
 button:disabled { opacity: .38; cursor: not-allowed; }

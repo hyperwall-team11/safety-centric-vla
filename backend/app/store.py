@@ -94,6 +94,11 @@ def _initialize_empty_state(target: Any) -> None:
     target.hazard_clearances: dict[str, HazardClearanceEvidence] = {}
     # CRITICAL HazardEvent 중 E-Stop을 발행하게 한 hazard_id.
     target.estop_hazard_ids: set[str] = set()
+    # 운영자 수동 E-Stop은 HazardEvent 해제와 독립적으로 유지한다.
+    target.operator_estop_active: bool = False
+    target.operator_estop_reason: str | None = None
+    target.operator_estop_requested_by: str | None = None
+    target.operator_estop_issued_at: datetime | None = None
     target.logs: list[ExecutionLog] = []
     # 평가 단계 사전 시뮬레이션 PASS의 snapshot_id. 실행 직전 같은 상태일 때만 재사용한다.
     target.twin_simulation_passes: dict[str, str] = {}
@@ -147,6 +152,14 @@ def _serialize_state(source: Any) -> dict[str, Any]:
             key: _dump_model(value) for key, value in source.hazard_clearances.items()
         },
         "estop_hazard_ids": sorted(source.estop_hazard_ids),
+        "operator_estop_active": source.operator_estop_active,
+        "operator_estop_reason": source.operator_estop_reason,
+        "operator_estop_requested_by": source.operator_estop_requested_by,
+        "operator_estop_issued_at": (
+            source.operator_estop_issued_at.isoformat()
+            if source.operator_estop_issued_at is not None
+            else None
+        ),
         "logs": [_dump_model(value) for value in source.logs],
         "twin_simulation_passes": dict(source.twin_simulation_passes),
         "rules": {key: _dump_model(value) for key, value in source.rules.items()},
@@ -215,6 +228,15 @@ def _restore_state(target: Any, snapshot: dict[str, Any]) -> None:
         for key, value in snapshot.get("hazard_clearances", {}).items()
     }
     target.estop_hazard_ids = set(snapshot["estop_hazard_ids"])
+    target.operator_estop_active = bool(snapshot.get("operator_estop_active", False))
+    target.operator_estop_reason = snapshot.get("operator_estop_reason")
+    target.operator_estop_requested_by = snapshot.get("operator_estop_requested_by")
+    operator_estop_issued_at = snapshot.get("operator_estop_issued_at")
+    target.operator_estop_issued_at = (
+        datetime.fromisoformat(operator_estop_issued_at)
+        if operator_estop_issued_at is not None
+        else None
+    )
     target.logs = [ExecutionLog.model_validate(value) for value in snapshot["logs"]]
     # 이 필드가 없던 스냅샷은 저장된 PASS가 없는 것으로 복구한다(실행 직전 다시 시뮬레이션).
     target.twin_simulation_passes = dict(snapshot.get("twin_simulation_passes", {}))
@@ -243,7 +265,7 @@ class InMemoryStore:
     def synchronize_safety_publish(self, publish: Callable[[bool], None]) -> None:
         with self._safety_publish_lock:
             with self.lock:
-                publish(bool(self.estop_hazard_ids))
+                publish(self.operator_estop_active or bool(self.estop_hazard_ids))
 
     def start_change_notifications(self, callback: Callable[[], Any]) -> None:
         del callback
@@ -419,7 +441,7 @@ class RedisStore:
         try:
             with self.lock:
                 self._ensure_lock_owned(safety_lock)
-                publish(bool(self.estop_hazard_ids))
+                publish(self.operator_estop_active or bool(self.estop_hazard_ids))
         finally:
             try:
                 safety_lock.release()

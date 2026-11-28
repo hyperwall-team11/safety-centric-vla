@@ -165,6 +165,16 @@ class HazardRecoveryFlowTest(unittest.TestCase):
         )
         self.assertEqual(resolved.status_code, 200, resolved.text)
 
+        with store.lock:
+            store.operator_estop_active = True
+        manual_stop_blocked = self.client.post(
+            f"/task-orders/{task['task_id']}/resume-proposal"
+        )
+        self.assertEqual(manual_stop_blocked.status_code, 409, manual_stop_blocked.text)
+        self.assertIn("E-Stop", manual_stop_blocked.json()["detail"])
+        with store.lock:
+            store.operator_estop_active = False
+
         resume = self.client.post(
             f"/task-orders/{task['task_id']}/resume-proposal"
         )
@@ -191,6 +201,23 @@ class HazardRecoveryFlowTest(unittest.TestCase):
         )
         self.assertEqual(next_proposal.status_code, 201, next_proposal.text)
         self.assertEqual(next_proposal.json()["action_type"], "MOVE_TO")
+
+    def test_operator_estop_reactivation_rejects_existing_resume_proposal(self) -> None:
+        task, _ = self.create_held_task()
+        resume = self.client.post(
+            f"/task-orders/{task['task_id']}/resume-proposal"
+        )
+        self.assertEqual(resume.status_code, 201, resume.text)
+        with store.lock:
+            store.operator_estop_active = True
+
+        evaluated = self.client.post(
+            f"/action-proposals/{resume.json()['proposal_id']}/evaluate"
+        )
+
+        self.assertEqual(evaluated.status_code, 200, evaluated.text)
+        self.assertEqual(evaluated.json()["status"], "REJECTED")
+        self.assertEqual(store.tasks[task["task_id"]].status, "HELD")
 
     def test_clearance_fails_closed_when_worker_remains(self) -> None:
         hazard = self.create_hazard()

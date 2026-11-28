@@ -47,7 +47,23 @@ ROBOTS = {
 DEFAULT_ROBOT = "scenario"
 
 
-class DiffDriveSim:
+class MujocoSim:
+    """공통 MuJoCo 모델과 고정 시간 스텝."""
+
+    def __init__(self, model, data):
+        self.model = model
+        self.data = data
+
+    @property
+    def time(self) -> float:
+        return self.data.time
+
+    def step(self, duration: float) -> None:
+        # 한 번의 호출로 여러 스텝을 돈다. 스텝마다 따로 부르면 Python↔C 호출이 스텝 수만큼 늘어
+        # 물리 콜백이 길어진다(그동안 /odom 등 다른 발행이 멈춤).
+        mujoco.mj_step(self.model, self.data, nstep=max(1, round(duration / self.model.opt.timestep)))
+
+class DiffDriveSim(MujocoSim):
     """선속도(m/s)·각속도(rad/s) 명령을 좌우 바퀴 각속도로 바꿔 로봇을 움직인다."""
 
     def __init__(self, robot: str = DEFAULT_ROBOT, model_path=None, model=None, data=None):
@@ -71,10 +87,6 @@ class DiffDriveSim:
         self.command = (0.0, 0.0)
         mujoco.mj_forward(m, self.data)
 
-    @property
-    def time(self) -> float:
-        return self.data.time
-
     def set_velocity(self, linear: float, angular: float) -> None:
         half = angular * self.wheel_separation / 2
         self.data.ctrl[self.left] = (linear - half) / self.wheel_radius
@@ -83,11 +95,6 @@ class DiffDriveSim:
 
     def stop(self) -> None:
         self.set_velocity(0.0, 0.0)
-
-    def step(self, duration: float) -> None:
-        # 한 번의 호출로 여러 스텝을 돈다. 스텝마다 따로 부르면 Python↔C 호출이 스텝 수만큼 늘어
-        # 물리 콜백이 길어진다(그동안 /odom 등 다른 발행이 멈춤).
-        mujoco.mj_step(self.model, self.data, nstep=max(1, round(duration / self.model.opt.timestep)))
 
     def pose(self):
         """(x, y, yaw) — world 좌표, yaw는 rad."""

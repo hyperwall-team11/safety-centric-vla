@@ -60,6 +60,8 @@ from .models import (
     HazardStatus,
     HazardType,
     NaturalLanguageTaskRequest,
+    OpenVlaActionSubmission,
+    OperatorEstopRequest,
     PhysicalObject,
     ProposalGenerationRequest,
     ProposalStatus,
@@ -68,6 +70,7 @@ from .models import (
     RobotStatus,
     RuleResult,
     SafetyRule,
+    SafetyEstopStatus,
     Sensor,
     SensorStatus,
     TaskOrder,
@@ -84,6 +87,7 @@ from .models import (
     ZoneDestination,
     utc_now,
 )
+from .openvla_adapter import convert_openvla_action_7d
 from .safety import (
     SENSOR_FRAME_TIMEOUT,
     WORKER_SNAPSHOT_MAX_AGE_SECONDS,
@@ -109,7 +113,11 @@ from .twin_simulation import (
     stale_result,
     run_simulation,
 )
-from .vla_output import VlaOutputValidationError, validate_vla_proposal
+from .vla_output import (
+    VlaOutputConversionError,
+    VlaOutputValidationError,
+    validate_vla_proposal,
+)
 
 
 app = FastAPI(
@@ -166,6 +174,9 @@ def proposal_completes_task(task: TaskOrder, proposal: ActionProposal) -> bool:
         return True
     if proposal.action_type != ActionType.MANIPULATE:
         return False
+    ee_delta = proposal.parameters.get("ee_delta")
+    if isinstance(ee_delta, dict) and not ee_delta.get("phase_complete", False):
+        return False
     return proposal.parameters.get("manipulation") == "PLACE"
 
 
@@ -206,6 +217,10 @@ def apply_successful_action_state(
     elif (
         proposal.action_type == ActionType.MANIPULATE
         and proposal.parameters.get("manipulation") == "PLACE"
+        and (
+            "ee_delta" not in proposal.parameters
+            or proposal.parameters["ee_delta"].get("phase_complete") is True
+        )
         and task.target_object_id is not None
     ):
         physical_object = store.objects.get(task.target_object_id)
@@ -616,15 +631,29 @@ def sync_estop(reason: str) -> None:
 
 
 def _publish_estop(active: bool, reason: str) -> None:
-    publisher = getattr(action_dispatcher, "publish_estop", None)
-    if publisher is None:
-        LOGGER.error("E-Stop을 발행할 수 없는 전송기입니다(%s): %s", action_dispatcher.name, reason)
-        return
     try:
-        publisher(active, "RULE_ENGINE")
+        _dispatch_estop(active, TriggerSource.RULE_ENGINE)
         LOGGER.warning("E-Stop %s 발행: %s", "정지" if active else "해제", reason)
     except DispatchError as exc:
         LOGGER.error("E-Stop 발행 실패(%s): %s", reason, exc)
+
+
+def _dispatch_estop(active: bool, triggered_by: TriggerSource) -> dict:
+    """E-Stop 발행 실패를 호출자가 처리할 수 있는 엄격한 전송 경계."""
+    publisher = getattr(action_dispatcher, "publish_estop", None)
+    if publisher is None:
+        raise DispatchError(
+            f"E-Stop을 발행할 수 없는 전송기입니다({action_dispatcher.name})"
+        )
+    return publisher(active, triggered_by.value)
+
+
+def require_operator(request: Request) -> str | None:
+    """인증 사용 시 OPERATOR·ADMIN만 안전 제어 변경을 허용한다."""
+    authenticator: TokenAuthenticator = app.state.token_authenticator
+    if not authenticator.enabled:
+        return None
+    return require_api_role(request, OPERATOR_ROLES)
 
 
 def apply_ctl_ack_event(
@@ -1198,6 +1227,63 @@ def generate_action_proposal(
         return proposal
 
 
+@app.post(
+    "/task-orders/{task_id}/openvla-actions",
+    response_model=ActionProposal,
+    status_code=status.HTTP_201_CREATED,
+)
+def submit_openvla_action(
+    task_id: str,
+    request: OpenVlaActionSubmission,
+) -> ActionProposal:
+    """OpenVLA 7D 출력 한 주기를 검증 대기 ActionProposal로 등록한다."""
+
+    with store.lock:
+        task = store.tasks.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="TaskOrder를 찾을 수 없습니다.")
+        if task.status not in PLANNABLE_TASK_STATUSES:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{task.status} 상태의 TaskOrder에서는 OpenVLA 제안을 생성할 수 없습니다.",
+            )
+        robot = store.robots.get(task.target_robot_id)
+        if robot is None:
+            raise HTTPException(status_code=404, detail="TaskOrder의 대상 Robot을 찾을 수 없습니다.")
+        active = next(
+            (
+                proposal
+                for proposal in store.proposals.values()
+                if proposal.task_id == task_id
+                and proposal.status in ACTIVE_PROPOSAL_STATUSES
+            ),
+            None,
+        )
+        if active is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"이 TaskOrder에는 활성 ActionProposal이 이미 있습니다: {active.proposal_id}",
+            )
+        try:
+            proposal = convert_openvla_action_7d(
+                request.action_7d,
+                task,
+                robot,
+                manipulation=request.manipulation,
+                speed_limit=request.speed_limit,
+                phase_complete=request.phase_complete,
+                model_name=request.model_name,
+                model_version=request.model_version,
+            )
+        except VlaOutputConversionError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        store.proposals[proposal.proposal_id] = proposal
+        if task.status == TaskStatus.CREATED:
+            task.status = TaskStatus.PLANNING
+        return proposal
+
+
 @app.get(
     "/task-orders/{task_id}/action-proposals",
     response_model=list[ActionProposal],
@@ -1327,7 +1413,7 @@ def evaluate_current_safety(
         0 <= (now - observed_at).total_seconds() < WORKER_SNAPSHOT_MAX_AGE_SECONDS
     ):
         workers = store.workers
-    return evaluate_proposal(
+    rule_results, hazard_ids, estop_requested = evaluate_proposal(
         proposal,
         task,
         robot,
@@ -1338,6 +1424,19 @@ def evaluate_current_safety(
         workers=workers,
         now=now,
     )
+    rule_results.insert(
+        0,
+        RuleResult(
+            rule_id="precondition-operator-estop-released",
+            passed=not store.operator_estop_active,
+            reason=(
+                "운영자 E-Stop 신호 해제됨"
+                if not store.operator_estop_active
+                else "운영자 E-Stop 신호가 활성 상태"
+            ),
+        ),
+    )
+    return rule_results, hazard_ids, estop_requested
 
 
 def needs_collision_simulation(
@@ -2054,6 +2153,113 @@ def run_closed_loop_cycle(config: ClosedLoopConfig) -> None:
         state_broadcaster.publish()
 
 
+def _safety_estop_status(
+    *,
+    held_robot_ids: list[str] | None = None,
+    held_task_ids: list[str] | None = None,
+) -> SafetyEstopStatus:
+    return SafetyEstopStatus(
+        active=store.operator_estop_active or bool(store.estop_hazard_ids),
+        operator_active=store.operator_estop_active,
+        hazard_ids=sorted(store.estop_hazard_ids),
+        held_robot_ids=held_robot_ids or [],
+        held_task_ids=held_task_ids or [],
+        requested_by=store.operator_estop_requested_by,
+        reason=store.operator_estop_reason,
+        issued_at=store.operator_estop_issued_at,
+    )
+
+
+@app.get("/safety/estop", response_model=SafetyEstopStatus)
+def get_safety_estop() -> SafetyEstopStatus:
+    with store.lock:
+        return _safety_estop_status()
+
+
+@app.post("/safety/estop", response_model=SafetyEstopStatus)
+def trigger_operator_estop(
+    request: OperatorEstopRequest,
+    http_request: Request,
+) -> SafetyEstopStatus:
+    requested_by = require_operator(http_request)
+    issued_at = utc_now()
+    held_robot_ids: set[str] = set()
+    held_task_ids: set[str] = set()
+    with store.lock:
+        first_activation = not store.operator_estop_active
+        store.operator_estop_active = True
+        store.operator_estop_reason = request.reason
+        store.operator_estop_requested_by = requested_by
+        store.operator_estop_issued_at = issued_at
+
+        for proposal in store.proposals.values():
+            if proposal.status != ProposalStatus.EXECUTING:
+                continue
+            proposal.status = ProposalStatus.HELD
+            held_robot_ids.add(proposal.robot_id)
+            task = store.tasks.get(proposal.task_id)
+            if task is not None:
+                task.status = TaskStatus.HELD
+                held_task_ids.add(task.task_id)
+            if first_activation:
+                store.logs.append(
+                    ExecutionLog(
+                        proposal_id=proposal.proposal_id,
+                        decision=Decision.ESTOP,
+                        rule_results=[],
+                        hazard_ids=[],
+                        robot_id=proposal.robot_id,
+                        result_message=f"운영자 비상정지: {request.reason}",
+                        triggered_by=TriggerSource.OPERATOR,
+                    )
+                )
+
+        for robot in store.robots.values():
+            robot.status = RobotStatus.ESTOP
+            robot.updated_at = issued_at
+            held_robot_ids.add(robot.robot_id)
+
+    state_broadcaster.publish()
+    try:
+        with ESTOP_PUBLISH_LOCK:
+            store.synchronize_safety_publish(
+                lambda active: _dispatch_estop(active, TriggerSource.OPERATOR)
+            )
+    except DispatchError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"운영자 E-Stop 상태는 저장했지만 CTL 발행에 실패했습니다: {exc}",
+        ) from exc
+
+    with store.lock:
+        return _safety_estop_status(
+            held_robot_ids=sorted(held_robot_ids),
+            held_task_ids=sorted(held_task_ids),
+        )
+
+
+@app.post("/safety/estop/release", response_model=SafetyEstopStatus)
+def release_operator_estop(http_request: Request) -> SafetyEstopStatus:
+    require_operator(http_request)
+    with store.lock:
+        store.operator_estop_active = False
+
+    state_broadcaster.publish()
+    try:
+        with ESTOP_PUBLISH_LOCK:
+            store.synchronize_safety_publish(
+                lambda active: _dispatch_estop(active, TriggerSource.OPERATOR)
+            )
+    except DispatchError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"운영자 E-Stop 해제 상태는 저장했지만 CTL 발행에 실패했습니다: {exc}",
+        ) from exc
+
+    with store.lock:
+        return _safety_estop_status()
+
+
 
 @app.get("/hazards", response_model=list[HazardEvent])
 def list_hazards(
@@ -2268,6 +2474,11 @@ def acknowledge_hazard_clearance(
 def create_resume_proposal(task_id: str, http_request: Request) -> ActionProposal:
     require_api_role(http_request, OPERATOR_ROLES)
     with store.lock:
+        if store.operator_estop_active:
+            raise HTTPException(
+                status_code=409,
+                detail="운영자 E-Stop 신호를 먼저 해제해야 합니다.",
+            )
         task = store.tasks.get(task_id)
         if task is None:
             raise HTTPException(status_code=404, detail="TaskOrder를 찾을 수 없습니다.")

@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>물류창고 안전 운반 시연</title>
+<style>
+:root{color-scheme:dark;font:16px system-ui,sans-serif;background:#10171c;color:#e8eef0}
+*{box-sizing:border-box}body{margin:0}main{max-width:1500px;margin:auto;padding:24px}
+header,article,form,.heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
+h1{font-size:1.45rem;margin:0}h2{font-size:1rem;margin:0}.muted{color:#a7b5bb}
+.live{color:#74e4bc}.camera-grid{display:grid;grid-template-columns:2.1fr 1fr;gap:12px;margin:16px 0}
+.camera{display:flex;flex-direction:column;border:1px solid #354950;border-radius:8px;background:#19252b;overflow:hidden;text-align:left;color:inherit;padding:0;font:inherit;cursor:pointer}
+.camera.selected{grid-row:span 5;border-color:#74e4bc}.camera:not(.selected) img{max-height:115px}.camera img{width:100%;aspect-ratio:4/3;object-fit:contain;background:#05090c;display:block}
+.camera .caption{padding:8px 12px}.camera:focus-visible{outline:2px solid #74e4bc}
+.details{display:grid;grid-template-columns:1.1fr 1fr;gap:12px}.card{border:1px solid #354950;border-radius:8px;background:#19252b;padding:16px}
+label{display:block;margin:12px 0 6px}input{background:#10171c;color:inherit;min-width:0;width:100%;border:1px solid #49616a;border-radius:5px;padding:10px;font:inherit}
+button:not(.camera){border:1px solid #48636a;border-radius:5px;padding:8px 12px;font:inherit;color:inherit;background:#263b42;white-space:nowrap}button:disabled{opacity:.5}
+#send{background:#74e4bc;color:#17312a;font-weight:600}ol{margin:12px 0 0;padding-left:22px}li{padding:5px 0}time{color:#a7b5bb;font-variant-numeric:tabular-nums;font-size:.84rem}#result{white-space:pre-wrap;margin-bottom:0}
+@media(max-width:760px){main{padding:12px}.details{grid-template-columns:1fr}.camera-grid{grid-template-columns:1fr 1fr}.camera.selected{grid-column:span 2;grid-row:auto}}
+</style>
+<main>
+<header><h1>물류창고 안전 운반 시연</h1><span id="health" role="status" class="muted">서비스 연결 중</span></header>
+<section class="camera-grid" aria-label="실시간 카메라">
+  <button type="button" class="camera selected" aria-pressed="true" data-camera="cctv_1"><img alt=""><span class="caption">CCTV 01 · 운반 통로</span></button>
+  <button type="button" class="camera" aria-pressed="false" data-camera="cctv_2"><img alt=""><span class="caption">CCTV 02 · 작업자 횡단 구역</span></button>
+  <button type="button" class="camera" aria-pressed="false" data-camera="cctv_3"><img alt=""><span class="caption">CCTV 03 · 출하 도크</span></button>
+  <button type="button" class="camera" aria-pressed="false" data-camera="cctv_4"><img alt=""><span class="caption">CCTV 04 · 후방 보관 구역</span></button>
+  <button type="button" class="camera" aria-pressed="false" data-camera="cctv_5"><img alt=""><span class="caption">CCTV 05 · 부품 공급 구역</span></button>
+  <button type="button" class="camera" aria-pressed="false" data-camera="amr_camera"><img alt=""><span class="caption">AMR CAM · 로봇 전방</span></button>
+</section>
+<section class="details">
+  <div class="card"><h2>운반 명령</h2>
+    <label for="instruction" class="muted">자연어 입력</label>
+    <form><input id="instruction" required maxlength="240" value="부품 상자를 실은 로봇을 &quot;검사 스테이션&quot;으로 이동해"><button id="send" disabled>검증 후 출발</button></form>
+    <p id="result" role="status" class="muted">여섯 카메라와 작업자 검출기 준비 대기 중</p>
+  </div>
+  <div class="card">
+    <div class="heading"><h2>안전 이벤트</h2><button id="resolve" disabled>운영자 확인 및 위험 해제</button></div>
+    <p>
+      <button id="inspect-fall" type="button">CCTV 04 낙상자 점검</button>
+      <a id="fall-preview" href="/fall-preview.jpg" target="_blank" rel="noopener" hidden>검출 프레임</a>
+    </p>
+    <p id="fall-status" role="status" class="muted"></p>
+    <p id="odom" class="muted">AMR 위치 수신 대기 중</p>
+    <ol id="events"></ol>
+  </div>
+</section>
+</main>
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const cameras = [...document.querySelectorAll('.camera')];
+const video = 'http://127.0.0.1:8081';
+let currentDetection = '', busy = false, ready = false;
+const eventLog = new Map();
+let inspectingFall = false;
+
+for (const camera of cameras) {
+  camera.querySelector('img').src = video + '/stream/' + camera.dataset.camera;
+  camera.onclick = () => {
+    for (const card of cameras) {
+      card.classList.toggle('selected', card === camera);
+      card.setAttribute('aria-pressed', String(card === camera));
+      card.style.order = card === camera ? -1 : 0;
+    }
+  };
+}
+
+function addEvent(key, label, at) {
+  if (at && !eventLog.has(key)) eventLog.set(key, {label, at});
+}
+
+function showEvents() {
+  const rows = [...eventLog.values()].sort((a,b) => Date.parse(a.at) - Date.parse(b.at));
+  $('events').replaceChildren(...rows.map(({label, at}) => {
+    const row = document.createElement('li'), clock = document.createElement('time');
+    clock.dateTime = at;
+    clock.textContent = new Date(at).toLocaleTimeString('ko-KR', {hour12:false, hour:'2-digit', minute:'2-digit', second:'2-digit', fractionalSecondDigits:3});
+    row.append(clock, ' ' + label);
+    return row;
+  }));
+}
+
+async function api(path, body) {
+  const response = await fetch(path, body === undefined ? {cache:'no-store'} :
+    {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error);
+  return data;
+}
+
+async function refresh() {
+  try {
+    const state = await api('/status');
+    ready = state.ready;
+    $('health').textContent = ready ? '시연 준비 완료' : state.adapter === 'ESTOP' ? 'AMR 비상 정지' :
+      state.adapter === 'MOVING' ? '운반 중' : '서비스 준비 중';
+    $('health').classList.toggle('live', ready || state.adapter === 'MOVING');
+    const {detection, odom, hazards, events} = state;
+    if (detection && detection.processed_at_utc !== currentDetection) {
+      currentDetection = detection.processed_at_utc;
+      cameras[1].querySelector('img').src = '/detection.jpg?t=' + encodeURIComponent(currentDetection);
+    }
+    if (state.first_detection_at) addEvent('detection', '작업자 검출 · CCTV 02', state.first_detection_at);
+    if (!inspectingFall && state.fall) showFall(state.fall);
+    for (const hazard of hazards) {
+      if (hazard.hazard_type === 'UNKNOWN') {
+        addEvent(hazard.hazard_id, '위험 발견 · 후방 통로 작업자 낙상 · 경고', hazard.detected_at);
+      } else if (hazard.hazard_type === 'WORKER_INTRUSION') {
+        addEvent(hazard.hazard_id, '위험 판정 · 작업자 진입', hazard.detected_at);
+      }
+    }
+    for (const event of events) {
+      if (event.kind === 'estop') addEvent(event.at, '정지 명령 · ROS E-Stop', event.at);
+      if (event.kind === 'stopped') addEvent(event.at, `로봇 정지 확인 · ${event.speed.toFixed(3)} m/s · x=${event.x.toFixed(2)} m`, event.at);
+      if (event.kind === 'release') addEvent(event.at, '운영자 확인 · 위험 신호 해제', event.at);
+    }
+    if (odom) $('odom').textContent = `${state.adapter ?? '대기'}  ·  ${odom.speed.toFixed(3)} m/s  ·  x=${odom.x.toFixed(2)} m`;
+    $('resolve').disabled = busy || !state.worker_clear || !hazards.some(h => h.status === 'OPEN' && h.hazard_type === 'WORKER_INTRUSION');
+    showEvents();
+  } catch {
+    ready = false;
+    $('health').textContent = '서비스 연결 확인 중';
+    $('resolve').disabled = true;
+  } finally {
+    $('send').disabled = busy || !ready;
+    setTimeout(refresh, 450);
+  }
+}
+
+document.querySelector('form').onsubmit = async (event) => {
+  event.preventDefault();
+  busy = true;
+  $('send').disabled = true;
+  $('result').textContent = '자연어 해석 및 사전 안전 검증 중';
+  try {
+    const {parsed, evaluated, executed, rules} = await api('/command', {instruction:$('instruction').value});
+    const relevant = rules.filter(rule => !rule.passed || rule.rule_id === 'rule-collision');
+    $('result').textContent = `해석된 작업 ${parsed.action_type} · ${parsed.target_robot_id}\n목적지 ${parsed.destination.zone_id}\n사전 검증 ${evaluated.status}${executed ? ' · 출발 명령 전달' : ''}` + relevant.map(rule => '\n' + rule.reason).join('');
+  } catch (error) { $('result').textContent = error.message; }
+  finally { busy = false; }
+};
+
+function showFall(result) {
+  const ratio = `${result.positive_frames}/${result.frame_count} 프레임`;
+  const found = result.positive_frames > 0;
+  $('fall-status').textContent = result.hazard_id ? `통로 차단 경고 등록 · ${ratio}에서 낙상자 발견` :
+    found ? `낙상자 관측 · ${ratio} · 위험 등록 기준 미달` : '낙상자 검출 없음';
+  $('fall-preview').hidden = false;
+  if (found) addEvent('fall-' + result.detected_at, '낙상자 발견 · CCTV 04', result.detected_at);
+}
+
+$('inspect-fall').onclick = async () => {
+  inspectingFall = true;
+  $('inspect-fall').disabled = true;
+  cameras.find(camera => camera.dataset.camera === 'cctv_4').click();
+  $('fall-status').textContent = 'CCTV 04 영상 5장을 Florence-2로 점검하는 중';
+  try {
+    showFall(await api('/inspect-fall', {}));
+    showEvents();
+  } catch (error) { $('fall-status').textContent = error.message; }
+  finally {
+    inspectingFall = false;
+    $('inspect-fall').disabled = false;
+  }
+};
+
+$('resolve').onclick = async () => {
+  busy = true;
+  $('resolve').disabled = true;
+  try {
+    await api('/resolve', {});
+    $('result').textContent = '위험 해제를 요청했습니다. 승인된 RESUME 경로가 연결될 때까지 AMR은 정지 상태입니다.';
+  } catch (error) { $('result').textContent = error.message; }
+  finally { busy = false; }
+};
+refresh();
+</script>

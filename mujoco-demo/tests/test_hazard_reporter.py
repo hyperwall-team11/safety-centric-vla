@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from hazard_reporter import (IntrusionTracker, build_hazard, camera_from_pose, keep_out_ring,
-                             observation_id, point_in_ring, workers_in_zone)
+                             new_run_id, observation_id, point_in_ring, workers_in_zone)
 
 SQUARE = [[-1, -1], [1, -1], [1, 1], [-1, 1], [-1, -1]]
 
@@ -162,9 +162,18 @@ class HazardReporterTests(unittest.TestCase):
         self.assertNotIn("status", hazard)
 
     def test_observation_id_is_stable(self):
-        self.assertEqual(observation_id("cctv_1", 1, 2, 0), observation_id("cctv_1", 1, 2, 0))
-        self.assertNotEqual(observation_id("cctv_1", 1, 2, 0), observation_id("cctv_2", 1, 2, 0))
+        self.assertEqual(observation_id("run-a", "cctv_1", 1, 2, 0), observation_id("run-a", "cctv_1", 1, 2, 0))
+        self.assertNotEqual(observation_id("run-a", "cctv_1", 1, 2, 0), observation_id("run-a", "cctv_2", 1, 2, 0))
 
+    def test_observation_id_differs_between_runs_with_the_same_stamp(self):
+        # 시뮬레이션 시각은 실행마다 0부터 다시 시작한다.
+        self.assertNotEqual(observation_id("run-a", "cctv_1", 0, 0, 0), observation_id("run-b", "cctv_1", 0, 0, 0))
+
+    def test_run_id_is_unique_per_start_and_shows_the_start_time(self):
+        now = datetime(2026, 11, 25, 1, 2, 3, tzinfo=timezone.utc)
+        first, second = new_run_id(now), new_run_id(now)
+        self.assertTrue(first.startswith("run-20261125T010203Z-"))
+        self.assertNotEqual(first, second)
 
 if __name__ == "__main__":
     unittest.main()

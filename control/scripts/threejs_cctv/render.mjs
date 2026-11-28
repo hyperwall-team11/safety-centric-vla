@@ -39,7 +39,7 @@ function findChromium() {
 }
 
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png',
-  '.jpg': 'image/jpeg', '.gltf': 'model/gltf+json', '.bin': 'application/octet-stream', '.hdr': 'application/octet-stream' };
+  '.jpg': 'image/jpeg', '.gltf': 'model/gltf+json', '.glb': 'model/gltf-binary', '.wasm': 'application/wasm', '.bin': 'application/octet-stream', '.hdr': 'application/octet-stream' };
 const server = http.createServer((req, res) => {
   if (rosUrl && req.url.startsWith('/ros/')) {   // 브리지 프레임·영상 중계 (같은 출처로 두려고 여기서 넘긴다)
     const up = http.request(rosUrl + req.url.slice(4), { method: req.method, headers: req.headers }, r => {

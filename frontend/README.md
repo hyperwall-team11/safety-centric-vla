@@ -15,6 +15,11 @@ CCTV 영상은 `control`에서 `pixi run bridge`와 `pixi run cctv-stream`을 �
 
 Backend 주소가 다르면 `VITE_BACKEND_URL=http://host:8000 npm run dev`. Backend에 CORS 설정이 없어 개발 서버 프록시(`/api`)로 호출합니다.
 
+
+## 발표용 창고 화면
+
+운영 콘솔은 위 개발 서버에서 실행합니다. 창고 발표는 `control`에서 `pixi run warehouse-demo`를 실행해 `http://127.0.0.1:5181`을 엽니다. 발표 화면은 CCTV 5대와 AMR 전방 카메라 확대, 자연어 운반 지시, 정지 기록, CCTV 04 낙상자 점검을 제공합니다. [발표 화면 실행 안내](../docs/warehouse-presentation.md)
+
 ## 화면과 사용자 흐름
 
 | 경로 | 화면 | 흐름 | 사용 API |
@@ -23,7 +28,7 @@ Backend 주소가 다르면 `VITE_BACKEND_URL=http://host:8000 npm run dev`. Bac
 | `/proposals`, `/proposals/:taskId` | 행동 제안 | 제안별 규칙 결과(위반 먼저, 해결 방법·속도 낮춰 재제안) → 승인 시 [실행]. 고른 제안의 경로·위반 위치를 지도에 표시 | `POST /action-proposals/{id}/evaluate`, `/execute`, `GET /execution-logs` |
 | `/hazards` | 위험 모니터링 | CRITICAL·WARNING 목록 → CV 안전 확인 상태 → 관리자 해제 | `GET /hazards`, `POST /hazards/{id}/resolve` |
 | `/site` | 현장·작업 요청 | 현장 지도·CCTV(cctv_1·2 실시간 MJPEG) 아래에서 바로 작업 요청: 지도에서 로봇·구역 클릭(명령 자동 작성) 또는 자연어 입력 → 해석 미리보기 → 작업·행동 제안 생성 → 같은 화면에서 안전 검증·실행. 계획 경로와 위반 구역·작업자를 지도에 표시. `/tasks/new`는 여기로 이동 | `POST /task-orders/preview`, `/task-orders/from-natural-language`, `/task-orders/{id}/action-proposals`, `GET /zones`, `/robots`, `/workers/snapshot`, CCTV `GET /cctv/stream/{sensor_id}` |
-| `/estop` | 비상정지·복귀 | 정지 로봇 → 위험 해제 → RESUME 제안 생성 → 검증·실행 | `GET /robots`, `/task-orders?status=HELD`, `/execution-logs`, `POST /task-orders/{id}/resume-proposal` |
+| `/estop` | 비상정지·복귀 | 전체 비상정지 → CV 안전 확인 → 관리자 위험·정지 신호 해제 → RESUME 제안 → 검증·실행 | `GET/POST /safety/estop`, `POST /safety/estop/release`, `POST /task-orders/{id}/resume-proposal`, `GET /robots`, `/task-orders?status=HELD`, `/execution-logs` |
 | `/logs` | 판단 이력 | ExecutionLog 타임라인 | `GET /execution-logs` |
 
 미해제 CRITICAL 위험이 있으면 모든 화면 위에 경보 배너를 고정합니다. 인증이 켜진 Backend에서는 상단에서 API 토큰을 입력하며, OPERATOR·ADMIN만 관리자 해제와 RESUME 제안 버튼을 사용할 수 있습니다.
@@ -32,7 +37,8 @@ Backend 주소가 다르면 `VITE_BACKEND_URL=http://host:8000 npm run dev`. Bac
 
 화면은 미리 만들어 두었고, API가 없으면 "API 대기"로 표시하며 반복 조회하지 않습니다.
 
-- 운영자 E-Stop API: 비상정지 버튼(현재 비활성)
+- `GET /hazards`: 위험 목록·경보 배너·위험 모니터링
+- `GET /workers/snapshot`: 현장 지도의 작업자 위치
 
 ## 실시간 갱신
 

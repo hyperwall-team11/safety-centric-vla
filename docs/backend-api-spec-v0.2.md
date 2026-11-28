@@ -4,7 +4,7 @@
 - 기준 코드: `backend/app/main.py`, `backend/app/models.py`
 - 기준 버전: FastAPI application `0.2.0`
 - 작성일: 2026-10-30
-- 수정일: 2026-11-25
+- 수정일: 2026-11-26
 - 기본 URL(로컬): `http://127.0.0.1:8000`
 - 대화형 문서: `/docs`
 - OpenAPI JSON: `/openapi.json`
@@ -37,7 +37,8 @@
 
 ## 2. 구현 엔드포인트
 
-현재 구현은 25개 path, 31개 HTTP operation으로 구성된다.
+현재 구현은 28개 path, 35개 HTTP operation으로 구성된다. 아래 표는 공개 HTTP API를
+정리하며, 호출 가능한 스키마는 실행 중인 Backend의 `/openapi.json`에서도 확인할 수 있다.
 
 | Method | Path | 성공 | 용도 |
 |---|---|---:|---|
@@ -60,6 +61,7 @@
 | `GET` | `/task-orders/{task_id}` | `200` | TaskOrder 단건 조회 |
 | `POST` | `/task-orders/{task_id}/resume-proposal` | `201` | HELD TaskOrder의 안전 복귀 Proposal 생성 |
 | `POST` | `/task-orders/{task_id}/action-proposals` | `201`, `200` | TaskOrder에서 ActionProposal 생성 |
+| `POST` | `/task-orders/{task_id}/openvla-actions` | `201` | OpenVLA 7D 한 주기를 EE_DELTA Proposal로 등록 |
 | `GET` | `/task-orders/{task_id}/action-proposals` | `200` | TaskOrder의 Proposal 목록 조회 |
 | `POST` | `/action-proposals` | `201` | 외부 VLA의 ActionProposal 직접 등록 |
 | `POST` | `/action-proposals/{proposal_id}/evaluate` | `200` | 안전 규칙 평가 |
@@ -81,7 +83,7 @@
 
 `WS /ws/state`는 비브라우저 클라이언트의 `Authorization` 헤더 또는 브라우저의 WebSocket subprotocol `bearer.<base64url(token)>`을 받는다. 브라우저는 함께 `state.v1`을 요청하고 서버는 인증 성공 시 `state.v1`만 선택한다. 토큰 query parameter는 URL·로그 노출을 막기 위해 지원하지 않는다. 인증 실패 시 연결 전 WebSocket code `4401`로 닫는다.
 
-인증 계층은 검증된 요청자의 `subject`와 `role`을 HTTP `request.state.auth_principal` 또는 WebSocket `state.auth_principal`에 전달한다. CV 안전 확인은 `SENSOR|CV`, 관리자 위험 해제와 RESUME 제안 생성은 `OPERATOR|ADMIN`만 호출할 수 있다. 개발 모드에서는 호환성을 위해 역할 검사를 생략한다. React 운영 콘솔은 토큰을 sessionStorage에만 저장해 HTTP와 WebSocket에 전달하고 역할에 따라 관리자 버튼을 제어한다.
+인증 계층은 검증된 요청자의 `subject`와 `role`을 HTTP `request.state.auth_principal` 또는 WebSocket `state.auth_principal`에 전달한다. CV 안전 확인은 `SENSOR|CV`, 관리자 위험 해제·운영자 E-Stop·RESUME 제안 생성은 `OPERATOR|ADMIN`만 호출할 수 있다. 개발 모드에서는 호환성을 위해 역할 검사를 생략한다. React 운영 콘솔은 토큰을 sessionStorage에만 저장해 HTTP와 WebSocket에 전달하고 역할에 따라 관리자 버튼을 제어한다.
 
 ### 2.2 통합 객체 조회
 
@@ -311,7 +313,7 @@ Robot 위치와 예상 경로 출발점은 CTL diff-drive의
 | action_type | 필수 parameters | 선택 parameters |
 |---|---|---|
 | `MOVE_TO` | `target_pose`, `speed_limit` | `priority=NORMAL` |
-| `MANIPULATE` | `manipulation=PICK|PLACE`, `object_id`, `target_pose` | `priority=NORMAL` |
+| `MANIPULATE` | `manipulation=PICK|PLACE`, `object_id`, `target_pose` | `ee_delta={translation, rotation_rpy, gripper, phase_complete}`, `priority=NORMAL` |
 | `STOP` | 없음 | `priority=NORMAL|SAFETY` |
 | `RESUME` | `task_id` | `priority=NORMAL|SAFETY` |
 
@@ -416,7 +418,19 @@ Closed-Loop Worker가 활성화된 경우 `UNSUPPORTED`는 성공한 직전 단�
 `resolved_at`, `resolved_by`를 기록하며, 이미 해제된 이벤트나 조건을 충족하지 않은 요청은
 `409`를 반환한다.
 
+발표용 창고는 CCTV 04에서 발견한 낙상자를 `UNKNOWN / WARNING` 위험으로 등록합니다. `zone_id`는 `후방작업통로`이며, ROS 시각에 연결된 관측 ID를 보냅니다. 관련 로봇 ID를 비워 별도 보행 구역 경고로 표시합니다. [시연 절차](warehouse-presentation.md)
+
 실행 중 로봇 즉시 정지: `OPEN` `CRITICAL` HazardEvent와 연결된(`related_robot_ids`에 있거나 Task 목적지 Zone이 `zone_id`와 같은) 로봇 중 `EXECUTING` Proposal을 가진 로봇이 있으면, 등록 직후 `/safety/estop`에 `{"active":true,"triggered_by":"RULE_ENGINE","issued_at":...}`를 발행한다. 상태 전이(Robot `ESTOP`, Proposal·Task `HELD`)는 CTL이 보내는 `ESTOP` 이벤트로 반영한다. 정지를 발행하게 한 HazardEvent가 모두 해제되면 `{"active":false}`를 발행하지만, 이는 정지 신호만 풀며 로봇 복귀는 승인된 `RESUME`으로만 한다. 발행은 저장소 잠금 밖에서 하되 전용 잠금으로 직렬화하고 발행 직전 저장소 상태를 다시 읽어 마지막 발행이 항상 마지막 상태와 같으며, 발행에 실패해도 등록은 성공하고 이후 평가·실행 직전 재검증 차단은 그대로 적용된다. `/safety/estop`은 전역 토픽이므로 연결된 어댑터가 모두 정지한다.
+
+운영자 수동 E-Stop API는 ROS 2 전용 토픽과 이름이 같지만 HTTP 경로이다.
+
+- `GET /safety/estop`: 운영자 정지 여부, 위험 기반 정지 ID, 마지막 요청자·사유·시각 조회
+- `POST /safety/estop`: `{"reason":"..."}`로 전역 정지. 모든 Robot을 `ESTOP`, 실행 중 Proposal·Task를 `HELD`로 바꾸고 OPERATOR 감사 로그 기록
+- `POST /safety/estop/release`: 운영자 latch만 해제. 위험 기반 정지가 남으면 ROS 2 정지는 유지하며 Robot은 자동 재개하지 않음
+
+선택형 인증이 활성화된 환경에서는 `OPERATOR|ADMIN` 역할만 두 변경 API를 호출할 수 있다.
+정지 상태는 Redis에 저장되어 Backend 재시작 시 latched 토픽에 다시 발행된다. CTL 발행이
+실패하면 저장된 안전 상태는 유지하고 `503`을 반환한다.
 
 ### 3.7 SafetyRule과 ExecutionLog
 
@@ -474,7 +488,7 @@ ActionProposal: PROPOSED ── evaluate 통과 ──> APPROVED
 
 대상 물체가 있는 운반 TaskOrder는 여러 ActionProposal을 순차 실행한다. Task Executor는 등록된 PhysicalObject와 성공한 Proposal 이력을 보고 다음 `MOVE_TO` 또는 `MANIPULATE`를 하나씩 자동 생성한다. OpenVLA 조작 Proposal과 Navigation Planner의 `MOVE_TO` Proposal을 같은 `task_id`로 직접 등록하는 방식도 지원하지만, 처리 중 상태(`PROPOSED`, `APPROVED`, `EXECUTING`)의 Proposal은 TaskOrder당 하나만 허용한다. `HELD`는 정지 이력으로 남되 RESUME 성공 뒤 다음 단계 생성을 막지 않는다. 물체 접근, `PICK`, 목적지 `MOVE_TO` 성공은 개별 Proposal만 `SUCCEEDED`로 끝내고 TaskOrder를 `PLANNING`으로 돌린다. 최종 `MANIPULATE/PLACE` 성공이 전체 TaskOrder를 `COMPLETED`로 만든다.
 
-Closed-Loop Worker는 활성화 시 위 단계를 `생성 → 평가 → 실행 → RESULT 대기` 순서로 진행한다. 안전 평가를 우회하지 않으며 실행 중인 Proposal이 있으면 새 Proposal을 만들지 않는다. ResumeTask는 안전 해제 후 관리자가 생성한 `RESUME` Proposal의 평가·실행·성공 보고로 구현하며, 성공 뒤 `PLANNING`으로 돌아온 Task는 다음 Worker 주기에 이어서 처리한다. 결과는 Mock 연동 시험에서는 HTTP API로, ROS 2 모드에서는 CTL 결과 이벤트 경계를 통해 같은 상태 전이를 반영한다.
+Closed-Loop Worker는 활성화 시 위 단계를 `생성 → 평가 → 실행 → RESULT 대기` 순서로 진행한다. 안전 평가를 우회하지 않으며 실행 중인 Proposal이 있으면 새 Proposal을 만들지 않는다. ResumeTask는 안전 해제 후 관리자가 생성한 `RESUME` Proposal의 평가·실행·성공 보고로 구현하며, 성공 뒤 `PLANNING`으로 돌아온 Task는 다음 Worker 주기에 이어서 처리한다. ROS 2 모드에서 Backend는 로봇별 `/adapter/{robot_topic_id}/result`의 `ACK`, `RESULT`, `HOLD`, `ESTOP`을 처리하고, 브리지는 `RESULT`를 기존 HTTP 결과 API에 최대 3회 전달한다. Mock과 ROS 2 모두 같은 상태 전이와 멱등 감사 기록을 사용한다.
 
 ## 5. 기준 문서와 현재 구현의 차이
 
@@ -486,13 +500,13 @@ Closed-Loop Worker는 활성화 시 위 단계를 `생성 → 평가 → 실행 
 | ResumeTask | 관리자 승인 2단계 복귀 | CV 안전 해제 근거, 운영자 Hazard 해제, `RESUME` Proposal 평가·실행으로 구현 |
 | 인증·권한 | CRITICAL 해제와 Resume는 관리자 전용 | 선택형 역할별 API 토큰 인증 구현. CV 안전 해제는 `SENSOR|CV`, CRITICAL 해제와 Resume는 `OPERATOR|ADMIN`으로 분리 |
 | 규칙 SR-01~06 | 속도·구역·거리·위험·상태·센서 공백 | SR-01 기본 0.4m/s·Robot·Zone 상한, 로봇 상태·adapter·관련 CRITICAL 위험 구현. KEEP_OUT 경로 검사를 구현하고 거리·센서 공백은 관측 안전 검사 활성화 시 적용 |
-| E-Stop | ROS 2 latched 전용 경로 | 실행 재검증 실패 시 Robot ESTOP·Task HELD·감사 로그 구현. `CRITICAL` HazardEvent가 실행 중 로봇과 연결되면 `/safety/estop` 발행(3.6절). 운영자 E-Stop API와 로봇별 정지는 미구현 |
-| 어댑터 실행 결과 | ROS 2 result 토픽으로 완료·실패 보고 | HTTP 결과 경계와 ROS 2 CTL 결과 이벤트 처리, 상태 전이, 멱등 감사 로그 구현 |
+| E-Stop | ROS 2 latched 전용 경로 | 실행 재검증·관련 `CRITICAL` 위험·운영자 API가 전역 `/safety/estop`을 발행. 운영자 상태 영속화, OPERATOR 권한, Robot ESTOP·Task HELD·감사 로그 구현. 로봇별 정지는 미구현 |
+| 어댑터 실행 결과 | ROS 2 result 토픽으로 완료·실패 보고 | 로봇별 ROS 2 결과 토픽 구독, HTTP 결과 전달, 상태 전이, 멱등 감사 로그 및 MOVE_TO E2E 검증 구현 |
 | 상태 구독 | WebSocket `/ws/state` | 전체 상태 스냅샷 구독과 15초 heartbeat 구현, delta 복구는 미구현 |
 | 영속 저장 | Redis 또는 ROS 2 상태 연동 | 인메모리 기본, Redis 스냅샷·분산 잠금 선택 가능 |
 | 판정 시간 | `evaluated_in_ms` 기록 | 평가·실행 직전 재평가 로그에 구현 |
 | Observation 등록 | CV가 Observation을 제출하고 ONT가 병합해 HazardEvent 생성 | 미구현. CV가 `PUT /sensors/{sensor_id}`, `PUT /workers/snapshot`, `POST /hazards`로 직접 갱신 |
-| HazardEvent 즉시 정지 | `CRITICAL` 등록 시 실행 중 로봇 `TriggerEStop` | 관련 실행 중 로봇에 latched E-Stop 발행, CTL 이벤트로 Robot ESTOP·Task/Proposal HELD 반영 |
+| HazardEvent 즉시 정지 | `CRITICAL` 등록 시 실행 중 로봇 `TriggerEStop` | 관련 실행 중 로봇에 latched E-Stop 발행, CTL 이벤트로 Robot ESTOP·Task/Proposal HELD 반영(3.6절) |
 | 사전 시뮬레이션(`COLLISION`) | 규칙 통과 후보를 MuJoCo ② 서비스로 검증, 시간 초과·미가동 시 거부 | `BACKEND_TWIN_SIMULATION_ENABLED=1`일 때 `MOVE_TO` 호출·Fail-Closed·`snapshot_id` 재검증 구현(3.9절). 기본 비활성화, 시간 제한은 #50 확정 전 잠정값, `MANIPULATE`는 계약 확정 전까지 차단 |
 | 토크·관절 속도 검사 | 스키마 미결 | 미구현 |
 | 스키마 v1.1 선택 필드 | 모델에서 선택적으로 허용 | Robot, Sensor, Observation, Worker, Zone, SafetyRule, HazardEvent, ExecutionLog에 반영 |
