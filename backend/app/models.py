@@ -566,6 +566,21 @@ class TriggerSource(str, Enum):
     HEARTBEAT_LOSS = "HEARTBEAT_LOSS"
 
 
+class OperatorEstopRequest(OntologyModel):
+    reason: NonBlankString = Field(default="운영자 비상정지", max_length=500)
+
+
+class SafetyEstopStatus(OntologyModel):
+    active: bool
+    operator_active: bool
+    hazard_ids: list[str]
+    held_robot_ids: list[str] = Field(default_factory=list)
+    held_task_ids: list[str] = Field(default_factory=list)
+    requested_by: str | None = None
+    reason: str | None = None
+    issued_at: datetime | None = None
+
+
 class RuleResult(OntologyModel):
     rule_id: str
     passed: bool

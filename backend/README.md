@@ -141,6 +141,13 @@ ROS 2 모드에서는 실행 직전 재검증을 통과한 승인 스냅샷만 `
 
 실행 중인 로봇과 연결된 `CRITICAL` HazardEvent가 등록되면 `/safety/estop`(latched)에 정지 신호를 발행하고, 그 위험이 모두 해제되면 정지 신호를 풉니다. 로봇 복귀에는 승인된 `RESUME`이 필요합니다. 창고 시연에서 운영자 위험 해제 뒤 AMR에 `RESUME`을 발행하는 단계는 아직 연결되지 않았습니다.
 
+운영 콘솔의 수동 정지는 `POST /safety/estop`으로 전역 E-Stop을 발행합니다. 운영자
+정지 상태는 Redis 스냅샷에도 보존되며, 실행 중 Proposal과 Task를 `HELD`, Robot을
+`ESTOP`으로 전이하고 `triggered_by=OPERATOR` 감사 로그를 남깁니다. 인증이 활성화된
+환경에서는 `OPERATOR` 역할만 정지·해제를 호출할 수 있습니다. `POST
+/safety/estop/release`는 latched 정지 신호만 해제하며 로봇을 자동 재개하지 않습니다.
+열린 위험 기반 정지가 남아 있으면 신호는 계속 활성 상태입니다.
+
 발표용 창고의 CCTV 04 낙상자 점검은 후방 통로에서 확인된 작업자 위험을 `UNKNOWN / WARNING`으로 저장합니다. [시연 절차](../docs/warehouse-presentation.md)에서 영상 관측과 위험 기록을 확인할 수 있습니다.
 
 `ZONE` 목적지를 실제 실행하려면 해당 Zone의 `geometry.navigation_target`에 `{x,y,z}` 좌표가 있어야 합니다. 없으면 명령을 추측해 보내지 않고 `422`로 차단합니다.

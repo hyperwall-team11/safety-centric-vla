@@ -80,7 +80,7 @@
 
 `WS /ws/state`는 비브라우저 클라이언트의 `Authorization` 헤더 또는 브라우저의 WebSocket subprotocol `bearer.<base64url(token)>`을 받는다. 브라우저는 함께 `state.v1`을 요청하고 서버는 인증 성공 시 `state.v1`만 선택한다. 토큰 query parameter는 URL·로그 노출을 막기 위해 지원하지 않는다. 인증 실패 시 연결 전 WebSocket code `4401`로 닫는다.
 
-현재 인증 계층은 검증된 요청자의 `subject`와 `role`을 HTTP `request.state.auth_principal` 또는 WebSocket `state.auth_principal`에 전달한다. CRITICAL 해제·RESUME 같은 행동별 허용 역할과 감사 로그 요청자 기록은 #71의 ONT 권한 규칙에서 적용한다. 운영 콘솔의 토큰 입력 UI와 역할별 버튼 제어도 해당 규칙 확정 뒤 연결하며, 현재 인증 활성화 시험은 Swagger UI 또는 별도 API 클라이언트를 사용한다.
+현재 인증 계층은 검증된 요청자의 `subject`와 `role`을 HTTP `request.state.auth_principal` 또는 WebSocket `state.auth_principal`에 전달한다. 운영자 E-Stop 정지·해제는 `OPERATOR` 역할만 허용하고 요청자를 상태에 기록한다. CRITICAL 해제·RESUME의 행동별 허용 역할은 #71의 ONT 권한 규칙에서 추가 적용한다. 운영 콘솔의 토큰 입력 UI는 아직 없으므로 인증 활성화 시험은 Swagger UI 또는 별도 API 클라이언트를 사용한다.
 
 ### 2.2 통합 객체 조회
 
@@ -400,6 +400,16 @@ Closed-Loop Worker가 활성화된 경우 `UNSUPPORTED`는 성공한 직전 단�
 
 실행 중 로봇 즉시 정지: `OPEN` `CRITICAL` HazardEvent와 연결된(`related_robot_ids`에 있거나 Task 목적지 Zone이 `zone_id`와 같은) 로봇 중 `EXECUTING` Proposal을 가진 로봇이 있으면, 등록 직후 `/safety/estop`에 `{"active":true,"triggered_by":"RULE_ENGINE","issued_at":...}`를 발행한다. 상태 전이(Robot `ESTOP`, Proposal·Task `HELD`)는 CTL이 보내는 `ESTOP` 이벤트로 반영한다. 정지를 발행하게 한 HazardEvent가 모두 해제되면 `{"active":false}`를 발행하지만, 이는 정지 신호만 풀며 로봇 복귀는 승인된 `RESUME`으로만 한다. 발행은 저장소 잠금 밖에서 하되 전용 잠금으로 직렬화하고 발행 직전 저장소 상태를 다시 읽어 마지막 발행이 항상 마지막 상태와 같으며, 발행에 실패해도 등록은 성공하고 이후 평가·실행 직전 재검증 차단은 그대로 적용된다. `/safety/estop`은 전역 토픽이므로 연결된 어댑터가 모두 정지한다.
 
+운영자 수동 E-Stop API는 ROS 2 전용 토픽과 이름이 같지만 HTTP 경로이다.
+
+- `GET /safety/estop`: 운영자 정지 여부, 위험 기반 정지 ID, 마지막 요청자·사유·시각 조회
+- `POST /safety/estop`: `{"reason":"..."}`로 전역 정지. 모든 Robot을 `ESTOP`, 실행 중 Proposal·Task를 `HELD`로 바꾸고 OPERATOR 감사 로그 기록
+- `POST /safety/estop/release`: 운영자 latch만 해제. 위험 기반 정지가 남으면 ROS 2 정지는 유지하며 Robot은 자동 재개하지 않음
+
+선택형 인증이 활성화된 환경에서는 `OPERATOR` 역할만 두 변경 API를 호출할 수 있다.
+정지 상태는 Redis에 저장되어 Backend 재시작 시 latched 토픽에 다시 발행된다. CTL 발행이
+실패하면 저장된 안전 상태는 유지하고 `503`을 반환한다.
+
 ### 3.7 SafetyRule과 ExecutionLog
 
 `GET /safety-rules`는 현재 기본 규칙 두 개를 반환한다.
@@ -467,7 +477,7 @@ Closed-Loop Worker는 활성화 시 위 단계를 `생성 → 평가 → 실행 
 | ResumeTask | 관리자 승인 2단계 복귀 | 미구현, HELD 생성 요청은 `409` |
 | 인증·권한 | CRITICAL 해제와 Resume는 관리자 전용 | 선택형 역할별 API 토큰 인증과 요청자 전달 구현. CRITICAL 해제 요청의 `resolved_by=OPERATOR` 검사만 있고 역할별 인가는 미구현 |
 | 규칙 SR-01~06 | 속도·구역·거리·위험·상태·센서 공백 | SR-01 기본 0.4m/s·Robot·Zone 상한, 로봇 상태·adapter·관련 CRITICAL 위험 구현. KEEP_OUT 경로 검사를 구현하고 거리·센서 공백은 관측 안전 검사 활성화 시 적용 |
-| E-Stop | ROS 2 latched 전용 경로 | 실행 재검증 실패 시 Robot ESTOP·Task HELD·감사 로그 구현. `CRITICAL` HazardEvent가 실행 중 로봇과 연결되면 `/safety/estop` 발행(3.6절). 운영자 E-Stop API와 로봇별 정지는 미구현 |
+| E-Stop | ROS 2 latched 전용 경로 | 실행 재검증·관련 `CRITICAL` 위험·운영자 API가 전역 `/safety/estop`을 발행. 운영자 상태 영속화, OPERATOR 권한, Robot ESTOP·Task HELD·감사 로그 구현. 로봇별 정지는 미구현 |
 | 어댑터 실행 결과 | ROS 2 result 토픽으로 완료·실패 보고 | 로봇별 ROS 2 결과 토픽 구독, HTTP 결과 전달, 상태 전이, 멱등 감사 로그 및 MOVE_TO E2E 검증 구현 |
 | 상태 구독 | WebSocket `/ws/state` | 전체 상태 스냅샷 구독과 15초 heartbeat 구현, delta 복구는 미구현 |
 | 영속 저장 | Redis 또는 ROS 2 상태 연동 | 인메모리 기본, Redis 스냅샷·분산 잠금 선택 가능 |
