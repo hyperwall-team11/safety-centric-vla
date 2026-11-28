@@ -40,14 +40,17 @@ class OpenApiContractTest(unittest.TestCase):
             ("GET", "/hazards"),
             ("POST", "/hazards"),
             ("POST", "/hazards/{hazard_id}/resolve"),
+            ("GET", "/safety/estop"),
+            ("POST", "/safety/estop"),
+            ("POST", "/safety/estop/release"),
             ("GET", "/safety-rules"),
             ("GET", "/execution-logs"),
         }
 
         self.assertEqual(schema["info"]["version"], "0.2.0")
-        self.assertEqual(len(schema["paths"]), 24)
+        self.assertEqual(len(schema["paths"]), 26)
         self.assertEqual(actual_operations, expected_operations)
-        self.assertEqual(len(actual_operations), 30)
+        self.assertEqual(len(actual_operations), 33)
         self.assertEqual(
             schema["components"]["securitySchemes"]["BearerAuth"]["scheme"],
             "bearer",
