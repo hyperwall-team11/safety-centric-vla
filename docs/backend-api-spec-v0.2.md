@@ -59,6 +59,7 @@
 | `POST` | `/task-orders/from-natural-language` | `201` | 자연어를 TaskOrder로 변환·저장 |
 | `GET` | `/task-orders/{task_id}` | `200` | TaskOrder 단건 조회 |
 | `POST` | `/task-orders/{task_id}/action-proposals` | `201`, `200` | TaskOrder에서 ActionProposal 생성 |
+| `POST` | `/task-orders/{task_id}/openvla-actions` | `201` | OpenVLA 7D 한 주기를 EE_DELTA Proposal로 등록 |
 | `GET` | `/task-orders/{task_id}/action-proposals` | `200` | TaskOrder의 Proposal 목록 조회 |
 | `POST` | `/action-proposals` | `201` | 외부 VLA의 ActionProposal 직접 등록 |
 | `POST` | `/action-proposals/{proposal_id}/evaluate` | `200` | 안전 규칙 평가 |
@@ -303,7 +304,7 @@ Robot 위치와 예상 경로 출발점은 CTL diff-drive의
 | action_type | 필수 parameters | 선택 parameters |
 |---|---|---|
 | `MOVE_TO` | `target_pose`, `speed_limit` | `priority=NORMAL` |
-| `MANIPULATE` | `manipulation=PICK|PLACE`, `object_id`, `target_pose` | `priority=NORMAL` |
+| `MANIPULATE` | `manipulation=PICK|PLACE`, `object_id`, `target_pose` | `ee_delta={translation, rotation_rpy, gripper, phase_complete}`, `priority=NORMAL` |
 | `STOP` | 없음 | `priority=NORMAL|SAFETY` |
 | `RESUME` | `task_id` | `priority=NORMAL|SAFETY` |
 

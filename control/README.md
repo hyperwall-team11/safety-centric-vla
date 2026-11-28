@@ -98,6 +98,7 @@ macOS에서는 같은 Mac 안의 노드끼리도 서로 못 찾는 문제가 있
 | `pixi run roundtrip` | Mock 어댑터 + 하네스 왕복·적합성 시험 (13개 항목) |
 | `pixi run backend-move-e2e` | 자연어 MOVE_TO → Backend → ROS 2 → TIAGo → MuJoCo → RESULT 최소 E2E |
 | `pixi run backend-hazard-e2e` | 실행 중 CRITICAL HazardEvent → E-Stop → Robot·Task·Proposal HELD E2E |
+| `pixi run tiago-ee-delta-e2e` | OpenVLA EE_DELTA → `/arm/command` → TIAGo IK·관절 제어 → `/arm/result` E2E |
 | `pixi run arm` / `arm-view` | Panda 로봇 팔 집기·놓기 / 뷰어로 보기 (처음 실행 시 모델 33MB를 내려받음) |
 | `pixi run fetch-models` | 저장소에 올리지 않는 모델(Panda)만 내려받기 |
 
@@ -141,6 +142,27 @@ pixi run backend-hazard-e2e
 
 실패하면 정상 E2E와 같은 디렉터리에 `backend.log`, `bridge.log`, `adapter.log`,
 `hazard.log`가 남습니다.
+
+### OpenVLA EE_DELTA 팔 제어 E2E
+
+OpenVLA 7D의 평행이동(m)·RPY 회전(rad)·그리퍼 값을 Backend가
+`MANIPULATE.parameters.ee_delta`로 검증한 뒤, TIAGo 어댑터가 `/arm/command`로
+전달합니다. MuJoCo 브리지는 명령을 비동기로 실행해 월드 좌표계 TCP
+목표를 IK로 팔 7축·몸통 승강 관절 값으로 바꾸고, 완료를 `/arm/result`로
+돌려줍니다. E-Stop·HOLD·STOP의 `CANCEL`은 현재 관절 자세를 유지합니다.
+
+```bash
+cd control
+pixi run tiago-ee-delta-e2e
+```
+
+시험은 5mm EE_DELTA를 보내 `/arm/result.success=true`와 실제 MuJoCo 팔 관절
+변화를 모두 확인합니다.
+
+- EE_DELTA는 `frame_id=world`만 허용
+- 한 주기 축별 이동 `0.05m`, 회전 `0.25rad` 상한을 브리지에서도 이중 검사
+- 그리퍼 `+1=닫기`, `-1=열기`, `(-0.5, 0.5)=현재 명령 유지`
+- 도달할 수 없는 IK, 잘못된 좌표계·범위는 Fail-Closed 실패 결과로 반환
 
 ### 터미널에서 직접 로봇 움직이기
 
@@ -480,6 +502,7 @@ control/
 │   ├── twin.py                     # MuJoCo ② 디지털 트윈: 온톨로지 상태 → 장면, 정답 대비 위치 오차
 │   ├── twin_simulate.py            # MuJoCo ② 사전 시뮬레이션 서비스 POST /twin/simulate
 │   ├── manipulator.py              # Panda move_to·그리퍼·pick_and_place
+│   ├── tiago_command.py            # TIAGo 팔 명령 비동기 실행·취소·RESULT 스케줄러
 │   ├── arms.py                     # 로봇 팔 공통 계층: 모델 목록, 공구, 역기구학, PICK·PLACE 궤적, 현장 배치
 │   ├── amr.py                      # 이동형 운반 로봇: 차체·팔레트·거치대, 운동학 이동·싣기·내리기, 현장 배치
 │   └── plant_demo.py               # 팔 4대·AMR 2대 정해진 순서 재생 (Three.js 오프라인 내보내기용)

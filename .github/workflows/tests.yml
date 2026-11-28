@@ -1,6 +1,6 @@
 name: Tests
 
-# develop·main 대상 PR과 두 브랜치 push에서 backend·control 테스트를 돌린다 (이슈 #94).
+# develop·main 대상 PR과 두 브랜치 push에서 backend·control·VLA 경계 테스트를 돌린다 (이슈 #94).
 # Three.js 렌더·GPU가 필요한 측정은 CI 범위가 아니다.
 on:
   pull_request:
@@ -42,6 +42,28 @@ jobs:
         run: python -m pip install -r requirements.txt pytest httpx
       - name: Test
         run: python -m pytest -q
+
+  vla:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test dependency
+        run: python -m pip install pytest
+      - name: Test closed-loop boundaries
+        run: python -m pytest -q vla/tests
+      - name: Compile entrypoints
+        run: >-
+          python -m py_compile
+          vla/openvla_engine.py
+          vla/backend_client.py
+          vla/closed_loop.py
+          vla/observation_sources.py
+          vla/openvla_single_image_infer.py
+          vla/openvla_closed_loop.py
 
   control:
     runs-on: ubuntu-latest

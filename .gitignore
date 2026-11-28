@@ -6,6 +6,7 @@ venv/
 env/
 mujoco-demo/outputs/
 vlm_results/
+openvla_action.json
 *.safetensors
 *.bin
 .env

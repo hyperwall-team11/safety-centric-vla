@@ -151,7 +151,8 @@ def test_manipulate_forwards_to_arm_and_reports_result(setup):
     events = core.handle_action(manipulate(approach_yaw=1.57), T0)
     assert [e["kind"] for e in events] == ["ACK", "STATUS"] and core.status == "MOVING"
     assert core.arm_outbox == [{"command_id": "m1", "manipulation": "PICK", "object_id": "box-01",
-                                "target_pose": None, "approach_yaw": 1.57}]
+                                "target_pose": None, "approach_yaw": 1.57, "ee_delta": None,
+                                "frame_id": "world"}]
     assert core.tick(T0 + DT, DT) == [] and core.command == (0.0, 0.0)  # 베이스는 브리지가 움직임
     done = core.handle_arm_result({"command_id": "m1", "success": True, "reason_code": None,
                                    "message": "집기 완료"}, T0 + 10)
@@ -164,6 +165,21 @@ def test_manipulate_failure_reason_is_passed_through(setup):
     done = core.handle_arm_result({"command_id": "m1", "success": False, "reason_code": "HW_ERROR",
                                    "message": "물체를 들지 못함"}, T0 + 5)
     assert done[-1]["reason_code"] == "HW_ERROR" and not done[-1]["success"]
+
+
+def test_manipulate_forwards_approved_openvla_ee_delta(setup):
+    core, _ = setup
+    ee_delta = {
+        "translation": {"x": 0.01, "y": -0.02, "z": 0.03},
+        "rotation_rpy": {"x": 0.04, "y": 0.05, "z": -0.06},
+        "gripper": 0.8,
+    }
+
+    events = core.handle_action(manipulate(ee_delta=ee_delta), T0)
+
+    assert [event["kind"] for event in events] == ["ACK", "STATUS"]
+    assert core.arm_outbox[-1]["ee_delta"] == ee_delta
+    assert core.arm_outbox[-1]["frame_id"] == "world"
 
 
 def test_estop_during_manipulate_sends_cancel(setup):

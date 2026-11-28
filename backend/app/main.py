@@ -57,6 +57,7 @@ from .models import (
     HazardSeverity,
     HazardStatus,
     NaturalLanguageTaskRequest,
+    OpenVlaActionSubmission,
     PhysicalObject,
     ProposalGenerationRequest,
     ProposalStatus,
@@ -80,6 +81,7 @@ from .models import (
     ZoneDestination,
     utc_now,
 )
+from .openvla_adapter import convert_openvla_action_7d
 from .safety import WORKER_SNAPSHOT_MAX_AGE_SECONDS, default_rules, evaluate_proposal
 from .state_stream import state_broadcaster
 from .store import StoreUnavailableError, store
@@ -100,7 +102,11 @@ from .twin_simulation import (
     stale_result,
     run_simulation,
 )
-from .vla_output import VlaOutputValidationError, validate_vla_proposal
+from .vla_output import (
+    VlaOutputConversionError,
+    VlaOutputValidationError,
+    validate_vla_proposal,
+)
 
 
 app = FastAPI(
@@ -139,6 +145,9 @@ def proposal_completes_task(task: TaskOrder, proposal: ActionProposal) -> bool:
     if task.target_object_id is None:
         return True
     if proposal.action_type != ActionType.MANIPULATE:
+        return False
+    ee_delta = proposal.parameters.get("ee_delta")
+    if isinstance(ee_delta, dict) and not ee_delta.get("phase_complete", False):
         return False
     return proposal.parameters.get("manipulation") == "PLACE"
 
@@ -180,6 +189,10 @@ def apply_successful_action_state(
     elif (
         proposal.action_type == ActionType.MANIPULATE
         and proposal.parameters.get("manipulation") == "PLACE"
+        and (
+            "ee_delta" not in proposal.parameters
+            or proposal.parameters["ee_delta"].get("phase_complete") is True
+        )
         and task.target_object_id is not None
     ):
         physical_object = store.objects.get(task.target_object_id)
@@ -1169,6 +1182,63 @@ def generate_action_proposal(
                 proposal.proposal_id,
                 request_fingerprint,
             )
+        return proposal
+
+
+@app.post(
+    "/task-orders/{task_id}/openvla-actions",
+    response_model=ActionProposal,
+    status_code=status.HTTP_201_CREATED,
+)
+def submit_openvla_action(
+    task_id: str,
+    request: OpenVlaActionSubmission,
+) -> ActionProposal:
+    """OpenVLA 7D 출력 한 주기를 검증 대기 ActionProposal로 등록한다."""
+
+    with store.lock:
+        task = store.tasks.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="TaskOrder를 찾을 수 없습니다.")
+        if task.status not in PLANNABLE_TASK_STATUSES:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{task.status} 상태의 TaskOrder에서는 OpenVLA 제안을 생성할 수 없습니다.",
+            )
+        robot = store.robots.get(task.target_robot_id)
+        if robot is None:
+            raise HTTPException(status_code=404, detail="TaskOrder의 대상 Robot을 찾을 수 없습니다.")
+        active = next(
+            (
+                proposal
+                for proposal in store.proposals.values()
+                if proposal.task_id == task_id
+                and proposal.status in ACTIVE_PROPOSAL_STATUSES
+            ),
+            None,
+        )
+        if active is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"이 TaskOrder에는 활성 ActionProposal이 이미 있습니다: {active.proposal_id}",
+            )
+        try:
+            proposal = convert_openvla_action_7d(
+                request.action_7d,
+                task,
+                robot,
+                manipulation=request.manipulation,
+                speed_limit=request.speed_limit,
+                phase_complete=request.phase_complete,
+                model_name=request.model_name,
+                model_version=request.model_version,
+            )
+        except VlaOutputConversionError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        store.proposals[proposal.proposal_id] = proposal
+        if task.status == TaskStatus.CREATED:
+            task.status = TaskStatus.PLANNING
         return proposal
 
 

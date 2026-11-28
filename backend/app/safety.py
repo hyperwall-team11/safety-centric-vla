@@ -30,6 +30,10 @@ from .models import (
 # docs/ontology-schema-v1.1.md §5: 속도 상한 및 KEEP_OUT 경로 교차 금지.
 DEFAULT_SPEED_LIMIT = 0.4
 _GEOMETRY_EPS = 1e-9  # 부동소수점 오차 허용치(거리 안전 여유값이 아님).
+# OpenVLA는 0.5초 주기의 폐루프 제어로 실행한다. 한 주기에서의 이동량을 제한해
+# 좌표계 오류나 모델 이상치가 바로 큰 동작으로 이어지지 않게 한다.
+MAX_EE_TRANSLATION_STEP_M = 0.05
+MAX_EE_ROTATION_STEP_RAD = 0.25
 
 
 # docs/ontology-schema-v1.1.md §5: KEEP_OUT 경로 교차 금지.
@@ -213,6 +217,31 @@ def evaluate_proposal(
             reason="제어 어댑터 준비됨" if robot.control_adapter.strip() else "제어 어댑터 없음",
         ),
     ]
+    if proposal.action_type == ActionType.MANIPULATE and "ee_delta" in proposal.parameters:
+        ee_delta = proposal.parameters["ee_delta"]
+        translation = ee_delta["translation"]
+        rotation = ee_delta["rotation_rpy"]
+        max_translation = max(abs(translation[axis]) for axis in ("x", "y", "z"))
+        max_rotation = max(abs(rotation[axis]) for axis in ("x", "y", "z"))
+        passed = (
+            max_translation <= MAX_EE_TRANSLATION_STEP_M
+            and max_rotation <= MAX_EE_ROTATION_STEP_RAD
+        )
+        results.append(
+            RuleResult(
+                rule_id="precondition-ee-delta-bounds",
+                passed=passed,
+                reason=(
+                    f"EE_DELTA 주기 한계 충족: 이동 {max_translation:.3f}m, 회전 {max_rotation:.3f}rad"
+                    if passed
+                    else (
+                        "EE_DELTA 주기 한계 초과: "
+                        f"이동 {max_translation:.3f}m/{MAX_EE_TRANSLATION_STEP_M:.3f}m, "
+                        f"회전 {max_rotation:.3f}rad/{MAX_EE_ROTATION_STEP_RAD:.3f}rad"
+                    )
+                ),
+            )
+        )
     blocked_hazard_ids: list[str] = []
     destination_zone_id = getattr(task.destination, "zone_id", None)
     destination_zone = next(
@@ -591,4 +620,4 @@ def evaluate_safety_distance(
         ),
         None,
     )
-    
+

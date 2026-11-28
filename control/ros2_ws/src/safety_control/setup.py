@@ -18,6 +18,7 @@ setup(
     entry_points={
         "console_scripts": [
             "test_harness = safety_control.test_harness:main",
+            "tiago_ee_delta_test = safety_control.tiago_ee_delta_test:main",
         ],
     },
 )

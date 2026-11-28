@@ -1,6 +1,8 @@
 """ROS 2 ↔ MuJoCo 브리지.
 
 구독: /cmd_vel (Twist) → 바퀴 로봇
+구독: /arm/command (String JSON) → TIAGo PICK·PLACE·EE_DELTA
+발행: /arm/result (String JSON) → TIAGo 팔 실행 결과
 발행: /odom, /joint_states, TF, 카메라 3대 영상(Image + CameraInfo), 작업자 실제 위치(/sim/worker_pose,
       추가 작업자는 cctv_renderer:=threejs일 때 /sim/worker_pose_<n>, n = 2, 3, ...)
 
@@ -75,6 +77,13 @@ def load_amr(mujoco_dir: str):
     sys.path.insert(0, mujoco_dir)
     import amr
     return amr
+
+
+def load_tiago_control(mujoco_dir: str):
+    sys.path.insert(0, mujoco_dir)
+    import tiago_command
+    import tiago_manipulation
+    return tiago_command, tiago_manipulation
 
 
 def make_tf(stamp, parent, child, pos, quat):
@@ -152,6 +161,20 @@ class MujocoBridge(Node):
         else:
             self.sim = simulation.DiffDriveSim(robot, model_path)
         m = self.sim.model
+        self.tiago_manipulator = None
+        self.tiago_command_runner = None
+        joint_names = {m.joint(i).name for i in range(m.njnt)}
+        if not warehouse_demo and set(f"arm_{i}_joint" for i in range(1, 8)) <= joint_names:
+            tiago_command, tiago_manipulation = load_tiago_control(mujoco_dir)
+            self.tiago_manipulation_module = tiago_manipulation
+            self.tiago_manipulator = tiago_manipulation.TiagoManipulator(
+                self.sim,
+                log=lambda message: self.get_logger().info(message),
+            )
+            self.tiago_command_runner = tiago_command.TiagoCommandRunner(
+                self._make_tiago_arm_task,
+                self.tiago_manipulator.hold,
+            )
         self.last_cmd_at = None
         self.wall_start = time.monotonic()
         self.sim_start = self.sim.time
@@ -244,6 +267,9 @@ class MujocoBridge(Node):
             self.create_subscription(Twist, "/cmd_vel", self._on_cmd_vel, 10)
             self.odom_pub = self.create_publisher(Odometry, "/odom", 10)
             self.joint_pub = self.create_publisher(JointState, "/joint_states", 10)
+            if self.tiago_command_runner is not None:
+                self.arm_result_pub = self.create_publisher(String, "/arm/result", 10)
+                self.create_subscription(String, "/arm/command", self._on_tiago_arm_command, 10)
         self.tf_pub = TransformBroadcaster(self)
         self.static_tf_pub = StaticTransformBroadcaster(self)
         self._publish_static_tf()
@@ -279,6 +305,83 @@ class MujocoBridge(Node):
         name = self.plant_arms.box_name(held) if held is not None else None
         self.grasp_pubs[robot_id].publish(String(data=json.dumps(
             {"closed": bool(msg.data), "held": name}, ensure_ascii=False)))
+
+    @staticmethod
+    def _command_position(target_pose):
+        position = (target_pose or {}).get("position")
+        if isinstance(position, dict):
+            position = [position.get(axis) for axis in ("x", "y", "z")]
+        if not isinstance(position, (list, tuple)) or len(position) != 3:
+            return None
+        try:
+            values = [float(value) for value in position]
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return values if all(math.isfinite(value) for value in values) else None
+
+    def _tiago_object_position(self, object_id):
+        candidates = [object_id, str(object_id).replace("-", "_")]
+        if object_id == "box-01":
+            candidates.append("part_box")
+        for name in candidates:
+            try:
+                body_id = self.sim.model.body(name).id
+            except KeyError:
+                continue
+            return self.sim.data.xpos[body_id].copy()
+        raise ValueError(f"물체 {object_id!r}를 MuJoCo 장면에서 찾을 수 없음")
+
+    def _make_tiago_arm_task(self, command):
+        ee_delta = command.get("ee_delta")
+        if ee_delta is not None:
+            if command.get("frame_id") != self.world_frame:
+                raise ValueError(f"EE_DELTA frame_id {command.get('frame_id')!r} != {self.world_frame!r}")
+            translation = ee_delta.get("translation") or {}
+            rotation = ee_delta.get("rotation_rpy") or {}
+            return self.tiago_manipulator.ee_delta(
+                [translation.get(axis) for axis in ("x", "y", "z")],
+                [rotation.get(axis) for axis in ("x", "y", "z")],
+                ee_delta.get("gripper"),
+            )
+
+        kind = command.get("manipulation")
+        if kind not in ("PICK", "PLACE"):
+            raise ValueError(f"지원하지 않는 manipulation: {kind!r}")
+        target = self._command_position(command.get("target_pose"))
+        if kind == "PICK" and target is None:
+            target = self._tiago_object_position(command.get("object_id"))
+        if target is None:
+            raise ValueError(f"{kind}에는 target_pose.position이 필요함")
+        approach_yaw = command.get("approach_yaw")
+        if approach_yaw is None:
+            approach_yaw = self.tiago_manipulation_module.choose_approach_yaw(
+                self.sim.model,
+                target[:2],
+                self.sim.pose()[:2],
+            )
+        approach_yaw = float(approach_yaw)
+        if not math.isfinite(approach_yaw):
+            raise ValueError("approach_yaw는 유한한 숫자여야 함")
+        return (
+            self.tiago_manipulator.pick(target, approach_yaw)
+            if kind == "PICK"
+            else self.tiago_manipulator.place(target, approach_yaw)
+        )
+
+    def _publish_tiago_arm_results(self, results):
+        for result in results:
+            self.arm_result_pub.publish(String(data=json.dumps(result, ensure_ascii=False)))
+
+    def _on_tiago_arm_command(self, msg: String):
+        try:
+            command = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self.get_logger().warning("JSON이 아닌 TIAGo 팔 명령 무시")
+            return
+        if not isinstance(command, dict):
+            self.get_logger().warning("객체가 아닌 TIAGo 팔 명령 무시")
+            return
+        self._publish_tiago_arm_results(self.tiago_command_runner.submit(command))
 
     def _on_amr_load(self, robot_id, msg: String):
         try:
@@ -357,7 +460,11 @@ class MujocoBridge(Node):
                     self.worker.observe_amr(x, speed, self.sim.time)
                 self.worker.apply(self.sim.model, self.sim.data)
             before = self.sim.time
-            self.sim.step(min(lag, MAX_CATCHUP_S))
+            step_seconds = min(lag, MAX_CATCHUP_S)
+            if self.tiago_command_runner is not None:
+                self._publish_tiago_arm_results(self.tiago_command_runner.tick(step_seconds))
+                self.tiago_manipulator.sync_grasp()
+            self.sim.step(step_seconds)
             if self.warehouse_vehicles:
                 self.warehouse_vehicles.update(self.sim.data)
             if self.plant_arms:
@@ -376,6 +483,11 @@ class MujocoBridge(Node):
             self.get_logger().info(f"sim {self.sim.time:.1f} s / wall {now - self.wall_start:.1f} s "
                                    f"(실시간 대비 {rtf:.2f}배)")
             self.last_rtf_log = now
+
+    def destroy_node(self):
+        if self.tiago_manipulator is not None:
+            self.tiago_manipulator.close()
+        return super().destroy_node()
 
     def _sync_viewer(self):
         if not self.viewer.is_running():

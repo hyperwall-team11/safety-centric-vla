@@ -13,6 +13,7 @@ VLA(Vision-Language-Action) 모델은 자연어와 시각 정보를 바탕으로
 - [문서 목록 (스키마·개발계획서·사용자 정의서·구현 명세)](docs/README.md)
 - [제어·시뮬레이션 실행 안내](control/README.md)
 - [CV 탐지 실험](mujoco-demo/README.md)
+- [OpenVLA 7D·반복 추론 실행 안내](vla/README.md)
 
 ## 프로젝트 목표
 
