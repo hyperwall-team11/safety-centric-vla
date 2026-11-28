@@ -251,6 +251,10 @@ ResumeTask 승인
 
 **실행 상태:** 실행 중 로봇과 연결된 OPEN·CRITICAL HazardEvent가 등록되면 Backend가 ROS `/safety/estop`을 발행한다. 이 토픽은 전역이며, CTL 어댑터의 `ESTOP` 보고를 통해 Robot은 `ESTOP`, 실행 중인 Proposal과 Task는 `HELD`로 반영된다. PR #119에서 왕복을 검증했다.
 
+운영 콘솔도 HTTP `POST /safety/estop`을 통해 같은 전역 latched 토픽을 즉시 발행한다.
+운영자 정지 상태는 Redis에 보존하며, 신호 해제 뒤에도 승인된 RESUME 전까지 로봇은
+`ESTOP`에 머문다. 인증 사용 시 정지·해제는 `OPERATOR` 역할만 허용한다.
+
 **신속 정지 경로:** 긴급 정지는 CV → 온톨로지 → 사전 시뮬레이션으로 이어지는 경로에만 의존하지 않는다. 예를 들어 검증 서버 heartbeat가 1초 동안 끊기면 CTL 어댑터가 스스로 HOLD에 들어간다([`backend-ctl-contract-v0.1.md`](backend-ctl-contract-v0.1.md)).
 
 MVP에서는 MuJoCo의 가상 로봇으로 전체 제어 흐름을 검증하고, 향후 실제 로봇으로 확장할 수 있도록 ROS 2 인터페이스를 설계한다.
