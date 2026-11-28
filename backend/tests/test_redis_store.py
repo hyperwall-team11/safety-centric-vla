@@ -148,6 +148,7 @@ class RedisStoreTest(unittest.TestCase):
                 "fingerprint-2",
             )
             first.estop_hazard_ids.add("hazard-1")
+            first.operator_estop_active = True
 
         restarted = RedisStore("redis://unused", client=client)
 
@@ -161,6 +162,7 @@ class RedisStoreTest(unittest.TestCase):
             ("proposal-1", "fingerprint-2"),
         )
         self.assertEqual(restarted.estop_hazard_ids, {"hazard-1"})
+        self.assertTrue(restarted.operator_estop_active)
 
     def test_restores_adapter_ack_measurements_after_restart(self) -> None:
         client = FakeRedis()
@@ -414,6 +416,17 @@ class RealRedisStoreIntegrationTest(unittest.TestCase):
         first = RedisStore(self.redis_url, key=self.key)
         with first.lock:
             first.estop_hazard_ids.add("hazard-1")
+
+        restarted = RedisStore(self.redis_url, key=self.key)
+        published: list[bool] = []
+        restarted.synchronize_safety_publish(published.append)
+
+        self.assertEqual(published, [True])
+
+    def test_operator_estop_is_recovered_for_publish_without_hazard(self) -> None:
+        first = RedisStore(self.redis_url, key=self.key)
+        with first.lock:
+            first.operator_estop_active = True
 
         restarted = RedisStore(self.redis_url, key=self.key)
         published: list[bool] = []
