@@ -58,6 +58,7 @@ from .models import (
     HazardStatus,
     NaturalLanguageTaskRequest,
     OpenVlaActionSubmission,
+    OperatorEstopRequest,
     PhysicalObject,
     ProposalGenerationRequest,
     ProposalStatus,
@@ -66,6 +67,7 @@ from .models import (
     RobotStatus,
     RuleResult,
     SafetyRule,
+    SafetyEstopStatus,
     Sensor,
     TaskOrder,
     TaskOrderPreview,
@@ -603,15 +605,35 @@ def sync_estop(reason: str) -> None:
 
 
 def _publish_estop(active: bool, reason: str) -> None:
-    publisher = getattr(action_dispatcher, "publish_estop", None)
-    if publisher is None:
-        LOGGER.error("E-Stop을 발행할 수 없는 전송기입니다(%s): %s", action_dispatcher.name, reason)
-        return
     try:
-        publisher(active, "RULE_ENGINE")
+        _dispatch_estop(active, TriggerSource.RULE_ENGINE)
         LOGGER.warning("E-Stop %s 발행: %s", "정지" if active else "해제", reason)
     except DispatchError as exc:
         LOGGER.error("E-Stop 발행 실패(%s): %s", reason, exc)
+
+
+def _dispatch_estop(active: bool, triggered_by: TriggerSource) -> dict:
+    """E-Stop 발행 실패를 호출자가 처리할 수 있는 엄격한 전송 경계."""
+    publisher = getattr(action_dispatcher, "publish_estop", None)
+    if publisher is None:
+        raise DispatchError(
+            f"E-Stop을 발행할 수 없는 전송기입니다({action_dispatcher.name})"
+        )
+    return publisher(active, triggered_by.value)
+
+
+def require_operator(request: Request) -> str | None:
+    """인증 사용 시 OPERATOR만 안전 제어 변경을 허용한다."""
+    authenticator: TokenAuthenticator = app.state.token_authenticator
+    if not authenticator.enabled:
+        return None
+    principal = request.state.auth_principal
+    if principal is None or principal.role != "OPERATOR":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="OPERATOR 역할만 비상정지를 제어할 수 있습니다.",
+        )
+    return principal.subject
 
 
 def apply_ctl_ack_event(
@@ -2091,6 +2113,113 @@ def run_closed_loop_cycle(config: ClosedLoopConfig) -> None:
         changed = advance_closed_loop_task(task_id, config) or changed
     if changed:
         state_broadcaster.publish()
+
+
+def _safety_estop_status(
+    *,
+    held_robot_ids: list[str] | None = None,
+    held_task_ids: list[str] | None = None,
+) -> SafetyEstopStatus:
+    return SafetyEstopStatus(
+        active=store.operator_estop_active or bool(store.estop_hazard_ids),
+        operator_active=store.operator_estop_active,
+        hazard_ids=sorted(store.estop_hazard_ids),
+        held_robot_ids=held_robot_ids or [],
+        held_task_ids=held_task_ids or [],
+        requested_by=store.operator_estop_requested_by,
+        reason=store.operator_estop_reason,
+        issued_at=store.operator_estop_issued_at,
+    )
+
+
+@app.get("/safety/estop", response_model=SafetyEstopStatus)
+def get_safety_estop() -> SafetyEstopStatus:
+    with store.lock:
+        return _safety_estop_status()
+
+
+@app.post("/safety/estop", response_model=SafetyEstopStatus)
+def trigger_operator_estop(
+    request: OperatorEstopRequest,
+    http_request: Request,
+) -> SafetyEstopStatus:
+    requested_by = require_operator(http_request)
+    issued_at = utc_now()
+    held_robot_ids: set[str] = set()
+    held_task_ids: set[str] = set()
+    with store.lock:
+        first_activation = not store.operator_estop_active
+        store.operator_estop_active = True
+        store.operator_estop_reason = request.reason
+        store.operator_estop_requested_by = requested_by
+        store.operator_estop_issued_at = issued_at
+
+        for proposal in store.proposals.values():
+            if proposal.status != ProposalStatus.EXECUTING:
+                continue
+            proposal.status = ProposalStatus.HELD
+            held_robot_ids.add(proposal.robot_id)
+            task = store.tasks.get(proposal.task_id)
+            if task is not None:
+                task.status = TaskStatus.HELD
+                held_task_ids.add(task.task_id)
+            if first_activation:
+                store.logs.append(
+                    ExecutionLog(
+                        proposal_id=proposal.proposal_id,
+                        decision=Decision.ESTOP,
+                        rule_results=[],
+                        hazard_ids=[],
+                        robot_id=proposal.robot_id,
+                        result_message=f"운영자 비상정지: {request.reason}",
+                        triggered_by=TriggerSource.OPERATOR,
+                    )
+                )
+
+        for robot in store.robots.values():
+            robot.status = RobotStatus.ESTOP
+            robot.updated_at = issued_at
+            held_robot_ids.add(robot.robot_id)
+
+    state_broadcaster.publish()
+    try:
+        with ESTOP_PUBLISH_LOCK:
+            store.synchronize_safety_publish(
+                lambda active: _dispatch_estop(active, TriggerSource.OPERATOR)
+            )
+    except DispatchError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"운영자 E-Stop 상태는 저장했지만 CTL 발행에 실패했습니다: {exc}",
+        ) from exc
+
+    with store.lock:
+        return _safety_estop_status(
+            held_robot_ids=sorted(held_robot_ids),
+            held_task_ids=sorted(held_task_ids),
+        )
+
+
+@app.post("/safety/estop/release", response_model=SafetyEstopStatus)
+def release_operator_estop(http_request: Request) -> SafetyEstopStatus:
+    require_operator(http_request)
+    with store.lock:
+        store.operator_estop_active = False
+
+    state_broadcaster.publish()
+    try:
+        with ESTOP_PUBLISH_LOCK:
+            store.synchronize_safety_publish(
+                lambda active: _dispatch_estop(active, TriggerSource.OPERATOR)
+            )
+    except DispatchError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"운영자 E-Stop 해제 상태는 저장했지만 CTL 발행에 실패했습니다: {exc}",
+        ) from exc
+
+    with store.lock:
+        return _safety_estop_status()
 
 
 
